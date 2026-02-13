@@ -1,0 +1,2 @@
+﻿run_name,samples,look_back,epochs_requested,epochs_trained,train_samples,val_samples,test_samples,input_dim,features,mae,rmse,mape,smape,r2,peak_threshold,classification_accuracy,classification_precision,classification_recall,classification_f1
+run_20260213_173057_lb30_ep120,773,30,120,36,506,89,148,4,"['visitor_count_scaled', 'month_norm', 'day_of_week_norm', 'is_holiday']",4637.48193359375,6089.34619140625,0.3237321674823761,0.25598594546318054,0.7743655443191528,20682.00048828125,0.9459459459459459,0.9014084507042254,0.9846153846153847,0.9411764705882353
