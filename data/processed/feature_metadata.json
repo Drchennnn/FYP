@@ -1,8 +1,8 @@
 {
-  "input_csv": "data\\raw\\jiuzhaigou_tourism_weather_2024_2026_latest.csv",
+  "input_csv": "D:\\vscode\\FYP\\data\\raw\\jiuzhaigou_raw_2024-01-01_2026-02-26.csv",
   "raw_output_csv": "data\\raw\\jiuzhaigou_tourism_weather_2024_2026_latest.csv",
-  "output_csv": "data\\processed\\jiuzhaigou_daily_features.csv",
-  "rows": 714,
+  "output_csv": "D:\\vscode\\FYP\\data\\processed\\jiuzhaigou_daily_features_2024-01-01_2026-02-26.csv",
+  "rows": 699,
   "columns": [
     "date",
     "tourism_num",
@@ -50,12 +50,11 @@
     "CLD": 0,
     "HRA": 1,
     "LRA": 2,
-    "LSN": 3,
-    "MRA": 4,
-    "OTH": 5,
-    "OVC": 6,
-    "SHR": 7,
-    "SUN": 8
+    "MRA": 3,
+    "OTH": 4,
+    "OVC": 5,
+    "SHR": 6,
+    "SUN": 7
   },
   "wind_id_map": {
     "E": 0,

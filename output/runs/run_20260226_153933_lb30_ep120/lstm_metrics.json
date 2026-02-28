@@ -1,0 +1,27 @@
+{
+  "run_name": "run_20260226_153933_lb30_ep120",
+  "samples": 699,
+  "look_back": 30,
+  "epochs_requested": 120,
+  "epochs_trained": 45,
+  "train_samples": 456,
+  "val_samples": 80,
+  "test_samples": 133,
+  "input_dim": 4,
+  "features": [
+    "visitor_count_scaled",
+    "month_norm",
+    "day_of_week_norm",
+    "is_holiday"
+  ],
+  "mae": 4058.821533203125,
+  "rmse": 5183.382872217718,
+  "mape": 0.2755611538887024,
+  "smape": 0.24628284573554993,
+  "r2": 0.8193762898445129,
+  "peak_threshold": 22936.24853515625,
+  "classification_accuracy": 0.9172932330827067,
+  "classification_precision": 0.9230769230769231,
+  "classification_recall": 0.8181818181818182,
+  "classification_f1": 0.8674698795180723
+}

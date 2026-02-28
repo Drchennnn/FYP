@@ -272,7 +272,7 @@ def main() -> None:
     model_run_dir = model_runs_dir / run_name
     model_run_dir.mkdir(parents=True, exist_ok=True)
 
-    model_path = model_run_dir / "lstm_jiuzhaigou.keras"
+    model_path = model_run_dir / "lstm_jiuzhaigou.h5"
     metrics_json_path = run_dir / "lstm_metrics.json"
     metrics_csv_path = run_dir / "lstm_metrics.csv"
     pred_path = run_dir / "lstm_test_predictions.csv"

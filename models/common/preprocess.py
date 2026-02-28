@@ -1,12 +1,19 @@
-"""Preprocess Jiuzhaigou tourism-weather data to English-only model features."""
+"""
+Preprocess Jiuzhaigou tourism-weather data to English-only model features.
+
+Input: Raw CSV from crawler (data/raw/jiuzhaigou_raw_*.csv)
+Output: Processed CSV with features (data/processed/jiuzhaigou_daily_features.csv)
+Features: Lag features, rolling stats, date encoding, holiday flags, etc.
+"""
 
 from __future__ import annotations
 
+import os
 import argparse
 import json
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import chinese_calendar as cncal
 import numpy as np
@@ -169,8 +176,30 @@ def build_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     df["day_of_year"] = ds.dt.dayofyear
     df["week_of_year"] = ds.dt.isocalendar().week.astype(int)
     df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
-    df["is_holiday"] = ds.apply(lambda d: int(cncal.is_holiday(d.date())))
-    df["is_workday"] = ds.apply(lambda d: int(cncal.is_workday(d.date())))
+    
+    # 【修改】增加容错处理，防止 chinese_calendar 不支持未来年份
+    def get_holiday_safe(d):
+        try:
+            return int(cncal.is_holiday(d.date()))
+        except NotImplementedError:
+            # 如果年份超出支持范围（如2024+），降级为简单的周末判断
+            # 这里简单假设非周末即工作日，或者默认非节假日
+            # 更好的策略是手动补充关键节假日
+            return 1 if d.weekday() >= 5 else 0
+        except Exception:
+            return 0
+
+    def get_workday_safe(d):
+        try:
+            return int(cncal.is_workday(d.date()))
+        except NotImplementedError:
+            return 1 if d.weekday() < 5 else 0
+        except Exception:
+            return 1
+
+    df["is_holiday"] = ds.apply(get_holiday_safe)
+    df["is_workday"] = ds.apply(get_workday_safe)
+    
     df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
     df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
     df["dow_sin"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
@@ -187,10 +216,32 @@ def add_lag_features(df: pd.DataFrame, target_col: str = "tourism_num") -> pd.Da
     return df
 
 
-def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Path, metadata_json: Path, latitude: float, longitude: float) -> None:
+def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Optional[Path], metadata_json: Path, latitude: float, longitude: float) -> None:
     df = pd.read_csv(input_csv, encoding="utf-8-sig")
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+
+    # Automatically generate output filename if not provided
+    if output_csv is None:
+        start_date = df["date"].min().strftime("%Y-%m-%d")
+        end_date = df["date"].max().strftime("%Y-%m-%d")
+        # Default to data/processed/jiuzhaigou_daily_features_{start}_{end}.csv
+        # We assume input_csv is somewhere in the project, we try to locate 'data/processed' relative to project root
+        # If input_csv is absolute or relative, we try to use its parent structure or fallback to cwd
+        
+        # Strategy: Use input_csv's parent's sibling 'processed' if it exists, else 'data/processed'
+        # simpler: just use data/processed relative to where script is run (cwd) or relative to input file?
+        # The user's pattern is data/raw -> data/processed.
+        
+        # Let's try to find data/processed relative to project root (2 levels up from this script)
+        # This script is in models/common/preprocess.py (root/models/common)
+        # So project root is parents[2]
+        project_root = Path(__file__).resolve().parents[2]
+        processed_dir = project_root / "data" / "processed"
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        output_csv = processed_dir / f"jiuzhaigou_daily_features_{start_date}_{end_date}.csv"
+        print(f"Auto-generated output filename: {output_csv}")
+
     df["tourism_num"] = pd.to_numeric(df["tourism_num"], errors="coerce")
 
     high_col = "temperature_high" if "temperature_high" in df.columns else "temp_high_c"
@@ -249,6 +300,19 @@ def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Path, metadata
     )
     df = df.merge(meteo, on="date", how="left")
 
+    # Fill missing Open-Meteo data using local raw data or fallback strategies
+    # This prevents dropping recent rows due to API delays
+    if "meteo_temp_max" in df.columns and "temp_high_c" in df.columns:
+        df["meteo_temp_max"] = df["meteo_temp_max"].fillna(df["temp_high_c"])
+    if "meteo_temp_min" in df.columns and "temp_low_c" in df.columns:
+        df["meteo_temp_min"] = df["meteo_temp_min"].fillna(df["temp_low_c"])
+    
+    # For other meteo columns, use forward fill then 0
+    cols_to_ffill = ["meteo_wind_max", "meteo_weather_code"]
+    for col in cols_to_ffill:
+        if col in df.columns:
+            df[col] = df[col].ffill().fillna(0)
+
     numeric_fill_cols: Iterable[str] = [
         "aqi_value",
         "wind_level",
@@ -262,6 +326,15 @@ def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Path, metadata
 
     df = build_calendar_features(df)
     df = add_lag_features(df)
+    
+    # DEBUG: Print columns with NaN values in the last 15 rows before dropna
+    last_rows = df.tail(15)
+    nan_cols = last_rows.columns[last_rows.isna().any()].tolist()
+    if nan_cols:
+        print("\n[DEBUG] Columns with NaN in last 15 rows:", nan_cols)
+        print("[DEBUG] NaN counts in last 15 rows:\n", last_rows[nan_cols].isna().sum())
+        print("[DEBUG] First row of last 15 rows:\n", last_rows.iloc[0])
+
     df = df.dropna().reset_index(drop=True)
 
     # English-only processed dataset.
@@ -308,6 +381,12 @@ def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Path, metadata
         "tourism_num_rolling_std_7",
         "tourism_num_rolling_mean_14",
     ]
+    
+    # Ensure all columns exist before selecting
+    for col in processed_cols:
+        if col not in df.columns:
+            df[col] = 0
+
     out_df = df[processed_cols].copy()
     out_df["date"] = out_df["date"].dt.strftime("%Y-%m-%d")
     output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -327,12 +406,35 @@ def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Path, metadata
     print(f"preprocess done: {output_csv} ({len(out_df)} rows)")
 
 
+def get_latest_raw_csv(raw_dir: Path) -> Path:
+    """Helper to find the latest raw CSV file, preferring those starting with 'jiuzhaigou_raw_'."""
+    if not raw_dir.exists():
+        raise FileNotFoundError(f"Directory not found: {raw_dir}")
+        
+    files = list(raw_dir.glob("*.csv"))
+    # Prefer files starting with jiuzhaigou_raw_
+    raw_files = [f for f in files if f.name.startswith("jiuzhaigou_raw_")]
+    
+    if raw_files:
+        return max(raw_files, key=os.path.getmtime)
+    
+    # Fallback to any csv except known intermediate files if possible
+    valid_files = [f for f in files if "latest" not in f.name]
+    if valid_files:
+        return max(valid_files, key=os.path.getmtime)
+        
+    if files:
+        return max(files, key=os.path.getmtime)
+        
+    raise FileNotFoundError(f"No CSV files found in {raw_dir}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preprocess Jiuzhaigou dataset for LSTM.")
     parser.add_argument(
         "--input-csv",
-        default="data/raw/jiuzhaigou_tourism_weather_2024_2026_latest.csv",
-        help="Path to merged raw csv.",
+        default=None,
+        help="Path to merged raw csv. If not provided, auto-detects latest in data/raw.",
     )
     parser.add_argument(
         "--raw-output-csv",
@@ -341,8 +443,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-csv",
-        default="data/processed/jiuzhaigou_daily_features.csv",
-        help="Path to processed feature csv.",
+        default=None,
+        help="Path to processed feature csv. If not provided, will be auto-generated based on date range.",
     )
     parser.add_argument(
         "--metadata-json",
@@ -353,10 +455,25 @@ def main() -> None:
     parser.add_argument("--longitude", type=float, default=103.918, help="Jiuzhaigou longitude.")
     args = parser.parse_args()
 
+    # Handle input_csv logic
+    if args.input_csv:
+        input_csv_path = Path(args.input_csv)
+    else:
+        # Auto-detect latest raw csv
+        project_root = Path(__file__).resolve().parents[2]
+        raw_dir = project_root / "data" / "raw"
+        try:
+            input_csv_path = get_latest_raw_csv(raw_dir)
+            print(f"Auto-detected latest input CSV: {input_csv_path}")
+        except FileNotFoundError:
+            # Fallback default
+            input_csv_path = Path("data/raw/jiuzhaigou_tourism_weather_2024_2026_latest.csv")
+            print(f"Warning: Could not auto-detect raw csv, using default: {input_csv_path}")
+
     preprocess(
-        input_csv=Path(args.input_csv),
+        input_csv=input_csv_path,
         raw_output_csv=Path(args.raw_output_csv),
-        output_csv=Path(args.output_csv),
+        output_csv=Path(args.output_csv) if args.output_csv else None,
         metadata_json=Path(args.metadata_json),
         latitude=args.latitude,
         longitude=args.longitude,

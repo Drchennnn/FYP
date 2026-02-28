@@ -1,7 +1,0 @@
-pandas>=2.0.0
-numpy>=1.26.0,<2.0
-matplotlib>=3.8.0
-scikit-learn>=1.4.0
-tensorflow-cpu==2.16.2
-chinese-calendar>=1.11.0
-requests>=2.31.0

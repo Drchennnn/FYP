@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>九寨沟智慧景区客流预测系统</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --primary-color: #00f2ff;
+            --secondary-color: #ff9d00;
+            --bg-color: #0a0e17;
+            --panel-bg: #111927;
+            --border-color: #1f2d40;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: #e0e6ed;
+            font-family: 'Noto Sans SC', sans-serif;
+            overflow-x: hidden;
+        }
+
+        /* 顶部导航栏 */
+        .navbar {
+            background-color: rgba(10, 14, 23, 0.95);
+            border-bottom: 1px solid var(--border-color);
+            backdrop-filter: blur(10px);
+            padding: 1rem 2rem;
+        }
+
+        .navbar-brand {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary-color) !important;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .navbar-brand i {
+            font-size: 1.8rem;
+        }
+
+        .system-status {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.9rem;
+            color: #4ade80;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #4ade80;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #4ade80;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.5); opacity: 0.5; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        /* 主容器 */
+        .main-container {
+            height: calc(100vh - 76px);
+            display: flex;
+            flex-direction: column;
+            padding: 1.5rem;
+            gap: 1.5rem;
+        }
+
+        /* 图表容器 */
+        .chart-panel {
+            flex: 1;
+            background-color: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            position: relative;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        }
+
+        .panel-title {
+            position: absolute;
+            top: 15px;
+            left: 20px;
+            font-size: 1.1rem;
+            color: #94a3b8;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        #trafficChart {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* 控制面板 */
+        .control-panel {
+            height: 80px;
+            background-color: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 0 2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .form-control {
+            background-color: #0f1623;
+            border: 1px solid var(--border-color);
+            color: #fff;
+            width: 200px;
+        }
+
+        .form-control:focus {
+            background-color: #0f1623;
+            border-color: var(--primary-color);
+            color: #fff;
+            box-shadow: 0 0 0 0.25rem rgba(0, 242, 255, 0.15);
+        }
+
+        .btn-predict {
+            background: linear-gradient(135deg, var(--secondary-color), #ff6b00);
+            border: none;
+            color: white;
+            padding: 0.6rem 2rem;
+            font-weight: 600;
+            border-radius: 6px;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-predict:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(255, 157, 0, 0.4);
+        }
+
+        .btn-predict:active {
+            transform: translateY(0);
+        }
+
+        /* 加载动画覆盖层 */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            z-index: 9999;
+            display: none;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+
+        .spinner-tech {
+            width: 60px;
+            height: 60px;
+            border: 3px solid transparent;
+            border-top-color: var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+        }
+        
+        .spinner-tech:before {
+            content: "";
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            right: 5px;
+            bottom: 5px;
+            border-radius: 50%;
+            border: 3px solid transparent;
+            border-top-color: var(--secondary-color);
+            animation: spin 2s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* 统计卡片 */
+        .stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px 20px;
+            border-radius: 8px;
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .stat-value {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: #fff;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-chart-network"></i>
+                <i class="fas fa-brain"></i>
+                <span data-i18n="nav_title">基于 LSTM 的九寨沟景区客流动态预测系统</span>
+            </a>
+            <div class="d-flex align-items-center gap-4">
+                <button class="btn btn-outline-light btn-sm" id="langSwitch" onclick="toggleLanguage()">
+                    <i class="fas fa-globe me-1"></i> EN
+                </button>
+                <div class="system-status">
+                    <div class="status-dot"></div>
+                    <span data-i18n="system_status">SYSTEM ONLINE</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主体内容 -->
+    <div class="main-container">
+        <!-- 图表区域 -->
+        <div class="chart-panel">
+            <div class="panel-title">
+                <i class="fas fa-chart-line"></i>
+                <span data-i18n="chart_title">实时客流监测与趋势预测</span>
+            </div>
+            <div id="trafficChart"></div>
+        </div>
+
+        <!-- 控制面板 -->
+        <div class="control-panel">
+            <div class="d-flex gap-4">
+                <div class="stat-card">
+                    <div class="stat-value" id="lastDate">--</div>
+                    <div class="stat-label" data-i18n="stat_last_date">最新数据日期</div>
+                </div>
+                <div class="stat-card" style="border-color: var(--secondary-color)">
+                    <div class="stat-value" id="lastValue">--</div>
+                    <div class="stat-label" data-i18n="stat_last_pred">最新预测客流</div>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <div class="btn-group me-3" role="group">
+                    <button type="button" class="btn btn-outline-info" onclick="setPredictDays(1)" data-i18n="btn_1day">1天</button>
+                    <button type="button" class="btn btn-outline-info" onclick="setPredictDays(3)" data-i18n="btn_3days">3天</button>
+                    <button type="button" class="btn btn-outline-info" onclick="setPredictDays(7)" data-i18n="btn_7days">7天</button>
+                </div>
+                <label for="predictDate" class="text-white-50" data-i18n="label_or_date">或指定日期：</label>
+                <input type="date" id="predictDate" class="form-control">
+                <button class="btn btn-predict" onclick="runPrediction()">
+                    <i class="fas fa-bolt"></i> <span data-i18n="btn_run">立即运算</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 加载动画 -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner-tech"></div>
+        <div class="text-white mt-3" style="letter-spacing: 2px;">AI MODEL COMPUTING...</div>
+    </div>
+
+    <!-- 结果模态框 -->
+    <div class="modal fade" id="resultModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content" style="background-color: var(--panel-bg); border: 1px solid var(--border-color);">
+                <div class="modal-header border-bottom-0">
+                    <h5 class="modal-title text-white"><i class="fas fa-check-circle text-success me-2"></i><span data-i18n="modal_title">预测完成</span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body text-center py-4">
+                    <h6 class="text-white-50 mb-3" id="modalDate">2026-02-14</h6>
+                    <div class="display-4 fw-bold" style="color: var(--secondary-color);" id="modalValue">
+                        23,500
+                    </div>
+                    <div class="text-white-50 mt-2" data-i18n="modal_desc">预计游客人次</div>
+                </div>
+                <div class="modal-footer border-top-0 justify-content-center">
+                    <button type="button" class="btn btn-outline-light px-4" data-bs-dismiss="modal" data-i18n="btn_close">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 脚本引入 -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
