@@ -208,11 +208,131 @@ def build_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_lag_features(df: pd.DataFrame, target_col: str = "tourism_num") -> pd.DataFrame:
+    """添加滞后特征和滚动统计特征
+    
+    包括：
+    - 滞后特征：lag_1, lag_7, lag_14, lag_28
+    - 滚动统计：7天均值、标准差，14天均值
+    - 标准化滞后特征：tourism_num_lag_7_scaled（使用前向填充处理缺失值）
+    
+    Args:
+        df: 输入DataFrame
+        target_col: 目标列名
+        
+    Returns:
+        添加了特征的DataFrame
+    """
+    # 原始滞后特征
     for lag in (1, 7, 14, 28):
         df[f"{target_col}_lag_{lag}"] = df[target_col].shift(lag)
+    
+    # 滚动统计特征
     df[f"{target_col}_rolling_mean_7"] = df[target_col].rolling(7).mean()
     df[f"{target_col}_rolling_std_7"] = df[target_col].rolling(7).std()
     df[f"{target_col}_rolling_mean_14"] = df[target_col].rolling(14).mean()
+    
+    # 新增：标准化滞后7天特征（处理缺失值）
+    # 使用前向填充处理前7天的缺失值
+    lag_7_col = f"{target_col}_lag_7"
+    if lag_7_col in df.columns:
+        # 先填充缺失值（前7天用第一个有效值填充）
+        df[lag_7_col] = df[lag_7_col].fillna(method='ffill')
+        # 如果开头还有NaN（比如整个序列开头），用0填充
+        df[lag_7_col] = df[lag_7_col].fillna(0)
+        
+        # 计算标准化版本
+        # 使用Min-Max标准化到[0, 1]范围
+        lag_min = df[lag_7_col].min()
+        lag_max = df[lag_7_col].max()
+        if lag_max > lag_min:  # 避免除零
+            df[f"{target_col}_lag_7_scaled"] = (df[lag_7_col] - lag_min) / (lag_max - lag_min)
+        else:
+            df[f"{target_col}_lag_7_scaled"] = 0.0
+    
+    return df
+
+
+def add_meteorological_features(df: pd.DataFrame) -> pd.DataFrame:
+    """添加标准化气象特征
+    
+    包括：
+    - meteo_precip_sum_scaled: 标准化降水量
+    - temp_high_scaled: 标准化最高温度
+    - temp_low_scaled: 标准化最低温度
+    
+    使用Min-Max标准化到[0, 1]范围
+    
+    Args:
+        df: 输入DataFrame
+        
+    Returns:
+        添加了标准化气象特征的DataFrame
+    """
+    # 检查并准备气象数据列
+    meteo_cols = {}
+    
+    # 降水量：优先使用meteo_precip_sum，否则使用0
+    if "meteo_precip_sum" in df.columns:
+        meteo_cols["precip"] = "meteo_precip_sum"
+    else:
+        # 如果没有降水量数据，创建全0列
+        df["meteo_precip_sum"] = 0.0
+        meteo_cols["precip"] = "meteo_precip_sum"
+    
+    # 最高温度：优先使用meteo_temp_max，否则使用temp_high_c
+    if "meteo_temp_max" in df.columns:
+        meteo_cols["temp_high"] = "meteo_temp_max"
+    elif "temp_high_c" in df.columns:
+        meteo_cols["temp_high"] = "temp_high_c"
+    else:
+        # 如果没有温度数据，创建默认值（九寨沟平均高温约15°C）
+        df["temp_high_default"] = 15.0
+        meteo_cols["temp_high"] = "temp_high_default"
+    
+    # 最低温度：优先使用meteo_temp_min，否则使用temp_low_c
+    if "meteo_temp_min" in df.columns:
+        meteo_cols["temp_low"] = "meteo_temp_min"
+    elif "temp_low_c" in df.columns:
+        meteo_cols["temp_low"] = "temp_low_c"
+    else:
+        # 如果没有温度数据，创建默认值（九寨沟平均低温约5°C）
+        df["temp_low_default"] = 5.0
+        meteo_cols["temp_low"] = "temp_low_default"
+    
+    # 标准化处理
+    for feature_type, col_name in meteo_cols.items():
+        if col_name in df.columns:
+            # 确保是数值类型
+            df[col_name] = pd.to_numeric(df[col_name], errors="coerce").fillna(0)
+            
+            # Min-Max标准化
+            col_min = df[col_name].min()
+            col_max = df[col_name].max()
+            
+            if col_max > col_min:  # 避免除零
+                if feature_type == "precip":
+                    df["meteo_precip_sum_scaled"] = (df[col_name] - col_min) / (col_max - col_min)
+                elif feature_type == "temp_high":
+                    df["temp_high_scaled"] = (df[col_name] - col_min) / (col_max - col_min)
+                elif feature_type == "temp_low":
+                    df["temp_low_scaled"] = (df[col_name] - col_min) / (col_max - col_min)
+            else:
+                # 如果所有值都相同，标准化为0.5
+                if feature_type == "precip":
+                    df["meteo_precip_sum_scaled"] = 0.5
+                elif feature_type == "temp_high":
+                    df["temp_high_scaled"] = 0.5
+                elif feature_type == "temp_low":
+                    df["temp_low_scaled"] = 0.5
+    
+    # 确保所有标准化列都存在
+    if "meteo_precip_sum_scaled" not in df.columns:
+        df["meteo_precip_sum_scaled"] = 0.5
+    if "temp_high_scaled" not in df.columns:
+        df["temp_high_scaled"] = 0.5
+    if "temp_low_scaled" not in df.columns:
+        df["temp_low_scaled"] = 0.5
+    
     return df
 
 
@@ -326,6 +446,7 @@ def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Optional[Path]
 
     df = build_calendar_features(df)
     df = add_lag_features(df)
+    df = add_meteorological_features(df)
     
     # DEBUG: Print columns with NaN values in the last 15 rows before dropna
     last_rows = df.tail(15)
@@ -380,6 +501,11 @@ def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Optional[Path]
         "tourism_num_rolling_mean_7",
         "tourism_num_rolling_std_7",
         "tourism_num_rolling_mean_14",
+        # 新增标准化特征（共8个新特征）
+        "tourism_num_lag_7_scaled",    # 标准化滞后7天客流
+        "meteo_precip_sum_scaled",     # 标准化降水量
+        "temp_high_scaled",            # 标准化最高温度
+        "temp_low_scaled",             # 标准化最低温度
     ]
     
     # Ensure all columns exist before selecting
@@ -453,7 +579,7 @@ def main() -> None:
     )
     parser.add_argument("--latitude", type=float, default=33.252, help="Jiuzhaigou latitude.")
     parser.add_argument("--longitude", type=float, default=103.918, help="Jiuzhaigou longitude.")
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     # Handle input_csv logic
     if args.input_csv:

@@ -1,7 +1,7 @@
 {
-  "input_csv": "D:\\vscode\\FYP\\data\\raw\\jiuzhaigou_raw_2024-01-01_2026-02-26.csv",
+  "input_csv": "data\\raw\\jiuzhaigou_raw_2024-01-01_2026-02-26.csv",
   "raw_output_csv": "data\\raw\\jiuzhaigou_tourism_weather_2024_2026_latest.csv",
-  "output_csv": "D:\\vscode\\FYP\\data\\processed\\jiuzhaigou_daily_features_2024-01-01_2026-02-26.csv",
+  "output_csv": "data\\processed\\jiuzhaigou_8features_latest.csv",
   "rows": 699,
   "columns": [
     "date",
@@ -44,7 +44,11 @@
     "tourism_num_lag_28",
     "tourism_num_rolling_mean_7",
     "tourism_num_rolling_std_7",
-    "tourism_num_rolling_mean_14"
+    "tourism_num_rolling_mean_14",
+    "tourism_num_lag_7_scaled",
+    "meteo_precip_sum_scaled",
+    "temp_high_scaled",
+    "temp_low_scaled"
   ],
   "weather_id_map": {
     "CLD": 0,

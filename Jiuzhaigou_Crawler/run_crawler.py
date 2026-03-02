@@ -17,7 +17,7 @@ def main():
     # 先不设默认值，后面根据解析结果动态生成
     parser.add_argument("--output", default=None, help="Output CSV path")
     parser.add_argument("--max-pages", type=int, default=10, help="Max pages for tourism crawler")
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     # 动态生成默认输出路径
     if args.output is None:

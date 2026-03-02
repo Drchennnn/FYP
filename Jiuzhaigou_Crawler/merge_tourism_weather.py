@@ -171,7 +171,7 @@ def main() -> None:
     parser.add_argument("--fill-missing-weather", action="store_true")
     parser.add_argument("--latitude", type=float, default=33.252)
     parser.add_argument("--longitude", type=float, default=103.918)
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     start_date = parse_iso_date(args.start_date)
     end_date = parse_iso_date(args.end_date)

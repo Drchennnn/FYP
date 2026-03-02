@@ -1,129 +1,256 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-流水线入口：通用预处理 + LSTM 训练。
+中央调度流水线 - 九寨沟景区客流动态预测系统
 
-流程：
-1. 预处理 (Preprocess): 读取 data/raw 下最新的爬虫数据 -> 生成 data/processed/jiuzhaigou_daily_features.csv (包含特征工程)
-2. 训练 (Train): 读取 data/processed 下的数据 -> 训练 LSTM 模型 -> 输出模型和评估结果
+统一管理所有模型的训练、评估和可视化流程
+支持命令行参数选择模型和特征版本
+严格规范输出路径和可视化标准
 """
-
-from __future__ import annotations
 
 import argparse
-import glob
+import datetime
 import os
-import subprocess
 import sys
 from pathlib import Path
+import tensorflow as tf
 
-def get_latest_data_file(data_dir: Path) -> Path:
-    """获取指定目录下最新的 .csv 文件，优先选择 jiuzhaigou_raw_ 开头的文件"""
-    # Exclude known output files to prevent loop
-    files = list(data_dir.glob("*.csv"))
+# ==================== 常量配置 ====================
+SUPPORTED_MODELS = ["lstm", "gru", "seq2seq_attention"]
+SUPPORTED_FEATURES = [4, 8]
+BASE_OUTPUT_DIR = Path("E:/openclaw/my_project/workspace/FYP/output/runs")
+ROOT_DIR = Path(__file__).resolve().parent
+
+def get_timestamp() -> str:
+    """生成时间戳格式：YYYYMMDD_HHMMSS"""
+    return datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def create_output_dir(model: str, features: int) -> Path:
+    """创建规范化的输出目录结构"""
+    timestamp = get_timestamp()
+    if model == "seq2seq_attention":
+        run_name = f"{model}_8features_{timestamp}"
+    else:
+        run_name = f"{model}_{features}features_{timestamp}"
     
-    # Filter out the intermediate output file if others exist
-    raw_files = [f for f in files if f.name.startswith("jiuzhaigou_raw_")]
+    output_dir = BASE_OUTPUT_DIR / run_name
+    figures_dir = output_dir / "figures"
+    weights_dir = output_dir / "weights"
     
-    if raw_files:
-        # If we have files matching the raw pattern, use the latest of those
-        return max(raw_files, key=os.path.getmtime)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    weights_dir.mkdir(parents=True, exist_ok=True)
     
-    # Fallback to any csv if no specific raw pattern found
-    valid_files = [f for f in files if f.name != "jiuzhaigou_tourism_weather_2024_2026_latest.csv"]
-    if valid_files:
-        return max(valid_files, key=os.path.getmtime)
-        
-    if not files:
-        raise FileNotFoundError(f"No CSV files found in {data_dir}")
-        
-    return max(files, key=os.path.getmtime)
+    print(f"Output directory created: {output_dir}")
+    return output_dir, figures_dir, weights_dir
 
-def run_step(cmd: list[str]) -> None:
-    print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        raise SystemExit(result.returncode)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="运行预处理 + LSTM 训练。")
-    parser.add_argument("--skip-preprocess", action="store_true")
-    parser.add_argument("--skip-train", action="store_true")
-    parser.add_argument("--epochs", type=int, default=120)
-    parser.add_argument("--lookback", type=int, default=30)
-    parser.add_argument("--output-dir", default="output")
-    parser.add_argument("--model-dir", default="model")
-    parser.add_argument("--run-name", default=None)
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description="九寨沟景区客流动态预测系统 - 中央调度流水线",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+支持的模型白名单:
+  - lstm: LSTM模型（支持4特征和8特征）
+  - gru: GRU模型（支持4特征和8特征）  
+  - seq2seq_attention: Seq2Seq+Attention模型（仅支持8特征）
+  
+示例用法:
+  python run_pipeline.py --model lstm --features 8
+  python run_pipeline.py --model gru --features 4
+  python run_pipeline.py --model seq2seq_attention
+        """.strip()
+    )
+    
+    parser.add_argument(
+        "--model", 
+        required=True,
+        choices=SUPPORTED_MODELS,
+        help="选择要训练的模型类型"
+    )
+    
+    parser.add_argument(
+        "--features",
+        type=int,
+        choices=SUPPORTED_FEATURES,
+        default=8,
+        help="选择特征版本（默认为8）"
+    )
+    
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=120,
+        help="训练轮数（默认120）"
+    )
+    
+    parser.add_argument(
+        "--look-back",
+        type=int,
+        default=30,
+        help="lookback窗口大小（默认30）"
+    )
+    
     parser.add_argument(
         "--save-plots",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="是否生成可视化图，默认 True。",
+        help="是否保存可视化图表（默认True）"
     )
-    args = parser.parse_args()
+    
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否显示详细日志（默认True）"
+    )
+    
+    return parser.parse_args()
 
-    python_bin = sys.executable
-    root = Path(__file__).resolve().parent
+def run_lstm(
+    features: int,
+    epochs: int,
+    look_back: int,
+    output_dir: Path,
+    figures_dir: Path,
+    weights_dir: Path,
+    save_plots: bool
+) -> None:
+    """运行LSTM模型"""
+    print("Running LSTM model...")
+    
+    # 直接运行训练脚本（使用命令行调用）
+    import subprocess
+    
+    cmd = [
+        sys.executable,
+        f"models/lstm/train_lstm_{features}features.py",
+        "--input-csv", f"data/processed/jiuzhaigou_{features}features_latest.csv",
+        "--epochs", str(epochs),
+        "--look-back", str(look_back),
+        "--save-plots" if save_plots else "--no-save-plots",
+        "--output-dir", str(output_dir),
+        "--model-dir", str(ROOT_DIR / "model"),
+        "--run-name", f"run_{get_timestamp()}_lb{look_back}_ep{epochs}_lstm_{features}features"
+    ]
+    
+    subprocess.run(cmd, check=True)
 
-    if not args.skip_preprocess:
-        # 自动查找 data/raw 下最新的爬虫文件
-        raw_dir = root / "data" / "raw"
-        processed_dir = root / "data" / "processed"
+def run_gru(
+    features: int,
+    epochs: int,
+    look_back: int,
+    output_dir: Path,
+    figures_dir: Path,
+    weights_dir: Path,
+    save_plots: bool
+) -> None:
+    """运行GRU模型"""
+    print("Running GRU model...")
+    
+    # 直接运行训练脚本（使用命令行调用）
+    import subprocess
+    
+    cmd = [
+        sys.executable,
+        f"models/gru/train_gru_{features}features.py",
+        "--input-csv", f"data/processed/jiuzhaigou_{features}features_latest.csv",
+        "--epochs", str(epochs),
+        "--look-back", str(look_back),
+        "--save-plots" if save_plots else "--no-save-plots",
+        "--output-dir", str(output_dir),
+        "--model-dir", str(ROOT_DIR / "model"),
+        "--run-name", f"run_{get_timestamp()}_lb{look_back}_ep{epochs}_gru_{features}features"
+    ]
+    
+    subprocess.run(cmd, check=True)
+
+def run_seq2seq_attention(
+    epochs: int,
+    look_back: int,
+    output_dir: Path,
+    figures_dir: Path,
+    weights_dir: Path,
+    save_plots: bool
+) -> None:
+    """运行Seq2Seq+Attention模型（仅支持8特征）
+    
+    ⚠️ 关键：必须进行维度适配处理
+    """
+    print("Running Seq2Seq+Attention model...")
+    
+    # 直接运行训练脚本（使用命令行调用）
+    import subprocess
+    
+    cmd = [
+        sys.executable,
+        "models/lstm/train_seq2seq_attention_8features.py",
+        "--input-csv", "data/processed/jiuzhaigou_8features_latest.csv",
+        "--epochs", str(epochs),
+        "--look-back", str(look_back),
+        "--save-plots" if save_plots else "--no-save-plots",
+        "--output-dir", str(output_dir),
+        "--model-dir", str(ROOT_DIR / "model"),
+        "--run-name", f"run_{get_timestamp()}_lb{look_back}_ep{epochs}_seq2seq_attention_8features"
+    ]
+    
+    subprocess.run(cmd, check=True)
+
+def main():
+    """主函数"""
+    args = parse_args()
+    
+    # 验证参数
+    if args.model == "seq2seq_attention" and args.features != 8:
+        print("Warning: Seq2Seq+Attention model only supports 8 features, automatically set to 8")
+        args.features = 8
+    
+    # 创建输出目录
+    output_dir, figures_dir, weights_dir = create_output_dir(
+        args.model, 
+        args.features
+    )
+    
+    # 根据模型类型运行训练
+    try:
+        if args.model == "lstm":
+            run_lstm(
+                args.features,
+                args.epochs,
+                args.look_back,
+                output_dir,
+                figures_dir,
+                weights_dir,
+                args.save_plots
+            )
+        elif args.model == "gru":
+            run_gru(
+                args.features,
+                args.epochs,
+                args.look_back,
+                output_dir,
+                figures_dir,
+                weights_dir,
+                args.save_plots
+            )
+        elif args.model == "seq2seq_attention":
+            run_seq2seq_attention(
+                args.epochs,
+                args.look_back,
+                output_dir,
+                figures_dir,
+                weights_dir,
+                args.save_plots
+            )
+            
+        print("\nTraining completed!")
+        print(f"Output directory: {output_dir}")
         
-        try:
-            latest_raw = get_latest_data_file(raw_dir)
-            print(f"Using latest raw data for preprocessing: {latest_raw}")
-            
-            # 构造对应的 processed 文件名
-            # 从 jiuzhaigou_raw_2024-01-01_2026-02-26.csv 提取日期
-            raw_filename = latest_raw.name
-            if raw_filename.startswith("jiuzhaigou_raw_"):
-                date_part = raw_filename.replace("jiuzhaigou_raw_", "").replace(".csv", "")
-                processed_filename = f"jiuzhaigou_daily_features_{date_part}.csv"
-            else:
-                processed_filename = f"jiuzhaigou_daily_features_latest.csv"
-            
-            processed_output = processed_dir / processed_filename
-            
-            # 调用预处理脚本
-            run_step([
-                python_bin, 
-                str(root / "models" / "common" / "preprocess.py"),
-                "--input-csv", str(latest_raw),
-                "--output-csv", str(processed_output)
-            ])
-        except FileNotFoundError:
-            print("Warning: No raw data found in data/raw, running preprocess with default.")
-            run_step([python_bin, str(root / "models" / "common" / "preprocess.py")])
-
-    if not args.skip_train:
-        # 获取最新的 processed 数据
-        data_processed_dir = root / "data" / "processed"
-        try:
-            latest_input = get_latest_data_file(data_processed_dir)
-            print(f"Using latest training data: {latest_input}")
-        except FileNotFoundError:
-            print(f"Warning: No processed data found in {data_processed_dir}, using default.")
-            latest_input = root / "data" / "processed" / "jiuzhaigou_daily_features.csv"
-
-        train_cmd = [
-            python_bin,
-            str(root / "models" / "lstm" / "train_lstm.py"),
-            "--input-csv",
-            str(latest_input),
-            "--epochs",
-            str(args.epochs),
-            "--look-back",
-            str(args.lookback),
-            "--output-dir",
-            str(root / args.output_dir),
-            "--model-dir",
-            str(root / args.model_dir),
-        ]
-        if args.run_name:
-            train_cmd.extend(["--run-name", args.run_name])
-        train_cmd.append("--save-plots" if args.save_plots else "--no-save-plots")
-        run_step(train_cmd)
-
+    except Exception as e:
+        print(f"\nError: {e}")
+        return 1
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

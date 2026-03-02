@@ -1,0 +1,25 @@
+# 1. 缓存与 Python 编译文件
+__pycache__/
+*.pyc
+.DS_Store
+
+# 2. 本地数据库与大文件
+*.db
+*.sqlite3
+
+# 3. 训练输出与大容量数据
+output/
+data/raw/
+data/processed/
+
+# 4. IDE 与 Agent 私有配置（严格屏蔽）
+.vscode/
+.openclaw/
+memory/
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
+test_serialization_no_default.json

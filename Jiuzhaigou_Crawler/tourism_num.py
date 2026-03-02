@@ -94,7 +94,7 @@ def main() -> None:
     parser.add_argument("--sleep-max", type=float, default=1.5, help="Maximum sleep seconds.")
     parser.add_argument("--start-date", default=None, help="Filter start date (YYYY-MM-DD).")
     parser.add_argument("--end-date", default=None, help="Filter end date (YYYY-MM-DD).")
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     start_date = parse_iso_date(args.start_date)
     end_date = parse_iso_date(args.end_date)

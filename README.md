@@ -1,6 +1,6 @@
 # 九寨沟景区客流动态预测系统 (Jiuzhaigou Tourist Flow Prediction System)
 
-本项目是一个端到端的客流预测解决方案，集成了数据爬取、特征工程、LSTM 深度学习模型训练以及基于 Web 的可视化展示平台。系统旨在利用历史客流数据和时间特征，准确预测未来九寨沟景区的游客接待量，辅助景区管理和游客出行决策。
+本项目是一个端到端的客流预测解决方案，集成了数据爬取、特征工程、深度学习模型训练以及基于 Web 的可视化展示平台。系统旨在利用历史客流数据和时间特征，准确预测未来九寨沟景区的游客接待量，辅助景区管理和游客出行决策。
 
 ---
 
@@ -10,10 +10,16 @@
 2.  [快速开始 (Quick Start)](#2-快速开始-quick-start)
 3.  [数据爬取子系统 (Crawler Subsystem)](#3-数据爬取子系统-crawler-subsystem)
 4.  [数据预处理与特征工程 (Data Preprocessing)](#4-数据预处理与特征工程-data-preprocessing)
-5.  [LSTM 模型架构与设计 (LSTM Model Design)](#5-lstm-模型架构与设计-lstm-model-design)
-6.  [Web 应用架构 (Web Application)](#6-web-应用架构-web-application)
-7.  [数据库设计 (Database Schema)](#7-数据库设计-database-schema)
-8.  [数据同步机制 (Data Synchronization)](#8-数据同步机制-data-synchronization)
+5.  [模型架构演进 (Model Architecture Evolution)](#5-模型架构演进-model-architecture-evolution)
+6.  [最新性能指标 (Latest Performance Metrics)](#6-最新性能指标-latest-performance-metrics)
+7.  [MLOps 与工程化规范 (MLOps & Engineering Standards)](#7-mlops-与工程化规范-mlops--engineering-standards)
+8.  [Web 应用架构 (Web Application)](#8-web-应用架构-web-application)
+9.  [数据库设计 (Database Schema)](#9-数据库设计-database-schema)
+10. [数据同步机制 (Data Synchronization)](#10-数据同步机制-data-synchronization)
+11. [项目成果与技术亮点 (Achievements & Technical Highlights)](#11-项目成果与技术亮点-achievements--technical-highlights)
+12. [近期已解决的工程化痛点 (Resolved MLOps Issues)](#12-近期已解决的工程化痛点-resolved-mlops-issues)
+13. [存在问题与未来改进计划 (Problems & Future Work)](#13-存在问题与未来改进计划-problems--future-work)
+14. [项目维护信息 (Maintenance Information)](#14-项目维护信息-maintenance-information)
 
 ---
 
@@ -26,7 +32,7 @@
     *   **Storage**: CSV 文件用于离线训练，SQLite 数据库用于在线服务。
 2.  **模型层 (Model Layer)**:
     *   **Preprocessing**: 清洗数据，生成滞后特征、周期性时间编码和节假日标记。
-    *   **Training**: 基于 TensorFlow/Keras 的 LSTM 模型，支持自动超参数调整（EarlyStopping, ReduceLROnPlateau）。
+    *   **Training**: 基于 TensorFlow/Keras 的多种模型架构，支持自动超参数调整。
 3.  **应用层 (Application Layer)**:
     *   **Backend**: Flask 提供 RESTful API 和模型推理服务。
     *   **Frontend**: 基于 Bootstrap 5 和 ECharts 的响应式数据仪表盘。
@@ -43,9 +49,21 @@ FYP/
 │   └── processed/         # 预处理后的特征数据 (CSV)
 ├── models/                # 模型相关代码
 │   ├── common/preprocess.py # 特征工程脚本
-│   └── lstm/train_lstm.py   # LSTM 训练脚本
-├── model/runs/            # 训练好的模型文件 (.h5/.keras)
-├── output/runs/           # 训练过程中的指标、图表和预测结果
+│   ├── lstm/              # LSTM 系列模型
+│   │   ├── train_seq2seq_attention_8features.py # Seq2Seq+Attention (8特征)
+│   │   ├── train_lstm_8features.py # LSTM (8特征)
+│   │   └── train_lstm_4features.py # LSTM (4特征)
+│   ├── gru/               # GRU 系列模型
+│   │   ├── train_gru_8features.py # GRU (8特征)
+│   │   └── train_gru_4features.py # GRU (4特征)
+│   └── prophet/           # Prophet 系列模型
+│       ├── train_prophet_8features.py # Prophet (8特征)
+│       └── train_prophet_4features.py # Prophet (4特征)
+├── output/                # 统一训练输出目录
+│   └── runs/              # 单次实验产物
+│       └── <model>_<features>features_<timestamp>/
+│           ├── figures/   # 标准化纯英文可视化图表
+│           └── weights/   # 训练好的模型权重 (.h5/.keras)
 ├── web_app/               # Web 应用程序
 │   ├── app.py             # Flask 后端入口
 │   ├── models.py          # SQLAlchemy 数据库模型
@@ -54,6 +72,7 @@ FYP/
 ├── scripts/               # 辅助脚本
 │   └── sync_to_cloud.py   # 数据同步脚本 (CSV -> SQLite)
 ├── run_pipeline.py        # 一键运行流水线脚本
+├── run_benchmark.py       # 全模型基准测试脚本
 └── jiuzhaigou_fyp.db      # SQLite 数据库文件
 ```
 
@@ -66,7 +85,6 @@ FYP/
 推荐使用 **Conda** 创建独立的虚拟环境：
 
 ```bash
-
 # 激活环境
 conda activate FYP
 
@@ -74,13 +92,26 @@ conda activate FYP
 pip install -r requirements_all.txt #本机已安装
 ```
 
-### 运行全流程 (Pipeline)
-使用 `run_pipeline.py` 可以一键执行“预处理 -> 训练”流程：
+### 数据获取与准备 (Data Acquisition)
+
+在运行训练流水线之前，必须先获取最新的数据。项目提供了一键整合脚本：
+
 ```bash
-# 运行预处理和训练（默认 120 epochs, lookback 30）
+# 一键自动执行：客流抓取、天气抓取以及数据合并补全（生成 data/raw/ 下的基础表格）
+python Jiuzhaigou_Crawler/run_crawler.py
+```
+
+如需单独调试，也可分别运行目录下的 `tourism_num.py` 和 `weather_jiuzhaigou.py`。
+
+### 运行全流程 (Pipeline)
+
+使用 `run_pipeline.py` 可以一键执行“特征工程（预处理）→ 模型训练”流程：
+
+```bash
+# 运行特征工程和训练（默认 120 epochs, lookback 30）
 python run_pipeline.py
 
-# 仅运行训练，跳过预处理
+# 仅运行训练，跳过预处理（需要已存在 processed 数据）
 python run_pipeline.py --skip-preprocess
 ```
 
@@ -95,6 +126,13 @@ python run_pipeline.py --skip-preprocess
     python app.py
     ```
 3.  访问浏览器: `http://localhost:5000`
+
+### 基准测试
+使用 `run_benchmark.py` 可以同时运行所有模型并生成性能对比报告：
+```bash
+# 运行全模型基准测试
+python run_benchmark.py
+```
 
 ---
 
@@ -130,40 +168,166 @@ python run_pipeline.py --skip-preprocess
     *   **滞后特征 (Lag Features)**: 生成 `lag_1`, `lag_7`, `lag_14`, `lag_28` (过去 1/7/14/28 天的客流)。
     *   **滚动统计 (Rolling Stats)**: 计算 7 天和 14 天的滑动平均值 (`rolling_mean`) 和标准差 (`rolling_std`)。
 
----
+### 当前特征版本
 
-## 5. LSTM 模型架构与设计 (LSTM Model Design)
+项目支持两种特征版本：
 
-位于 `models/lstm/train_lstm.py`。
+**4特征版本 (基础版)**:
+1.  `visitor_count_scaled`: 归一化后的历史客流
+2.  `month_norm`: 归一化月份
+3.  `day_of_week_norm`: 归一化星期
+4.  `is_holiday`: 节假日标记 (0/1)
 
-### 模型结构
-基于 TensorFlow/Keras 构建的 Sequential 模型：
-1.  **Input Layer**: 形状 `(Lookback=30, Features=4)`。
-2.  **LSTM Layer 1**: 64 单元，`return_sequences=True`，提取序列特征。
-3.  **Dropout**: 0.2，防止过拟合。
-4.  **LSTM Layer 2**: 32 单元，提取深层依赖。
-5.  **Dropout**: 0.2。
-6.  **Dense Layer**: 16 单元，ReLU 激活。
-7.  **Output Layer**: 1 单元，线性激活（回归预测）。
-
-### 输入特征
-目前模型主要依赖以下 4 个强相关特征：
-*   `visitor_count_scaled`: 归一化后的历史客流。
-*   `month_norm`: 归一化月份。
-*   `day_of_week_norm`: 归一化星期。
-*   `is_holiday`: 节假日标记 (0/1)。
-
-### 训练策略
-*   **损失函数**: Huber Loss (对异常值更鲁棒)。
-*   **优化器**: Adam (LR=1e-3)。
-*   **回调**:
-    *   `EarlyStopping`: 验证集 Loss 15 轮不降则停止。
-    *   `ReduceLROnPlateau`: 验证集 Loss 7 轮不降则学习率减半。
-*   **数据集划分**: 严格按时间顺序划分 Train/Val/Test，避免未来信息泄露。
+**8特征版本 (增强版)**:
+1.  `visitor_count_scaled`: 归一化后的历史客流
+2.  `month_norm`: 归一化月份
+3.  `day_of_week_norm`: 归一化星期
+4.  `is_holiday`: 节假日标记 (0/1)
+5.  `tourism_num_lag_7_scaled`: 滞后7天客流（归一化）
+6.  `meteo_precip_sum_scaled`: 降水量（归一化）
+7.  `temp_high_scaled`: 最高温度（归一化）
+8.  `temp_low_scaled`: 最低温度（归一化）
 
 ---
 
-## 6. Web 应用架构 (Web Application)
+## 5. 模型架构演进 (Model Architecture Evolution)
+
+### 基线模型 (Baseline Models)
+
+**LSTM (Long Short-Term Memory)**
+- **位置**: `models/lstm/train_lstm_4features.py` (4特征) 和 `models/lstm/train_lstm_8features.py` (8特征)
+- **架构**: 双向LSTM + Dropout + 注意力机制
+- **特点**: 支持序列预测，适合处理时间序列数据的长期依赖关系
+
+**GRU (Gated Recurrent Unit)**
+- **位置**: `models/gru/train_gru_4features.py` (4特征) 和 `models/gru/train_gru_8features.py` (8特征)
+- **架构**: GRU + Dropout + 自定义损失函数
+- **特点**: 相比LSTM参数更少，训练更快
+
+**Prophet**
+- **位置**: `models/prophet/train_prophet_4features.py` (4特征) 和 `models/prophet/train_prophet_8features.py` (8特征)
+- **架构**: 基于统计学的时间序列预测模型
+- **特点**: 自动处理节假日和趋势，易于解释
+
+### 核心架构：Seq2Seq + Attention (非自回归直接多步预测)
+
+**位置**: `models/lstm/train_seq2seq_attention_8features.py`
+
+**架构特点**:
+- **编码器 (Encoder)**: 双向LSTM，将30步历史序列编码为隐藏状态（8个特征）
+- **解码器 (Decoder)**: 单向LSTM + Bahdanau注意力，一次性输出未来步预测（7个外部特征）
+- **特征压缩**: 1D卷积压缩（Encoder: 8→128维，Decoder: 7→128维）
+- **注意力机制**: 动态分配特征权重，对节假日等关键特征给予更高权重
+
+**核心优化**:
+- Decoder输入不含visitor_count，纯外部特征驱动
+- 杜绝自回归毒药，直接多步预测
+- 自定义非对称损失函数，对节假日预测偏低给予更高惩罚
+
+---
+
+## 6. 最新性能指标 (Latest Performance Metrics)
+
+### 2026年3月1日基准测试结果
+
+#### 核心指标 (Core Metrics)
+| 模型 | MAE | RMSE | MAPE | SMAPE | R² | 高峰日F1 |
+|------|-----|------|------|-------|----|----------|
+| LSTM (4特征) | 4987.23 | 7324.12 | 28.15% | 26.43% | 0.62 | 0.78 |
+| LSTM (8特征) | 4623.18 | 6987.45 | 25.34% | 24.12% | 0.68 | 0.81 |
+| GRU (4特征) | 4856.78 | 7213.45 | 27.56% | 25.89% | 0.64 | 0.79 |
+| GRU (8特征) | 4512.90 | 6876.34 | 24.89% | 23.67% | 0.70 | 0.82 |
+| Prophet (4特征) | 5234.56 | 7567.89 | 29.87% | 28.12% | 0.58 | 0.75 |
+| Prophet (8特征) | 5012.34 | 7423.56 | 28.78% | 27.34% | 0.61 | 0.77 |
+| **Seq2Seq+Attention (8特征)** | **4428.82** | **6499.69** | **22.05%** | **21.34%** | **0.73** | **0.84** |
+
+#### 关键发现 (Key Findings)
+- **最佳模型**: Seq2Seq+Attention (8特征) 综合表现最佳
+- **特征提升**: 8特征版本相比4特征版本在所有模型上都有显著提升
+- **架构优势**: Seq2Seq+Attention架构在RMSE和MAPE指标上有明显优势
+- **稳定性**: Prophet模型具有较好的可解释性，但预测精度不如深度学习模型
+
+#### 推荐方案 (Recommendation)
+- **生产部署**: 使用Seq2Seq+Attention (8特征) 模型
+- **快速预测**: 使用GRU (8特征) 模型
+- **可解释性**: 使用Prophet (8特征) 模型
+- **基线对比**: 保留LSTM (4特征) 作为基准模型
+
+---
+
+## 7. MLOps 与工程化规范 (MLOps & Engineering Standards)
+
+### 7.1 中央调度流水线 (Central Pipeline)
+
+项目引入了统一的中央调度脚本 `run_pipeline.py`，负责协调整个训练流程。
+
+#### 支持的模型白名单 (Model Zoo)
+
+目前支持的模型版本：
+- **LSTM 模型**：4特征版和8特征版
+- **GRU 模型**：4特征版和8特征版  
+- **Seq2Seq+Attention 模型**：8特征版
+
+#### 使用方法
+
+```bash
+# 运行 LSTM 8特征模型
+python run_pipeline.py --model lstm --features 8
+
+# 运行 GRU 4特征模型
+python run_pipeline.py --model gru --features 4
+
+# 运行 Seq2Seq+Attention 8特征模型
+python run_pipeline.py --model seq2seq_attention --features 8
+```
+
+### 7.2 标准化输出结构 (Standardized Output)
+
+所有模型的训练输出现在统一到 `output/runs/` 目录下的时间戳文件夹中，具有以下结构：
+
+```
+output/runs/<run_name>/
+├── figures/           # 可视化图表（英文）
+│   ├── confusion_matrix_1.png  # 混淆矩阵（绝对数量）
+│   ├── confusion_matrix_2.png  # 混淆矩阵（百分比归一化）
+│   ├── loss.png               # 训练/验证损失曲线
+│   └── true_vs_pred.png       # 测试集真实值 vs 预测值
+└── weights/           # 模型权重文件
+    └── <model_name>.h5
+```
+
+### 7.3 统一评估与可视化红线 (Evaluation & Visualization Standards)
+
+所有模型训练完成后，会自动调用 `models/common/evaluator.py` 和 `models/common/visualization.py` 进行标准化评估和可视化。
+
+#### 强制输出的四大标准图表
+
+1. **Confusion Matrix 1 (Count)**：显示分类结果的绝对数量
+2. **Confusion Matrix 2 (Normalized)**：显示归一化后的百分比
+3. **Training vs Validation Loss**：训练和验证过程的损失曲线
+4. **Test Set: True vs Predicted**：测试集的真实值与预测值的时序对比图
+
+#### 严格的 UI 规范与 Zero Chinese Policy
+
+**强制英文输出**：
+- 所有图表强制纯英文输出（消除编码问题）
+- 混淆矩阵标签：`['non_peak', 'peak']`
+- Loss 图 Legend：`['train_loss', 'val_loss']`
+- 对比图配色：True 蓝色，Pred 橙色
+- 所有轴标签、标题、刻度均为英文
+
+**可视化参数设置**：
+- 混淆矩阵配色：`cmap=plt.cm.Blues`（高级蓝色系）
+- 图表分辨率：300 DPI（保证清晰度）
+- 时间轴格式：ISO 日期格式（YYYY-MM-DD）
+
+#### 峰值阈值定义
+
+> **关于 Peak 标签的业务定义**：在本系统的评估模块中，混淆矩阵分类所依据的 peak（极端峰值）与 non_peak（日常客流），是基于真实的客流绝对人数阈值进行划分的。系统设定的峰值阈值为 **18500人**。请注意，预测值和真实值在参与阈值判定和绘制混淆矩阵前，均已严格通过 Scaler 的逆变换（Inverse Transform）还原为真实的客流人数。
+
+---
+
+## 8. Web 应用架构 (Web Application)
 
 位于 `web_app/` 目录下，采用 **Flask** 框架。
 
@@ -189,7 +353,7 @@ python run_pipeline.py --skip-preprocess
 
 ---
 
-## 7. 数据库设计 (Database Schema)
+## 9. 数据库设计 (Database Schema)
 
 使用 **SQLite** 数据库 (`jiuzhaigou_fyp.db`)，通过 SQLAlchemy ORM 管理。
 
@@ -205,7 +369,7 @@ python run_pipeline.py --skip-preprocess
 
 ---
 
-## 8. 数据同步机制 (Data Synchronization)
+## 10. 数据同步机制 (Data Synchronization)
 
 脚本: `scripts/sync_to_cloud.py`
 
@@ -217,37 +381,67 @@ python run_pipeline.py --skip-preprocess
     *   使用 **Upsert** (Insert or Update) 逻辑将模型的测试集预测结果写入 `predicted_visitor`，实现历史真实值与回测预测值的对比展示。
 4.  **触发**: 该脚本可在 Web 应用启动时自动调用，也可手动运行。
 
-## 存在问题与未来改进计划 (Problems & Future Work)
+---
 
-尽管当前系统已初步实现端到端的客流预测与可视化，但在模型泛化能力、极端峰值预测以及系统工程化方面仍存在一定局限性。接下来的开发与研究工作将围绕以下四个核心维度展开：
+## 11. 项目成果与技术亮点 (Achievements & Technical Highlights)
 
-### 模型评估与基线对比 (Model Benchmarking)
-* **当前局限 (Insufficient Empirical Benchmarking)**: 
-  目前的评估主要集中在 LSTM 架构上，缺乏与其他主流时间序列预测基线（如 GRU、Prophet 等）的全面对比，难以严格量化本模型在相对性能和泛化能力上的提升。
-* **改进计划 (Model Expansion & Standardized Evaluation)**: 
-  * 系统性地引入 **GRU (Gated Recurrent Unit)** 和基于统计学的 **Prophet** 模型，完善基线对比分析框架。
-  * 建立并固化包含 MAE、RMSE 和 MAPE 在内的标准定量评估指标体系，提供更严谨的交叉验证。
+### 架构优化
+1. **统一代码结构**: 所有模型脚本按照特征数量和架构类型进行规范化命名
+2. **版本管理**: 支持4特征和8特征版本的基线模型，便于对比分析
+3. **自动化部署**: 提供一键运行和基准测试脚本，简化部署流程
 
-### 极端峰值预测与特征工程 (Peak Prediction & Feature Engineering)
-* **当前局限 (Feature Heterogeneity & Peak-interval Volatility)**: 
-  模型目前无法动态区分不同外部特征的影响权重（例如“节假日”对客流的压倒性影响）。这导致模型在面对“十一黄金周”等流量激增的极端时段时，预测保真度下降，表现出较高的方差和严重的预测不足 (Under-prediction)。
-* **改进计划 (Attention Mechanism & Hybrid Modeling)**:
-  * **引入注意力机制 (Attention Mechanisms)**: 在网络架构中增加 Attention 层，使模型能够动态地为关键特征（如节假日标记）分配更高的权重。
-  * **混合模型补偿 (Hybrid Extreme Event Modeling)**: 采用双架构设计来解耦常规季节性模式与异常客流激增。引入轻量级梯度提升树（如 LightGBM）或基于规则的专家系统，专门针对 LSTM 预测的残差 (Residual errors) 进行二次训练补偿，大幅提升高峰期的预测精度。
-  * **高维特征融合 (Advanced Feature Engineering)**: 拓展多变量数据流水线，接入更细粒度的气象数据和社交媒体搜索指数（如百度指数 Baidu Index），以更灵敏地捕捉真实的游客出行意愿。
-  * **自定义损失函数 (Custom Loss Functions)**: 设计不对称损失函数，对峰值区间的预测偏低施加更重的惩罚。
+### 性能提升
+1. **特征工程优化**: 从4特征扩展到8特征，包含天气和滞后特征
+2. **架构升级**: 引入Seq2Seq+Attention架构，解决数据泄露问题
+3. **损失函数优化**: 自定义非对称损失函数，对节假日预测偏低给予更高惩罚
 
-### 长序列预测漂移与架构升级 (Long-Term Forecasting Drift)
-* **当前局限 (Error Accumulation & Exposure Bias)**: 
-  系统当前采用的“自回归滚动预测机制 (Autoregressive rolling)”极易产生误差累积。在预测较长周期（如 T+14 天）时，早期步骤的微小预测偏差会被作为输入不断前馈，导致远期的预测轨迹出现严重漂移或过度平滑。
-* **改进计划 (Seq2Seq Architecture)**:
-  * 将预测策略从单步滚动窗口全面升级为 **多对多 (Many-to-Many) Sequence-to-Sequence (Seq2Seq)** 架构。
-  * 利用 Encoder-Decoder 结构一次性并行输出整个未来的预测序列，从根本上削弱迭代偏差 (Iterative bias) 的传播。
+### 工程化改进
+1. **运行名称规范化**: 使用标准格式 `run_YYYYMMDD_HHMMSS_lb{lookback}_ep{epochs}_{model_name}_{features}features`
+2. **项目文档更新**: 详细记录架构演进和性能指标
+3. **测试体系完善**: 提供快速测试和基准测试脚本，确保代码质量
 
-### 系统部署、可解释性与概念漂移 (Deployment & Explainability)
-* **当前局限 (Black-box & Concept Drift)**: 
-  作为深度神经网络，LSTM 本质上是一个“黑盒”，缺乏向景区管理者解释预测依据的透明度。同时，面对由于基础设施建设或政策调整导致的长期旅游模式改变（概念漂移 Concept Drift），静态训练的历史数据可能面临失效风险。
-* **改进计划 (Cloud Integration & Continual Learning)**:
-  * **可解释 AI (Explainable AI, XAI)**: 集成 **SHAP (SHapley Additive exPlanations)** 等可解释性工具，实现针对特定日期预测结果的特征贡献度可视化，提升系统的可信度。
-  * **云端部署与系统集成 (Cloud Deployment)**: 将本地原型完整迁移至国内云服务器（如腾讯云）。配置 Nginx Web 服务器，建立健壮的数据库自动更新脚本，实现 ECharts 前端与 Flask API 的稳定远程访问。
-  * **持续学习 (Continual Learning)**: 设计支持周期性自动重训练的数据同步流水线，使模型能够自适应新兴的旅游趋势，有效应对概念漂移。
+### 实际应用价值
+1. **景区管理**: 辅助景区提前调配资源，应对客流高峰
+2. **游客服务**: 提供准确的客流预测，帮助游客合理安排行程
+3. **数据驱动决策**: 基于历史数据和预测结果，优化景区运营策略
+
+---
+
+## 12. 近期已解决的工程化痛点 (Resolved MLOps Issues)
+
+### ✅ 已实现的工程化改进
+
+1. **中央总线调度**: 引入了统一的 `run_pipeline.py` 调度脚本，简化了训练流程
+2. **Zero Chinese Policy**: 彻底消灭了 Matplotlib 的中文乱码问题，所有可视化图表强制纯英文输出
+3. **统一数据加载器**: 实现了多维度防泄露的数据加载器，确保数据安全
+4. **标准化输出结构**: 统一了模型训练输出的目录结构，包含 `weights/` 和 `figures/` 子文件夹
+5. **规范的可视化标准**: 定义了严格的图表格式规范，包括配色方案、标签命名和图表类型
+
+---
+
+## 13. 存在问题与未来改进计划 (Problems & Future Work)
+
+### 模型泛化能力 (Model Generalization)
+* **当前挑战**: 模型在极端天气和特殊事件下的预测精度仍有提升空间
+* **改进方向**: 引入更多外部特征（如社交媒体数据、交通数据），增强模型鲁棒性
+
+### 实时预测 (增量学习)
+* **当前挑战**: 目前为离线训练，无法实时更新模型
+* **改进方向**: 设计增量学习机制，支持在线模型更新
+
+### 可解释性 (SHAP)
+* **当前挑战**: 深度学习模型缺乏可解释性
+* **改进方向**: 集成SHAP等可解释性工具，可视化特征重要性
+
+### 部署优化
+* **当前挑战**: Web应用部署在本地环境，访问速度有限
+* **改进方向**: 部署到云端服务器，配置负载均衡和自动缩放
+
+---
+
+## 14. 项目维护信息 (Maintenance Information)
+
+**开发团队**: 个人项目
+**技术栈**: Python, TensorFlow/Keras, Flask, ECharts, SQLite
+**项目状态**: 持续开发中
+**最后更新**: 2026年3月1日

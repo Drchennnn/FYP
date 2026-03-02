@@ -23,16 +23,11 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from matplotlib import pyplot as plt
-from sklearn.metrics import (
-    ConfusionMatrixDisplay,
-    accuracy_score,
-    mean_absolute_error,
-    mean_absolute_percentage_error,
-    mean_squared_error,
-    precision_recall_fscore_support,
-    r2_score,
-)
+from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.preprocessing import MinMaxScaler
+
+# 导入通用评估器
+from models.common.evaluator import calculate_metrics, save_metrics_to_files
 
 matplotlib.use("Agg")
 
@@ -151,10 +146,7 @@ def create_model(look_back: int) -> tf.keras.Model:
     return model
 
 
-def calc_smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    denominator = (np.abs(y_true) + np.abs(y_pred)) / 2.0
-    denominator = np.where(denominator == 0, 1e-8, denominator)
-    return float(np.mean(np.abs(y_true - y_pred) / denominator))
+# calc_smape 函数已移至 models/common/evaluator.py
 
 
 def save_plots(
@@ -249,7 +241,7 @@ def main() -> None:
         default=True,
         help="是否保存可视化图。默认 True。",
     )
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     np.random.seed(42)
     tf.random.set_seed(42)
@@ -260,24 +252,28 @@ def main() -> None:
     runs_dir.mkdir(parents=True, exist_ok=True)
     model_runs_dir = model_root_dir / "runs"
     model_runs_dir.mkdir(parents=True, exist_ok=True)
-    auto_run_name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_lb{args.look_back}_ep{args.epochs}"
+    auto_run_name = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_lb{args.look_back}_ep{args.epochs}_lstm_4features"
     run_name = args.run_name or auto_run_name
-    run_name_pattern = r"^run_\d{8}_\d{6}_lb\d+_ep\d+$"
+    run_name_pattern = r"^run_\d{8}_\d{6}_lb\d+_ep\d+.*"
     if not re.fullmatch(run_name_pattern, run_name):
         raise ValueError(
             "run_name 格式不符合要求，应为：run_YYYYMMDD_HHMMSS_lb<lookback>_ep<epochs>"
         )
     run_dir = runs_dir / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
-    model_run_dir = model_runs_dir / run_name
-    model_run_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 创建必要的子目录
+    weights_dir = run_dir / "weights"
+    fig_dir = run_dir / "figures"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    fig_dir.mkdir(parents=True, exist_ok=True)
 
-    model_path = model_run_dir / "lstm_jiuzhaigou.h5"
+    # 模型权重保存在 output/runs/<run_name>/weights/ 目录中
+    model_path = weights_dir / "lstm_jiuzhaigou.h5"
     metrics_json_path = run_dir / "lstm_metrics.json"
     metrics_csv_path = run_dir / "lstm_metrics.csv"
     pred_path = run_dir / "lstm_test_predictions.csv"
     history_path = run_dir / "lstm_history.csv"
-    fig_dir = run_dir / "figures"
 
     df = load_and_engineer_features(Path(args.input_csv))
 
@@ -330,24 +326,20 @@ def main() -> None:
     ).sort_values("date")
     pred_df.to_csv(pred_path, index=False, encoding="utf-8-sig")
 
-    # 回归指标
-    mae = float(mean_absolute_error(y_true, y_pred))
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
-    mape = float(mean_absolute_percentage_error(y_true, y_pred))
-    smape = calc_smape(y_true, y_pred)
-    r2 = float(r2_score(y_true, y_pred))
-
-    # 由回归输出衍生的“高峰日”二分类指标
-    threshold = float(np.quantile(scaler.inverse_transform(y_train.reshape(-1, 1)).reshape(-1), args.peak_quantile))
-    y_true_cls = (y_true >= threshold).astype(int)
-    y_pred_cls = (y_pred >= threshold).astype(int)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true_cls, y_pred_cls, average="binary", zero_division=0
+    # 7. 使用通用评估器计算指标
+    metrics = calculate_metrics(
+        y_true=y_true,
+        y_pred=y_pred,
+        y_train_scaled=y_train,
+        scaler=scaler,
+        peak_quantile=args.peak_quantile,
     )
-    acc = accuracy_score(y_true_cls, y_pred_cls)
 
-    metrics = {
-        "run_name": run_name,
+    # 8. 保存模型和指标
+    model.save(model_path)
+    
+    # 使用通用评估器的保存函数
+    additional_info = {
         "samples": int(len(df)),
         "look_back": int(args.look_back),
         "epochs_requested": int(args.epochs),
@@ -357,39 +349,63 @@ def main() -> None:
         "test_samples": int(len(x_test)),
         "input_dim": 4,
         "features": ["visitor_count_scaled", "month_norm", "day_of_week_norm", "is_holiday"],
-        "mae": mae,
-        "rmse": rmse,
-        "mape": mape,
-        "smape": smape,
-        "r2": r2,
-        "peak_threshold": threshold,
-        "classification_accuracy": float(acc),
-        "classification_precision": float(precision),
-        "classification_recall": float(recall),
-        "classification_f1": float(f1),
     }
+    
+    save_metrics_to_files(
+        metrics=metrics,
+        run_dir=str(run_dir),
+        run_name=run_name,
+        model_name="lstm",
+        additional_info=additional_info,
+    )
 
-    model.save(model_path)
-    metrics_json_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-    pd.DataFrame([metrics]).to_csv(metrics_csv_path, index=False, encoding="utf-8-sig")
+    # 9. 保存训练历史
     history_df = pd.DataFrame(history.history)
     history_df.insert(0, "epoch", np.arange(1, len(history_df) + 1))
     history_df.to_csv(history_path, index=False, encoding="utf-8-sig")
 
+    # 10. 使用统一评估器计算指标和可视化
+    from models.common.evaluator import Evaluator, load_global_threshold
+    
+    # 加载统一的峰值阈值
+    peak_threshold = load_global_threshold()
+    
+    # 初始化评估器
+    evaluator = Evaluator(
+        peak_threshold=peak_threshold,
+        scaler=scaler
+    )
+    
+    # 计算指标
+    metrics_eval = evaluator.evaluate(y_true, y_pred)
+    
+    # 保存可视化
     if args.save_plots:
-        save_plots(fig_dir, history, pred_df)
-        save_confusion_matrices(fig_dir, y_true_cls, y_pred_cls)
+        evaluator.generate_visualizations(
+            out_dir=fig_dir,
+            history=history.history,
+            dates=pd.to_datetime(pred_df["date"]),
+            y_true=y_true,
+            y_pred=y_pred
+        )
 
-    print(f"run_dir: {run_dir}")
-    print(f"model_run_dir: {model_run_dir}")
-    print(f"history_path: {history_path}")
-    print(f"model_path: {model_path}")
-    print(f"metrics_json_path: {metrics_json_path}")
-    print(f"metrics_csv_path: {metrics_csv_path}")
-    print(f"pred_path: {pred_path}")
-    if args.save_plots:
-        print(f"fig_dir: {fig_dir}")
-    print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    # 11. 输出结果
+    print(f"LSTM训练完成！")
+    print(f"运行目录: {run_dir}")
+    print(f"模型保存: {model_path}")
+    print(f"预测结果: {pred_path}")
+    print(f"训练历史: {history_path}")
+    
+    print("\n回归指标:")
+    for key, value in metrics["regression"].items():
+        print(f"  {key.upper()}: {value:.4f}")
+    
+    print("\n分类指标 (高峰日预测):")
+    for key, value in metrics["classification"].items():
+        if key != "peak_threshold":
+            print(f"  {key}: {value:.4f}")
+        else:
+            print(f"  {key}: {value:.2f}")
 
 
 if __name__ == "__main__":
