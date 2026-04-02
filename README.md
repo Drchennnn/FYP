@@ -13,6 +13,8 @@
 5.  [模型架构演进 (Model Architecture Evolution)](#5-模型架构演进-model-architecture-evolution)
 6.  [最新性能指标 (Latest Performance Metrics)](#6-最新性能指标-latest-performance-metrics)
 7.  [MLOps 与工程化规范 (MLOps & Engineering Standards)](#7-mlops-与工程化规范-mlops--engineering-standards)
+    - [Warning Definition (Warning Definitions & Risk Levels)](#74-warning-definition-warning-definitions--risk-levels)
+    - [Model Selection Policy (Champion Model)](#75-model-selection-policy-champion-model)
 8.  [Web 应用架构 (Web Application)](#8-web-应用架构-web-application)
 9.  [数据库设计 (Database Schema)](#9-数据库设计-database-schema)
 10. [数据同步机制 (Data Synchronization)](#10-数据同步机制-data-synchronization)
@@ -20,6 +22,7 @@
 12. [近期已解决的工程化痛点 (Resolved MLOps Issues)](#12-近期已解决的工程化痛点-resolved-mlops-issues)
 13. [存在问题与未来改进计划 (Problems & Future Work)](#13-存在问题与未来改进计划-problems--future-work)
 14. [项目维护信息 (Maintenance Information)](#14-项目维护信息-maintenance-information)
+15. [Appendix / Glossary](#15-appendix--glossary)
 
 ---
 
@@ -316,6 +319,101 @@ output/runs/<run_name>/
 
 ---
 
+### 7.4 Warning Definition (Warning Definitions & Risk Levels)
+
+This section defines thesis-ready, **business-facing warnings**. The goal is to prioritize *warning accuracy* (detect high-risk days reliably) while keeping definitions simple, auditable, and consistent with the evaluation code.
+
+> **Naming note**: Plot labels and figure text must remain **English-only** (Zero Chinese Policy), even if the surrounding documentation is bilingual.
+
+#### 7.4.1 `crowd_alert` (Crowding risk)
+
+**Primary (fixed-threshold) definition (recommended for reporting):**
+
+- Let `visitor_count` be the **inverse-transformed** daily visitor count (真实人数).
+- Define a binary crowding alert:
+
+  - `crowd_alert = 1` if `visitor_count ≥ 18500`
+  - `crowd_alert = 0` otherwise
+
+This fixed value **18500** is already used as the system-wide `DEFAULT_PEAK_THRESHOLD` in evaluation modules (e.g., `models/common/core_evaluation.py`, `models/common/evaluator.py`). Using the same threshold keeps model metrics and warning definitions aligned.
+
+**Optional (quantile-based) alternative (for robustness checks / sensitivity analysis):**
+
+- Define `peak_threshold_q = Quantile(visitor_count, q)` on a training-only window (e.g., `q=0.90` or `q=0.95`).
+- Then `crowd_alert = 1` if `visitor_count ≥ peak_threshold_q`.
+
+This alternative adapts to regime shifts (e.g., multi-year growth/decline) but must be computed **without leaking future data**.
+
+**Mapping to 4-level crowding risk (for operational communication):**
+
+We map predicted (or actual) `visitor_count` into levels by percentage of the fixed threshold `T = 18500`:
+
+- **Green**: `visitor_count < 0.70·T`
+- **Yellow**: `0.70·T ≤ visitor_count < 0.85·T`
+- **Orange**: `0.85·T ≤ visitor_count < 1.00·T`
+- **Red**: `visitor_count ≥ 1.00·T` (i.e., `crowd_alert = 1`)
+
+Rationale: a ratio-based ladder is easy to explain (“approaching capacity”) while still anchored to the audited peak threshold used in evaluation.
+
+#### 7.4.2 `weather_hazard` (Weather-driven hazard)
+
+`weather_hazard` is derived from the available weather features already included in the 8-feature dataset:
+
+- `meteo_precip_sum` (daily precipitation sum, mm)
+- `temp_high` (daily maximum temperature, °C)
+- `temp_low` (daily minimum temperature, °C)
+
+**Level definition (simple threshold rules):**
+
+- **Green** (no hazard):
+  - `precip < 10 mm` AND `temp_high < 30°C` AND `temp_low > 0°C`
+
+- **Yellow** (mild hazard):
+  - `precip ≥ 10 mm` OR `temp_high ≥ 30°C` OR `temp_low ≤ 0°C`
+
+- **Orange** (moderate hazard):
+  - `precip ≥ 25 mm` OR `temp_high ≥ 35°C` OR `temp_low ≤ -5°C`
+
+- **Red** (severe hazard):
+  - `precip ≥ 50 mm` OR `temp_high ≥ 38°C` OR `temp_low ≤ -10°C`
+
+Rationale (documentation-level): precipitation bands like 10/25/50 mm and “heat/cold” cutoffs are widely used as **standard practice** in operational weather communication. If a thesis requires formal citations, add verified references here. *(TODO: add authoritative meteorological guideline references if required.)*
+
+#### 7.4.3 `suitability_warning` (Overall suitability warning)
+
+**Recommended combination rule (OR):**
+
+- `suitability_warning` triggers if **either** crowding risk or weather hazard indicates risk.
+- Severity is the **maximum** of the two components.
+
+Formally:
+
+- `level_suitability = max(level_crowd, level_weather)`
+- where level order is `Green < Yellow < Orange < Red`.
+
+Binary form (for evaluation / F1 reporting):
+
+- `suitability_warning_bin = 1` if `level_suitability ∈ {Orange, Red}`
+- `suitability_warning_bin = 0` if `level_suitability ∈ {Green, Yellow}`
+
+This binarization supports consistent classification metrics (Precision/Recall/F1) while keeping the operational dashboard free to display 4 levels.
+
+---
+
+### 7.5 Model Selection Policy (Champion Model)
+
+When selecting the **Champion** model among candidates (LSTM/GRU/Seq2Seq variants), we prioritize warning quality over point-forecast error.
+
+1. **Primary criterion**: maximize **`suitability_warning` F1** under **walk-forward evaluation** (see Section 13 placeholders).
+2. **Tie-breakers (probabilistic warning quality)**:
+   - lower **Brier score** (better probability accuracy)
+   - lower **ECE (Expected Calibration Error)** (better calibration)
+3. **Secondary reporting metrics** (for regression performance): MAE / RMSE / sMAPE.
+
+Note: Using calibration metrics as tie-breakers is standard practice when warnings are consumed as probabilities (e.g., reliability diagrams), even if base models are deterministic and probabilities are derived via a transform.
+
+---
+
 ## 8. Web 应用架构 (Web Application)
 
 位于 `web_app/` 目录下，采用 **Flask** 框架。
@@ -420,7 +518,28 @@ output/runs/<run_name>/
 
 ### 可解释性 (SHAP)
 * **当前挑战**: 深度学习模型缺乏可解释性
-* **改进方向**: 集成SHAP等可解释性工具，可视化特征重要性
+* **改进方向**: 集成 SHAP 等可解释性工具，可视化特征重要性
+
+### Walk-forward Evaluation (document-only placeholder)
+* **目的**: 用贴近真实部署的方式评估“未来预测”性能，避免一次性随机切分带来的时间泄露。
+* **计划 (TODO)**:
+  1. 以时间为轴构建多个滚动窗口：`train → val → test`。
+  2. 每个窗口独立训练并记录：回归指标（MAE/RMSE/sMAPE）与预警指标（`suitability_warning` Precision/Recall/F1）。
+  3. 汇总跨窗口均值与方差，并用作 Champion 选择的主要依据。
+
+### Ablation Study Plan (document-only placeholder)
+* **目的**: 量化关键模块对性能与预警质量的贡献。
+* **计划 (TODO)**:
+  - 特征消融：移除 `meteo_precip_sum`, `temp_high`, `temp_low` 与 lag 特征，观察预警 F1 与回归误差变化。
+  - 架构消融：对比 LSTM/GRU/Seq2Seq(+Attention)，控制 lookback/epochs 等超参。
+  - 损失函数消融：对比对称/非对称损失（若启用），重点观察 peak/holiday 段误差。
+
+### Calibration Plan (document-only placeholder)
+* **目的**: 将 `suitability_warning` 输出作为概率使用时，保证概率可解释（e.g., 0.7 ≈ 70% 风险）。
+* **计划 (TODO)**:
+  - 评估：Reliability diagram、ECE、Brier score。
+  - 校准方法候选：Platt scaling / Isotonic regression（在验证集上拟合，测试集上评估）。
+  - 报告：校准前后对比，并说明阈值选择对 F1 与误报/漏报的影响。
 
 ### 部署优化
 * **当前挑战**: Web应用部署在本地环境，访问速度有限
@@ -434,3 +553,32 @@ output/runs/<run_name>/
 **技术栈**: Python, TensorFlow/Keras, Flask, ECharts, SQLite
 **项目状态**: 持续开发中
 **最后更新**: 2026年3月1日
+
+---
+
+## 15. Appendix / Glossary
+
+This appendix records the meaning and rationale of key terms/settings used in this project.
+
+### A. Warning-related terms
+
+- **Peak threshold (18500)**: A fixed visitor-count threshold used to label peak vs non-peak days in evaluation and to define the base crowding alert. This value is hard-coded in evaluation modules (e.g., `DEFAULT_PEAK_THRESHOLD = 18500`).
+- **`crowd_alert`**: Crowding risk indicator derived from visitor count. In evaluation code it is binary (`visitor_count ≥ threshold`). In the thesis write-up it is additionally mapped to 4 operational levels (Green/Yellow/Orange/Red).
+- **`weather_hazard`**: A rule-based weather hazard level derived from precipitation and temperature features available in the dataset.
+- **`suitability_warning`**: Overall warning that a day may be unsuitable for visiting due to crowding and/or weather risk. Recommended combination is **OR**, with severity as the max of components.
+
+### B. Evaluation methodology terms
+
+- **Walk-forward evaluation (rolling-origin)**: A time-series evaluation method that repeatedly trains on a past window and tests on the next window, mimicking real deployment and reducing temporal leakage. (Standard practice in time-series forecasting; TODO: add a formal citation if required.)
+- **Ablation study**: An experimental design where one component (feature/module) is removed or changed at a time to measure its contribution.
+
+### C. Metrics & calibration terms
+
+- **sMAPE (Symmetric Mean Absolute Percentage Error)**: A scale-free forecasting error metric. Here it is reported in percent.
+- **Brier score**: Mean squared error of probabilistic predictions for binary outcomes. Lower is better.
+- **ECE (Expected Calibration Error)**: Measures how far predicted probabilities deviate from observed frequencies across bins. Lower is better.
+- **Calibration**: The property that predicted probabilities match empirical outcomes. Common tools include reliability diagrams, ECE, and post-hoc calibrators (Platt scaling, isotonic regression). (Standard practice; TODO: add verified references if needed.)
+
+### D. Documentation / reporting notes
+
+- **English-only plot labels**: All Matplotlib figure titles/axes/legends must be English-only to avoid encoding issues and to keep artifacts portable.
