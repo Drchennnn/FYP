@@ -1,0 +1,77 @@
+{% extends 'base.html' %}
+
+{% block title %}仪表盘 - 九寨沟智慧景区客流预测系统{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="uiw-page">
+  <div class="uiw-page-header">
+    <div>
+      <div class="uiw-page-title">综合态势</div>
+      <div class="uiw-page-subtitle" id="uiwMetaLine">数据来源：离线备份（backups）</div>
+    </div>
+
+    <div class="uiw-controls">
+      <div class="btn-group" role="group" aria-label="model toggle">
+        <button class="btn btn-outline-info" id="btnChampion" type="button">冠军模型</button>
+        <button class="btn btn-outline-info" id="btnRunner" type="button">亚军模型</button>
+      </div>
+
+      <button class="btn btn-warning uiw-btn-refresh" id="btnRefresh" type="button">
+        <i class="fa-solid fa-rotate"></i> 刷新
+      </button>
+    </div>
+  </div>
+
+  <div class="uiw-kpi-grid">
+    <div class="uiw-kpi-card">
+      <div class="uiw-kpi-label">未来7天最高预测客流</div>
+      <div class="uiw-kpi-value" id="kpiMaxVisitor">--</div>
+      <div class="uiw-kpi-foot" id="kpiMaxVisitorDate">--</div>
+    </div>
+    <div class="uiw-kpi-card">
+      <div class="uiw-kpi-label">预警天数（风险>0）</div>
+      <div class="uiw-kpi-value" id="kpiWarnDays">--</div>
+      <div class="uiw-kpi-foot">Crowd / Weather 综合</div>
+    </div>
+    <div class="uiw-kpi-card">
+      <div class="uiw-kpi-label">最大风险等级</div>
+      <div class="uiw-kpi-value" id="kpiMaxRisk">--</div>
+      <div class="uiw-kpi-foot" id="kpiMaxRiskDrivers">--</div>
+    </div>
+    <div class="uiw-kpi-card">
+      <div class="uiw-kpi-label">模型</div>
+      <div class="uiw-kpi-value" id="kpiModel">--</div>
+      <div class="uiw-kpi-foot" id="kpiRunDir" style="font-family: 'Roboto Mono', monospace;">--</div>
+    </div>
+  </div>
+
+  <div class="uiw-grid-2">
+    <section class="uiw-panel">
+      <div class="uiw-panel-title"><i class="fa-solid fa-chart-line"></i> Visitor Forecast (7-day)</div>
+      <div id="visitorChart" class="uiw-chart"></div>
+    </section>
+
+    <section class="uiw-panel">
+      <div class="uiw-panel-title"><i class="fa-solid fa-cloud-sun-rain"></i> Weather (daily)</div>
+      <div id="weatherChart" class="uiw-chart"></div>
+    </section>
+  </div>
+
+  <section class="uiw-panel">
+    <div class="uiw-panel-title"><i class="fa-solid fa-timeline"></i> 风险时间线</div>
+    <div id="riskTimeline" class="uiw-timeline">
+      <div class="text-white-50">等待数据加载…</div>
+    </div>
+  </section>
+
+  <div class="uiw-warning text-white-50" id="uiwWarning" style="display:none;"></div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

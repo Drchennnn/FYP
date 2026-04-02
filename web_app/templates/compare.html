@@ -1,0 +1,149 @@
+{% extends 'base.html' %}
+
+{% block title %}模型对比 - 九寨沟智慧景区客流预测系统{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="uiw-page">
+  <div class="uiw-page-header">
+    <div>
+      <div class="uiw-page-title">模型对比</div>
+      <div class="uiw-page-subtitle">对比 Champion 与 Runner-up（离线 artifacts）</div>
+    </div>
+
+    <div class="uiw-controls">
+      <button class="btn btn-warning uiw-btn-refresh" id="btnCompareRefresh" type="button">
+        <i class="fa-solid fa-rotate"></i> 刷新
+      </button>
+    </div>
+  </div>
+
+  <div class="uiw-grid-2">
+    <section class="uiw-panel">
+      <div class="uiw-panel-title"><i class="fa-solid fa-chart-line"></i> Visitor Forecast Comparison</div>
+      <div id="compareChart" class="uiw-chart"></div>
+    </section>
+
+    <section class="uiw-panel">
+      <div class="uiw-panel-title"><i class="fa-solid fa-table"></i> Metrics (from metrics.json)</div>
+      <div class="table-responsive">
+        <table class="table table-dark table-striped align-middle" id="metricsTable">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th id="thChampion">Champion</th>
+              <th id="thRunner">Runner-up</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="text-white-50" id="cmpNote"></div>
+    </section>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script>
+  const state = { models: [], chart: null };
+
+  function safeGet(obj, path, fallback='--') {
+    try {
+      return path.split('.').reduce((acc,k)=>acc && acc[k], obj) ?? fallback;
+    } catch { return fallback; }
+  }
+
+  async function loadModels() {
+    const res = await fetch('/api/models');
+    const data = await res.json();
+    state.models = data.models || [];
+    const champ = state.models.find(m => m.model_id === 'champion');
+    const runner = state.models.find(m => m.model_id === 'runner_up');
+    document.getElementById('thChampion').innerText = champ ? champ.display_name : 'Champion';
+    document.getElementById('thRunner').innerText = runner ? runner.display_name : 'Runner-up';
+    return { champ, runner };
+  }
+
+  async function loadMetrics(model_id) {
+    const res = await fetch(`/api/metrics?model_id=${encodeURIComponent(model_id)}`);
+    return await res.json();
+  }
+
+  function renderMetricsTable(mChamp, mRunner) {
+    const tbody = document.querySelector('#metricsTable tbody');
+    tbody.innerHTML = '';
+
+    const rows = [
+      ['regression.mae', safeGet(mChamp, 'metrics.regression.mae'), safeGet(mRunner, 'metrics.regression.mae')],
+      ['regression.rmse', safeGet(mChamp, 'metrics.regression.rmse'), safeGet(mRunner, 'metrics.regression.rmse')],
+      ['regression.smape', safeGet(mChamp, 'metrics.regression.smape'), safeGet(mRunner, 'metrics.regression.smape')],
+      ['crowd_alert.f1', safeGet(mChamp, 'metrics.crowd_alert.f1'), safeGet(mRunner, 'metrics.crowd_alert.f1')],
+      ['suitability_warning.f1', safeGet(mChamp, 'metrics.suitability_warning.f1'), safeGet(mRunner, 'metrics.suitability_warning.f1')],
+      ['suitability_warning.brier', safeGet(mChamp, 'metrics.suitability_warning.brier'), safeGet(mRunner, 'metrics.suitability_warning.brier')],
+      ['suitability_warning.ece', safeGet(mChamp, 'metrics.suitability_warning.ece'), safeGet(mRunner, 'metrics.suitability_warning.ece')],
+    ];
+
+    for (const [k, v1, v2] of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td style="font-family: Roboto Mono, monospace;">${k}</td><td>${fmt(v1)}</td><td>${fmt(v2)}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  function fmt(v) {
+    if (v === null || v === undefined || v === '--') return '--';
+    if (typeof v === 'number') return v.toFixed(4);
+    const num = Number(v);
+    return Number.isFinite(num) ? num.toFixed(4) : String(v);
+  }
+
+  async function loadForecast(model_id) {
+    const res = await fetch(`/api/forecast?model_id=${encodeURIComponent(model_id)}&h=7`);
+    return await res.json();
+  }
+
+  function renderCompareChart(f1, f2, name1, name2) {
+    const el = document.getElementById('compareChart');
+    if (!state.chart) state.chart = echarts.init(el);
+
+    state.chart.setOption({
+      tooltip: { trigger: 'axis' },
+      legend: { data: [name1, name2], textStyle: { color: '#cbd5e1' } },
+      grid: { left: 40, right: 20, top: 40, bottom: 30 },
+      xAxis: { type: 'category', data: f1.time_axis || [], axisLabel: { color: '#94a3b8' } },
+      yAxis: { type: 'value', axisLabel: { color: '#94a3b8' }, splitLine: { lineStyle: { color: 'rgba(148,163,184,0.15)' } } },
+      series: [
+        { name: name1, type: 'line', data: f1.visitor_pred || [], smooth: true },
+        { name: name2, type: 'line', data: f2.visitor_pred || [], smooth: true },
+      ]
+    });
+  }
+
+  async function refresh() {
+    const { champ, runner } = await loadModels();
+    if (!champ || !runner) {
+      document.getElementById('cmpNote').innerText = '未找到可对比的两组模型（请检查 output/backups 下的 compare_metrics.csv）';
+      return;
+    }
+
+    const [mChamp, mRunner, fChamp, fRunner] = await Promise.all([
+      loadMetrics('champion'),
+      loadMetrics('runner_up'),
+      loadForecast('champion'),
+      loadForecast('runner_up'),
+    ]);
+
+    renderMetricsTable(mChamp, mRunner);
+    renderCompareChart(fChamp, fRunner, champ.display_name, runner.display_name);
+
+    document.getElementById('cmpNote').innerText = `数据目录：${safeGet(mChamp,'run_dir','--')} / ${safeGet(mRunner,'run_dir','--')}`;
+  }
+
+  document.getElementById('btnCompareRefresh').addEventListener('click', refresh);
+  refresh();
+</script>
+{% endblock %}

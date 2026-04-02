@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+
+{% block title %}指标定义 - 九寨沟智慧景区客流预测系统{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="uiw-page">
+  <div class="uiw-page-header">
+    <div>
+      <div class="uiw-page-title">指标定义</div>
+      <div class="uiw-page-subtitle">（占位页）后续可补充 MAE/RMSE/SMAPE、Brier、ECE、Recall/F1 等定义</div>
+    </div>
+  </div>
+
+  <section class="uiw-panel">
+    <div class="uiw-panel-title"><i class="fa-solid fa-book"></i> 说明</div>
+    <div class="text-white-50" style="line-height: 1.8;">
+      <ul>
+        <li><b>Crowd alert</b>：基于预测客流与阈值（默认 18500）判断是否拥挤。</li>
+        <li><b>Weather hazard</b>：基于降水/高温/低温阈值判断是否存在天气风险。</li>
+        <li><b>Suitability warning</b>：Crowd alert 或 Weather hazard 任一触发即预警。</li>
+      </ul>
+      <div>本页暂为占位，后续可接入更完整的离线报告与可解释性图表。</div>
+    </div>
+  </section>
+</div>
+{% endblock %}

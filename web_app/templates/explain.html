@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+
+{% block title %}解释说明 - 九寨沟智慧景区客流预测系统{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="uiw-page">
+  <div class="uiw-page-header">
+    <div>
+      <div class="uiw-page-title">解释说明</div>
+      <div class="uiw-page-subtitle">（占位页）后续可放置：驱动因子、阈值策略、模型解释与注意事项</div>
+    </div>
+  </div>
+
+  <section class="uiw-panel">
+    <div class="uiw-panel-title"><i class="fa-solid fa-circle-info"></i> 当前实现说明</div>
+    <div class="text-white-50" style="line-height: 1.8;">
+      <ol>
+        <li>仪表盘数据来自 <code>output/backups</code> 的最新备份。</li>
+        <li><code>/api/models</code> 根据 <code>compare_metrics.csv</code> 自动选取 Champion/Runner-up。</li>
+        <li><code>/api/forecast</code> 读取对应 run_dir 下的 <code>*_test_predictions.csv</code>，取最后 7 天作为展示窗口（离线模式的近似预报）。</li>
+        <li>天气数据尝试从 <code>data/processed/jiuzhaigou_8features_latest.csv</code> 按日期关联；若缺失则返回 null 并在页面显示提示。</li>
+      </ol>
+    </div>
+  </section>
+</div>
+{% endblock %}

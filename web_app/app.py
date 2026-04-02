@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, redirect, url_for
 from sklearn.preprocessing import MinMaxScaler
 
 # --- Import Keras/TensorFlow (Compatibility Layer) ---
@@ -63,7 +63,188 @@ db.init_app(app)
 # --- Model Configuration ---
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_RUNS_DIR = os.path.join(base_dir, 'model', 'runs')
+OFFLINE_BACKUPS_DIR = os.path.join(base_dir, 'output', 'backups')
 lstm_model = None
+
+
+def _get_latest_backup_dir():
+    """Return absolute path to the latest backup directory under output/backups."""
+    if not os.path.isdir(OFFLINE_BACKUPS_DIR):
+        return None
+    cands = glob.glob(os.path.join(OFFLINE_BACKUPS_DIR, 'backup_*'))
+    cands = [p for p in cands if os.path.isdir(p)]
+    if not cands:
+        return None
+    return max(cands, key=os.path.getmtime)
+
+
+def _load_compare_metrics(backup_dir: str):
+    """Load compare_metrics.csv from latest backup (if exists)."""
+    if not backup_dir:
+        return None
+    compare_dirs = glob.glob(os.path.join(backup_dir, 'run_compare_*'))
+    compare_dirs = [p for p in compare_dirs if os.path.isdir(p)]
+    if not compare_dirs:
+        return None
+    latest_compare = max(compare_dirs, key=os.path.getmtime)
+    csv_path = os.path.join(latest_compare, 'compare_metrics.csv')
+    if not os.path.exists(csv_path):
+        return None
+    try:
+        return pd.read_csv(csv_path)
+    except Exception as e:
+        print(f"Failed to read compare_metrics.csv: {e}")
+        return None
+
+
+def _pick_champion_and_runner_up(df_cmp: pd.DataFrame):
+    """Pick champion and runner-up based on weighted suitability warning metrics."""
+    if df_cmp is None or df_cmp.empty:
+        return None, None
+
+    df = df_cmp.copy()
+    needed = [
+        'model',
+        'run_dir',
+        'suitability_warning_recall_weighted',
+        'suitability_warning_f1_weighted',
+        'suitability_warning_brier_weighted',
+        'suitability_warning_ece_weighted'
+    ]
+    for c in needed:
+        if c not in df.columns:
+            return None, None
+
+    # Champion policy: Recall>=0.8; maximize weighted F1; tie-breakers: lower Brier then lower ECE.
+    df = df.sort_values(
+        by=[
+            'suitability_warning_recall_weighted',
+            'suitability_warning_f1_weighted',
+            'suitability_warning_brier_weighted',
+            'suitability_warning_ece_weighted',
+        ],
+        ascending=[False, False, True, True]
+    )
+    top = df.head(2).to_dict(orient='records')
+    if not top:
+        return None, None
+    champ = top[0]
+    runner = top[1] if len(top) > 1 else None
+    return champ, runner
+
+
+def _resolve_backup_run_dir(backup_dir: str, run_dir_in_report: str):
+    """Resolve run_dir reference (like output\\runs\\run_xxx) to the backup copy folder."""
+    if not backup_dir or not run_dir_in_report:
+        return None
+    base = os.path.basename(str(run_dir_in_report).rstrip('\\/'))
+    cand = os.path.join(backup_dir, base)
+    if os.path.isdir(cand):
+        return cand
+    matches = glob.glob(os.path.join(backup_dir, f"{base}*"))
+    matches = [p for p in matches if os.path.isdir(p)]
+    return matches[0] if matches else None
+
+
+def _safe_read_json(path: str):
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Failed to read json {path}: {e}")
+        return None
+
+
+def _load_predictions(run_dir: str):
+    """Load test predictions csv from a run_dir.
+
+    Returns DataFrame with columns: date (python date), y_true (float or NaN), y_pred (float)
+    """
+    if not run_dir or not os.path.isdir(run_dir):
+        return None
+    candidates = [
+        os.path.join(run_dir, 'seq2seq_test_predictions.csv'),
+        os.path.join(run_dir, 'gru_test_predictions.csv'),
+        os.path.join(run_dir, 'lstm_test_predictions.csv'),
+    ]
+    pred_path = None
+    for p in candidates:
+        if os.path.exists(p):
+            pred_path = p
+            break
+    if not pred_path:
+        globbed = glob.glob(os.path.join(run_dir, '*_test_predictions.csv'))
+        pred_path = globbed[0] if globbed else None
+
+    if not pred_path or not os.path.exists(pred_path):
+        return None
+
+    try:
+        df = pd.read_csv(pred_path)
+        if 'date' not in df.columns:
+            return None
+        df['date'] = pd.to_datetime(df['date']).dt.date
+
+        if 'y_pred' not in df.columns:
+            for alt in ['pred', 'yhat', 'y_pred_mean']:
+                if alt in df.columns:
+                    df['y_pred'] = df[alt]
+                    break
+        if 'y_true' not in df.columns:
+            for alt in ['true', 'y', 'actual', 'y_true_mean']:
+                if alt in df.columns:
+                    df['y_true'] = df[alt]
+                    break
+        if 'y_true' not in df.columns:
+            df['y_true'] = np.nan
+
+        df_agg = df.groupby('date', as_index=False).agg({'y_true': 'mean', 'y_pred': 'mean'})
+        df_agg = df_agg.sort_values('date')
+        return df_agg
+    except Exception as e:
+        print(f"Failed to load predictions from {pred_path}: {e}")
+        return None
+
+
+def _load_weather_by_date(dates: list):
+    """Join weather information from processed dataset by date."""
+    if not dates:
+        return None
+    processed_path = os.path.join(base_dir, 'data', 'processed', 'jiuzhaigou_8features_latest.csv')
+    if not os.path.exists(processed_path):
+        return None
+    try:
+        dfw = pd.read_csv(processed_path)
+        if 'date' not in dfw.columns:
+            return None
+        dfw['date'] = pd.to_datetime(dfw['date']).dt.date
+        dfw = dfw[dfw['date'].isin(dates)].copy()
+        if dfw.empty:
+            return None
+
+        out = pd.DataFrame({'date': dfw['date']})
+        out['precip_mm'] = dfw['meteo_precip_sum'] if 'meteo_precip_sum' in dfw.columns else np.nan
+        if 'temp_high_c' in dfw.columns:
+            out['temp_high_c'] = dfw['temp_high_c']
+        elif 'meteo_temp_max' in dfw.columns:
+            out['temp_high_c'] = dfw['meteo_temp_max']
+        else:
+            out['temp_high_c'] = np.nan
+
+        if 'temp_low_c' in dfw.columns:
+            out['temp_low_c'] = dfw['temp_low_c']
+        elif 'meteo_temp_min' in dfw.columns:
+            out['temp_low_c'] = dfw['meteo_temp_min']
+        else:
+            out['temp_low_c'] = np.nan
+
+        out = out.groupby('date', as_index=False).mean(numeric_only=True)
+        return out
+    except Exception as e:
+        print(f"Failed to load weather from processed data: {e}")
+        return None
 
 def get_latest_model_path():
     """Get the latest model file path (prefer .h5, then .keras)"""
@@ -160,7 +341,203 @@ def mark_core_holiday(date_val):
 @app.route('/')
 def index():
     print("Request received for root route /")
+    return redirect(url_for('dashboard'))
+
+
+@app.route('/legacy')
+def legacy_index():
+    """Legacy UI kept for rollback."""
     return render_template('index.html')
+
+
+@app.route('/dashboard')
+def dashboard():
+    return render_template('dashboard.html')
+
+
+@app.route('/compare')
+def compare():
+    return render_template('compare.html')
+
+
+@app.route('/definitions')
+def definitions():
+    return render_template('definitions.html')
+
+
+@app.route('/explain')
+def explain():
+    return render_template('explain.html')
+
+
+@app.route('/api/models', methods=['GET'])
+def api_models():
+    """Offline artifact mode: return champion + runner-up from latest backup."""
+    backup_dir = _get_latest_backup_dir()
+    df_cmp = _load_compare_metrics(backup_dir)
+    champ, runner = _pick_champion_and_runner_up(df_cmp)
+
+    if not champ:
+        return jsonify({
+            'backup_dir': backup_dir,
+            'models': [],
+            'warning': 'No compare_metrics.csv found under latest backup.'
+        })
+
+    champ_run = _resolve_backup_run_dir(backup_dir, champ.get('run_dir'))
+    runner_run = _resolve_backup_run_dir(backup_dir, runner.get('run_dir')) if runner else None
+
+    models = [
+        {
+            'model_id': 'champion',
+            'display_name': f"Champion: {champ.get('model')}",
+            'model_key': champ.get('model'),
+            'run_dir': champ_run,
+        }
+    ]
+    if runner and runner_run:
+        models.append({
+            'model_id': 'runner_up',
+            'display_name': f"Runner-up: {runner.get('model')}",
+            'model_key': runner.get('model'),
+            'run_dir': runner_run,
+        })
+
+    return jsonify({
+        'backup_dir': backup_dir,
+        'models': models
+    })
+
+
+@app.route('/api/metrics', methods=['GET'])
+def api_metrics():
+    """Return metrics.json for a given model_id (champion / runner_up)."""
+    model_id = request.args.get('model_id', 'champion')
+    models_resp = api_models().get_json() or {}
+    models = {m['model_id']: m for m in (models_resp.get('models') or [])}
+    if model_id not in models:
+        return jsonify({'error': f'Unknown model_id: {model_id}'}), 400
+    run_dir = models[model_id].get('run_dir')
+    metrics_path = os.path.join(run_dir, 'metrics.json') if run_dir else None
+    metrics = _safe_read_json(metrics_path)
+    if not metrics:
+        return jsonify({'error': 'metrics.json not found', 'run_dir': run_dir}), 404
+    return jsonify({
+        'model_id': model_id,
+        'model_name': models[model_id].get('model_key'),
+        'run_dir': run_dir,
+        'metrics': metrics
+    })
+
+
+@app.route('/api/forecast', methods=['GET'])
+def api_forecast():
+    """Offline artifact forecast API.
+
+    Current implementation reads *_test_predictions.csv and returns the latest h days as a proxy.
+    """
+    model_id = request.args.get('model_id', 'champion')
+    h = int(request.args.get('h', 7))
+    h = max(1, min(h, 14))
+
+    models_resp = api_models().get_json() or {}
+    models = {m['model_id']: m for m in (models_resp.get('models') or [])}
+    if model_id not in models:
+        return jsonify({'error': f'Unknown model_id: {model_id}'}), 400
+
+    run_dir = models[model_id].get('run_dir')
+    model_key = models[model_id].get('model_key')
+
+    metrics_path = os.path.join(run_dir, 'metrics.json') if run_dir else None
+    metrics = _safe_read_json(metrics_path) or {}
+    threshold_crowd = float((metrics.get('meta') or {}).get('peak_threshold', 18500.0))
+
+    df_pred = _load_predictions(run_dir)
+    if df_pred is None or df_pred.empty:
+        return jsonify({'error': 'No prediction artifacts found', 'run_dir': run_dir}), 404
+
+    df_tail = df_pred.tail(h).copy()
+    dates = df_tail['date'].tolist()
+
+    warning = None
+    dfw = _load_weather_by_date(dates)
+    if dfw is None or dfw.empty:
+        warning = 'Weather data not available; returning nulls for precip/temp.'
+        dfw = pd.DataFrame({
+            'date': dates,
+            'precip_mm': [np.nan] * len(dates),
+            'temp_high_c': [np.nan] * len(dates),
+            'temp_low_c': [np.nan] * len(dates)
+        })
+
+    df_merge = pd.merge(df_tail, dfw, on='date', how='left')
+
+    wh = (metrics.get('weather_hazard') or {})
+    wh_thr = (wh.get('thresholds') or {})
+    precip_high = float(wh_thr.get('precip_high', 8.0))
+    temp_high = float(wh_thr.get('temp_high', 22.6))
+    temp_low = float(wh_thr.get('temp_low', -10.61))
+
+    crowd_alert = (df_merge['y_pred'] >= threshold_crowd)
+    weather_hazard = (
+        (df_merge['precip_mm'] >= precip_high) |
+        (df_merge['temp_high_c'] >= temp_high) |
+        (df_merge['temp_low_c'] <= temp_low)
+    )
+    suitability = (crowd_alert | weather_hazard)
+
+    risk_level = []
+    drivers = []
+    for ca, whz, pr, th, tl in zip(
+        crowd_alert.tolist(),
+        weather_hazard.tolist(),
+        df_merge['precip_mm'].tolist(),
+        df_merge['temp_high_c'].tolist(),
+        df_merge['temp_low_c'].tolist()
+    ):
+        lv = 0
+        d = []
+        if ca:
+            lv += 2
+            d.append('Crowd forecast exceeds threshold')
+        if whz:
+            lv += 1
+            if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) and pr >= precip_high:
+                d.append('High precipitation')
+            if th is not None and not (isinstance(th, float) and np.isnan(th)) and th >= temp_high:
+                d.append('High temperature')
+            if tl is not None and not (isinstance(tl, float) and np.isnan(tl)) and tl <= temp_low:
+                d.append('Low temperature')
+        risk_level.append(int(lv))
+        drivers.append(d)
+
+    p_warn = [0.85 if s else 0.15 for s in suitability.tolist()]
+
+    return jsonify({
+        'meta': {
+            'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'model_name': model_key,
+            'run_dir': run_dir,
+        },
+        'time_axis': [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in df_merge['date'].tolist()],
+        'visitor_actual': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['y_true'].tolist()],
+        'visitor_pred': [float(v) for v in df_merge['y_pred'].tolist()],
+        'thresholds': {
+            'crowd': threshold_crowd
+        },
+        'weather': {
+            'precip_mm': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['precip_mm'].tolist()],
+            'temp_high_c': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['temp_high_c'].tolist()],
+            'temp_low_c': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['temp_low_c'].tolist()],
+        },
+        'crowd_alert': crowd_alert.astype(bool).tolist(),
+        'weather_hazard': weather_hazard.astype(bool).tolist(),
+        'suitability_warning_bin': suitability.astype(bool).tolist(),
+        'risk_level': risk_level,
+        'p_warn': p_warn,
+        'drivers': drivers,
+        'warning': warning
+    })
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
