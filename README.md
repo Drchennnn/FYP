@@ -325,6 +325,16 @@ This section defines thesis-ready, **business-facing warnings**. The goal is to 
 
 > **Naming note**: Plot labels and figure text must remain **English-only** (Zero Chinese Policy), even if the surrounding documentation is bilingual.
 
+#### 7.4.0 Definitions & Defaults（关键常量与默认值）
+
+| 名称 | 默认值 | 含义 / 用途 | 备注（防泄露 / 口径一致） |
+|---|---:|---|---|
+| `H` | 7 | 预测步数（未来 7 天） | 用于多步预测与多步指标汇总 |
+| Horizon weights `w1..w7` | `[0.28, 0.20, 0.15, 0.12, 0.10, 0.08, 0.07]` | 多步指标的时间权重（近端更重要） | `Σw=1`；用于加权 MAE/sMAPE 等；理由：运营决策更依赖 1-3 天短期准确性 |
+| `DEFAULT_PEAK_THRESHOLD` | 18500 | 峰值客流阈值（peak vs non-peak / crowd_alert） | **固定阈值**，与评估代码一致（报告口径统一） |
+| Weather quantiles | `Q0.90 / Q0.10`（默认） | 天气危险阈值按训练期历史分位数确定 | **只用训练期**计算阈值，随后固定应用到 val/test，避免时间泄露 |
+| `FN:FP` cost ratio (aux) | 5:1 | 预警漏报成本高于误报的业务假设（可选辅助指标） | 仅用于辅助比较，不替代主指标 |
+
 #### 7.4.1 `crowd_alert` (Crowding risk)
 
 **Primary (fixed-threshold) definition (recommended for reporting):**
@@ -363,21 +373,32 @@ Rationale: a ratio-based ladder is easy to explain (“approaching capacity”) 
 - `temp_high` (daily maximum temperature, °C)
 - `temp_low` (daily minimum temperature, °C)
 
-**Level definition (simple threshold rules):**
+**Route B (data-driven) definition: historical quantile thresholds (recommended):**
 
-- **Green** (no hazard):
-  - `precip < 10 mm` AND `temp_high < 30°C` AND `temp_low > 0°C`
+We avoid hard-coded meteorological cutoffs and instead define hazards **relative to local historical distribution**.
 
-- **Yellow** (mild hazard):
-  - `precip ≥ 10 mm` OR `temp_high ≥ 30°C` OR `temp_low ≤ 0°C`
+1) **Compute thresholds on the training period only** (to avoid leakage):
 
-- **Orange** (moderate hazard):
-  - `precip ≥ 25 mm` OR `temp_high ≥ 35°C` OR `temp_low ≤ -5°C`
+- `P90 = Quantile(meteo_precip_sum_train, 0.90)`
+- `TH90 = Quantile(temp_high_train, 0.90)`
+- `TL10 = Quantile(temp_low_train, 0.10)`
 
-- **Red** (severe hazard):
-  - `precip ≥ 50 mm` OR `temp_high ≥ 38°C` OR `temp_low ≤ -10°C`
+2) **Apply the thresholds (fixed) to val/test and online inference**:
 
-Rationale (documentation-level): precipitation bands like 10/25/50 mm and “heat/cold” cutoffs are widely used as **standard practice** in operational weather communication. If a thesis requires formal citations, add verified references here. *(TODO: add authoritative meteorological guideline references if required.)*
+- `weather_hazard = 1` if (`meteo_precip_sum ≥ P90`) OR (`temp_high ≥ TH90`) OR (`temp_low ≤ TL10`)
+- `weather_hazard = 0` otherwise
+
+Optional 4-level mapping (for dashboard communication, still quantile-driven):
+
+- **Green**: none of the conditions exceed `Q0.80/Q0.20`
+- **Yellow**: any exceeds `Q0.80/Q0.20`
+- **Orange**: any exceeds `Q0.90/Q0.10` (default hazard trigger)
+- **Red**: any exceeds `Q0.97/Q0.03` (extreme tail)
+
+Notes:
+
+- Quantiles must be computed **within each walk-forward window** using only that window’s training split.
+- This strategy is robust to climate/seasonality differences and keeps the warning definition aligned with the dataset distribution.
 
 #### 7.4.3 `suitability_warning` (Overall suitability warning)
 
@@ -402,15 +423,36 @@ This binarization supports consistent classification metrics (Precision/Recall/F
 
 ### 7.5 Model Selection Policy (Champion Model)
 
-When selecting the **Champion** model among candidates (LSTM/GRU/Seq2Seq variants), we prioritize warning quality over point-forecast error.
+When selecting the **Champion** model among candidates (LSTM/GRU/Seq2Seq variants), we use a **warning-first** policy: the model must reliably catch risky days before we care about point-forecast error.
 
-1. **Primary criterion**: maximize **`suitability_warning` F1** under **walk-forward evaluation** (see Section 13 placeholders).
-2. **Tie-breakers (probabilistic warning quality)**:
-   - lower **Brier score** (better probability accuracy)
-   - lower **ECE (Expected Calibration Error)** (better calibration)
-3. **Secondary reporting metrics** (for regression performance): MAE / RMSE / sMAPE.
+**Step 0 — Define the target label (binary):**
 
-Note: Using calibration metrics as tie-breakers is standard practice when warnings are consumed as probabilities (e.g., reliability diagrams), even if base models are deterministic and probabilities are derived via a transform.
+- Use `suitability_warning_bin` as the main classification label (see Section 7.4.3).
+
+**Step 1 — Hard constraint (safety / business requirement):**
+
+- Require **`Recall_warning ≥ 0.80`** (measured under walk-forward evaluation).
+- Any model failing this constraint is **not eligible** to be Champion (even if regression error is small).
+
+**Step 2 — Primary metric (rank eligible models):**
+
+- Maximize **Weighted F1 for `suitability_warning_bin`**.
+  - Default weighting: emphasize warning days (positive class) to reflect operational value.
+  - The weighting scheme must be fixed and documented for reproducibility.
+
+**Step 3 — Tie-breakers (probabilistic warning quality):**
+
+1) lower **Brier score**
+2) lower **ECE (Expected Calibration Error)**
+
+**Optional auxiliary (business-cost view):**
+
+- Compare **expected cost** using `Cost(FN):Cost(FP) = 5:1` (漏报远高于误报).
+- This is **auxiliary only**; the final decision still follows Steps 1–3.
+
+**Secondary reporting (regression):**
+
+- Report MAE / RMSE / sMAPE, and for multi-step forecasts use the horizon weights `w1..w7` (Section 7.4.0) to compute weighted aggregates.
 
 ---
 
@@ -564,17 +606,19 @@ This appendix records the meaning and rationale of key terms/settings used in th
 
 - **Peak threshold (18500)**: A fixed visitor-count threshold used to label peak vs non-peak days in evaluation and to define the base crowding alert. This value is hard-coded in evaluation modules (e.g., `DEFAULT_PEAK_THRESHOLD = 18500`).
 - **`crowd_alert`**: Crowding risk indicator derived from visitor count. In evaluation code it is binary (`visitor_count ≥ threshold`). In the thesis write-up it is additionally mapped to 4 operational levels (Green/Yellow/Orange/Red).
-- **`weather_hazard`**: A rule-based weather hazard level derived from precipitation and temperature features available in the dataset.
-- **`suitability_warning`**: Overall warning that a day may be unsuitable for visiting due to crowding and/or weather risk. Recommended combination is **OR**, with severity as the max of components.
+- **`weather_hazard`**: Weather hazard derived from precipitation and temperature features using **training-only historical quantile thresholds** (Route B). Default trigger: `precip ≥ Q0.90` OR `temp_high ≥ Q0.90` OR `temp_low ≤ Q0.10`, with all quantiles computed on the training split only to avoid temporal leakage.
+- **`suitability_warning` / `suitability_warning_bin`**: Overall warning that a day may be unsuitable for visiting due to crowding and/or weather risk. Recommended combination is **OR**, with severity as the max of components. For metrics, we use a binary label: `suitability_warning_bin = 1` for {Orange, Red} and 0 for {Green, Yellow}.
 
 ### B. Evaluation methodology terms
 
 - **Walk-forward evaluation (rolling-origin)**: A time-series evaluation method that repeatedly trains on a past window and tests on the next window, mimicking real deployment and reducing temporal leakage. (Standard practice in time-series forecasting; TODO: add a formal citation if required.)
 - **Ablation study**: An experimental design where one component (feature/module) is removed or changed at a time to measure its contribution.
+- **`Recall_warning ≥ 0.80` constraint**: A Champion eligibility rule requiring the warning system to catch at least 80% of true warning days (based on `suitability_warning_bin`) under walk-forward evaluation.
 
 ### C. Metrics & calibration terms
 
 - **sMAPE (Symmetric Mean Absolute Percentage Error)**: A scale-free forecasting error metric. Here it is reported in percent.
+- **Horizon weights (H=7)**: A fixed weight vector `w1..w7` (default `[0.28, 0.20, 0.15, 0.12, 0.10, 0.08, 0.07]`, sum to 1) used to aggregate multi-step regression metrics, emphasizing near-term accuracy.
 - **Brier score**: Mean squared error of probabilistic predictions for binary outcomes. Lower is better.
 - **ECE (Expected Calibration Error)**: Measures how far predicted probabilities deviate from observed frequencies across bins. Lower is better.
 - **Calibration**: The property that predicted probabilities match empirical outcomes. Common tools include reliability diagrams, ECE, and post-hoc calibrators (Platt scaling, isotonic regression). (Standard practice; TODO: add verified references if needed.)
