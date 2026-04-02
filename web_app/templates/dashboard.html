@@ -1,74 +1,163 @@
 {% extends 'base.html' %}
 
-{% block title %}仪表盘 - 九寨沟智慧景区客流预测系统{% endblock %}
+{% block title %}Dashboard - Jiuzhaigou Forecast{% endblock %}
 
 {% block page_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
 {% endblock %}
 
 {% block content %}
+<div class="uiw-bg-pattern" aria-hidden="true"></div>
+
+<!-- Global spinner overlay (used for any /api/* fetch) -->
+<div class="uiw-spinner" id="uiwSpinner" aria-hidden="true" style="display:none;">
+  <div class="uiw-spinner__inner" role="status" aria-label="Loading"></div>
+</div>
+
 <div class="uiw-page">
-  <div class="uiw-page-header">
-    <div>
-      <div class="uiw-page-title">综合态势</div>
-      <div class="uiw-page-subtitle" id="uiwMetaLine">数据来源：离线备份（backups）</div>
+  <header class="uiw-page-header">
+    <div class="uiw-header-left">
+      <div class="uiw-page-title">Dashboard</div>
+      <div class="uiw-page-subtitle" id="uiwMetaLine">Offline artifact mode</div>
     </div>
 
-    <div class="uiw-controls">
-      <div class="btn-group" role="group" aria-label="model toggle">
-        <button class="btn btn-outline-info" id="btnChampion" type="button">冠军模型</button>
-        <button class="btn btn-outline-info" id="btnRunner" type="button">亚军模型</button>
+    <div class="uiw-controls" aria-label="dashboard controls">
+      <div class="uiw-chip-group" role="group" aria-label="quick forecast view">
+        <button class="uiw-chip" id="btnView1" type="button" data-h="1">Latest 1D</button>
+        <button class="uiw-chip" id="btnView3" type="button" data-h="3">Latest 3D</button>
+        <button class="uiw-chip uiw-chip--active" id="btnView7" type="button" data-h="7">Latest 7D</button>
       </div>
 
-      <button class="btn btn-warning uiw-btn-refresh" id="btnRefresh" type="button">
-        <i class="fa-solid fa-rotate"></i> 刷新
-      </button>
-    </div>
-  </div>
+      <div class="uiw-sep" aria-hidden="true"></div>
 
-  <div class="uiw-kpi-grid">
+      <div class="uiw-model-toggle" role="group" aria-label="primary model">
+        <button class="uiw-btn" id="btnChampion" type="button">Champion</button>
+        <button class="uiw-btn" id="btnRunner" type="button">Runner-up</button>
+      </div>
+
+      <div class="uiw-sep" aria-hidden="true"></div>
+
+      <div class="uiw-curve-toggles" aria-label="curve toggles">
+        <label class="uiw-curve-toggle" title="Show/Hide Actual">
+          <input id="tglActual" type="checkbox" checked />
+          <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
+          <span class="uiw-curve-toggle__label">Actual</span>
+        </label>
+        <label class="uiw-curve-toggle" title="Show/Hide Champion prediction">
+          <input id="tglChampion" type="checkbox" checked />
+          <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
+          <span class="uiw-curve-toggle__label">Champion</span>
+        </label>
+        <label class="uiw-curve-toggle" title="Show/Hide Runner-up prediction">
+          <input id="tglRunner" type="checkbox" checked />
+          <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
+          <span class="uiw-curve-toggle__label">Runner-up</span>
+        </label>
+        <label class="uiw-curve-toggle" title="Also show backtest segment for prediction curves">
+          <input id="tglBacktest" type="checkbox" />
+          <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
+          <span class="uiw-curve-toggle__label">Backtest</span>
+        </label>
+      </div>
+
+      <div class="uiw-sep" aria-hidden="true"></div>
+
+      <button class="uiw-btn" id="btnRefresh" type="button">Refresh</button>
+      <button class="uiw-btn-primary" id="btnReset" type="button">Reset</button>
+    </div>
+  </header>
+
+  <section class="uiw-kpi-grid" aria-label="key metrics">
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">未来7天最高预测客流</div>
+      <div class="uiw-kpi-label">Max forecast visitors (view)</div>
       <div class="uiw-kpi-value" id="kpiMaxVisitor">--</div>
       <div class="uiw-kpi-foot" id="kpiMaxVisitorDate">--</div>
     </div>
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">预警天数（风险>0）</div>
+      <div class="uiw-kpi-label">Warn days (risk &gt; 0)</div>
       <div class="uiw-kpi-value" id="kpiWarnDays">--</div>
-      <div class="uiw-kpi-foot">Crowd / Weather 综合</div>
+      <div class="uiw-kpi-foot">Crowd + Weather</div>
     </div>
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">最大风险等级</div>
+      <div class="uiw-kpi-label">Max risk level</div>
       <div class="uiw-kpi-value" id="kpiMaxRisk">--</div>
       <div class="uiw-kpi-foot" id="kpiMaxRiskDrivers">--</div>
     </div>
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">模型</div>
+      <div class="uiw-kpi-label">Primary model</div>
       <div class="uiw-kpi-value" id="kpiModel">--</div>
       <div class="uiw-kpi-foot" id="kpiRunDir" style="font-family: 'Roboto Mono', monospace;">--</div>
     </div>
-  </div>
+  </section>
 
-  <div class="uiw-grid-2">
-    <section class="uiw-panel">
-      <div class="uiw-panel-title"><i class="fa-solid fa-chart-line"></i> Visitor Forecast (7-day)</div>
-      <div id="visitorChart" class="uiw-chart"></div>
+  <div class="uiw-main-grid">
+    <section class="uiw-panel uiw-panel--chart">
+      <div class="uiw-panel-title">Visitor forecast</div>
+      <div id="visitorChart" class="uiw-chart uiw-chart--lg" aria-label="visitor forecast chart"></div>
+      <div class="uiw-hint">Tip: hover for crosshair; click a date to sync Weather &amp; Risk cards.</div>
     </section>
 
-    <section class="uiw-panel">
-      <div class="uiw-panel-title"><i class="fa-solid fa-cloud-sun-rain"></i> Weather (daily)</div>
-      <div id="weatherChart" class="uiw-chart"></div>
-    </section>
+    <aside class="uiw-side">
+      <section class="uiw-panel">
+        <div class="uiw-panel-title">Weather</div>
+        <div class="uiw-weather-card" id="weatherCard" aria-live="polite">
+          <div class="uiw-weather-card__header">
+            <div>
+              <div class="uiw-weather-card__place">Jiuzhaigou</div>
+              <div class="uiw-weather-card__date" id="weatherDate">No date selected</div>
+            </div>
+            <div class="uiw-weather-card__temp" id="weatherTemp">--°C</div>
+          </div>
+          <div class="uiw-weather-card__meta" id="weatherMeta">Click a point on the chart to view daily weather.</div>
+          <div class="uiw-weather-card__grid">
+            <div class="uiw-weather-kv"><div class="uiw-weather-k">Precip</div><div class="uiw-weather-v" id="wPrecip">--</div></div>
+            <div class="uiw-weather-kv"><div class="uiw-weather-k">Temp (H/L)</div><div class="uiw-weather-v" id="wTempHL">--</div></div>
+            <div class="uiw-weather-kv"><div class="uiw-weather-k">Wind</div><div class="uiw-weather-v" id="wWind">--</div></div>
+            <div class="uiw-weather-kv"><div class="uiw-weather-k">AQI</div><div class="uiw-weather-v" id="wAqi">--</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="uiw-panel">
+        <div class="uiw-panel-title">Thresholds &amp; risk</div>
+        <div class="uiw-thermo" id="thermo" aria-label="risk thermometer">
+          <div class="uiw-thermo__head">
+            <div class="uiw-thermo__title" id="thermoTitle">No date selected</div>
+            <div class="uiw-thermo__subtitle" id="thermoSubtitle">Showing default thresholds</div>
+          </div>
+          <div class="uiw-thermo__body">
+            <div class="uiw-thermo__tube" aria-hidden="true">
+              <div class="uiw-thermo__fill" id="thermoFill" style="height: 12%;"></div>
+            </div>
+            <div class="uiw-thermo__value">
+              <div class="uiw-thermo__score" id="thermoScore">--</div>
+              <div class="uiw-thermo__level" id="thermoLevel">--</div>
+            </div>
+          </div>
+          <div class="uiw-thermo__foot" id="thermoFoot">Crowd threshold: <span id="thrCrowd">--</span> · Weather quantiles: <span id="thrWeather">--</span></div>
+        </div>
+      </section>
+
+      <section class="uiw-panel">
+        <div class="uiw-panel-title">Best travel window (view)</div>
+        <div class="uiw-reco" id="bestWindow">Waiting for forecast…</div>
+      </section>
+    </aside>
   </div>
 
   <section class="uiw-panel">
-    <div class="uiw-panel-title"><i class="fa-solid fa-timeline"></i> 风险时间线</div>
-    <div id="riskTimeline" class="uiw-timeline">
-      <div class="text-white-50">等待数据加载…</div>
+    <div class="uiw-panel-title">Weather series (reference)</div>
+    <div id="weatherChart" class="uiw-chart" aria-label="weather chart"></div>
+  </section>
+
+  <section class="uiw-panel">
+    <div class="uiw-panel-title">Risk timeline</div>
+    <div id="riskTimeline" class="uiw-timeline" aria-label="risk timeline">
+      <div class="uiw-muted">Loading…</div>
     </div>
   </section>
 
-  <div class="uiw-warning text-white-50" id="uiwWarning" style="display:none;"></div>
+  <div class="uiw-warning" id="uiwWarning" style="display:none;"></div>
 </div>
 {% endblock %}
 

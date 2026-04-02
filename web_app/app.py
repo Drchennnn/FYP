@@ -225,6 +225,8 @@ def _load_weather_by_date(dates: list):
             return None
 
         out = pd.DataFrame({'date': dfw['date']})
+
+        # Core numeric fields
         out['precip_mm'] = dfw['meteo_precip_sum'] if 'meteo_precip_sum' in dfw.columns else np.nan
         if 'temp_high_c' in dfw.columns:
             out['temp_high_c'] = dfw['temp_high_c']
@@ -240,7 +242,29 @@ def _load_weather_by_date(dates: list):
         else:
             out['temp_low_c'] = np.nan
 
-        out = out.groupby('date', as_index=False).mean(numeric_only=True)
+        # Extra fields for Weather Card (string fields kept as first() per date)
+        if 'weather_code_en' in dfw.columns:
+            out['weather_code_en'] = dfw['weather_code_en']
+        if 'wind_level' in dfw.columns:
+            out['wind_level'] = dfw['wind_level']
+        if 'wind_dir_en' in dfw.columns:
+            out['wind_dir_en'] = dfw['wind_dir_en']
+        if 'aqi_value' in dfw.columns:
+            out['aqi_value'] = dfw['aqi_value']
+        if 'aqi_level_en' in dfw.columns:
+            out['aqi_level_en'] = dfw['aqi_level_en']
+        if 'meteo_wind_max' in dfw.columns:
+            out['wind_max'] = dfw['meteo_wind_max']
+
+        # Aggregate
+        numeric_cols = [c for c in out.columns if c not in ['date', 'weather_code_en', 'wind_dir_en', 'aqi_level_en']]
+        agg = {c: 'mean' for c in numeric_cols if c != 'date'}
+        for c in ['weather_code_en', 'wind_dir_en', 'aqi_level_en']:
+            if c in out.columns:
+                agg[c] = 'first'
+
+        out = out.groupby('date', as_index=False).agg(agg)
+        out = out.sort_values('date')
         return out
     except Exception as e:
         print(f"Failed to load weather from processed data: {e}")
@@ -434,108 +458,209 @@ def api_metrics():
 def api_forecast():
     """Offline artifact forecast API.
 
-    Current implementation reads *_test_predictions.csv and returns the latest h days as a proxy.
+    Dashboard uses this endpoint for the full time span, and only visualizes the
+    latest *h* days as the forecast segment.
+
+    Query:
+      - h: int, [1, 14], latest window length
+      - include_all: 1/0, if 1 returns champion + runner-up (if available)
     """
-    model_id = request.args.get('model_id', 'champion')
+
     h = int(request.args.get('h', 7))
     h = max(1, min(h, 14))
+    include_all = str(request.args.get('include_all', '0')).lower() in ['1', 'true', 'yes']
 
     models_resp = api_models().get_json() or {}
     models = {m['model_id']: m for m in (models_resp.get('models') or [])}
-    if model_id not in models:
-        return jsonify({'error': f'Unknown model_id: {model_id}'}), 400
+    if 'champion' not in models:
+        return jsonify({'error': 'Champion model not found in offline artifacts'}), 404
 
-    run_dir = models[model_id].get('run_dir')
-    model_key = models[model_id].get('model_key')
+    def _load_one(mid: str):
+        run_dir = models.get(mid, {}).get('run_dir')
+        model_key = models.get(mid, {}).get('model_key')
+        metrics_path = os.path.join(run_dir, 'metrics.json') if run_dir else None
+        metrics = _safe_read_json(metrics_path) or {}
+        df = _load_predictions(run_dir)
+        return run_dir, model_key, metrics, df
 
-    metrics_path = os.path.join(run_dir, 'metrics.json') if run_dir else None
-    metrics = _safe_read_json(metrics_path) or {}
-    threshold_crowd = float((metrics.get('meta') or {}).get('peak_threshold', 18500.0))
+    champ_run, champ_key, champ_metrics, df_c = _load_one('champion')
+    if df_c is None or df_c.empty:
+        return jsonify({'error': 'No prediction artifacts found', 'run_dir': champ_run}), 404
 
-    df_pred = _load_predictions(run_dir)
-    if df_pred is None or df_pred.empty:
-        return jsonify({'error': 'No prediction artifacts found', 'run_dir': run_dir}), 404
+    runner_available = include_all and ('runner_up' in models)
+    run_run, run_key, run_metrics, df_r = (None, None, {}, None)
+    if runner_available:
+        run_run, run_key, run_metrics, df_r = _load_one('runner_up')
+        if df_r is None or df_r.empty:
+            runner_available = False
 
-    df_tail = df_pred.tail(h).copy()
-    dates = df_tail['date'].tolist()
+    # Unified time axis (union by date)
+    df_base = df_c.copy()
+    df_base = df_base.rename(columns={'y_pred': 'champion_pred', 'y_true': 'actual'})
 
+    if runner_available:
+        df_rr = df_r.copy().rename(columns={'y_pred': 'runner_pred', 'y_true': 'actual_r'})
+        df_base = pd.merge(df_base, df_rr[['date', 'runner_pred', 'actual_r']], on='date', how='outer')
+        # Prefer champion actual; fall back to runner actual if champion missing
+        df_base['actual'] = df_base['actual'].combine_first(df_base.get('actual_r'))
+        if 'actual_r' in df_base.columns:
+            df_base = df_base.drop(columns=['actual_r'])
+    else:
+        df_base['runner_pred'] = np.nan
+
+    df_base = df_base.sort_values('date')
+
+    dates_all = df_base['date'].tolist()
     warning = None
-    dfw = _load_weather_by_date(dates)
+    dfw = _load_weather_by_date(dates_all)
     if dfw is None or dfw.empty:
-        warning = 'Weather data not available; returning nulls for precip/temp.'
+        warning = 'Weather data not available; returning nulls for weather fields.'
         dfw = pd.DataFrame({
-            'date': dates,
-            'precip_mm': [np.nan] * len(dates),
-            'temp_high_c': [np.nan] * len(dates),
-            'temp_low_c': [np.nan] * len(dates)
+            'date': dates_all,
+            'precip_mm': [np.nan] * len(dates_all),
+            'temp_high_c': [np.nan] * len(dates_all),
+            'temp_low_c': [np.nan] * len(dates_all),
+            'weather_code_en': [None] * len(dates_all),
+            'wind_level': [np.nan] * len(dates_all),
+            'wind_dir_en': [None] * len(dates_all),
+            'wind_max': [np.nan] * len(dates_all),
+            'aqi_value': [np.nan] * len(dates_all),
+            'aqi_level_en': [None] * len(dates_all),
         })
 
-    df_merge = pd.merge(df_tail, dfw, on='date', how='left')
+    df_merge = pd.merge(df_base, dfw, on='date', how='left')
 
-    wh = (metrics.get('weather_hazard') or {})
+    # Thresholds come from champion metrics by default
+    threshold_crowd = float((champ_metrics.get('meta') or {}).get('peak_threshold', 18500.0))
+    wh = (champ_metrics.get('weather_hazard') or {})
     wh_thr = (wh.get('thresholds') or {})
     precip_high = float(wh_thr.get('precip_high', 8.0))
     temp_high = float(wh_thr.get('temp_high', 22.6))
     temp_low = float(wh_thr.get('temp_low', -10.61))
+    quantiles = (wh_thr.get('quantiles') or {})
 
-    crowd_alert = (df_merge['y_pred'] >= threshold_crowd)
-    weather_hazard = (
-        (df_merge['precip_mm'] >= precip_high) |
-        (df_merge['temp_high_c'] >= temp_high) |
-        (df_merge['temp_low_c'] <= temp_low)
-    )
-    suitability = (crowd_alert | weather_hazard)
+    def _compute_risk(pred_col: str):
+        y_pred = df_merge[pred_col].astype(float)
+        crowd_alert = (y_pred >= threshold_crowd)
+        weather_hazard = (
+            (df_merge['precip_mm'] >= precip_high) |
+            (df_merge['temp_high_c'] >= temp_high) |
+            (df_merge['temp_low_c'] <= temp_low)
+        )
+        suitability = (crowd_alert | weather_hazard)
 
-    risk_level = []
-    drivers = []
-    for ca, whz, pr, th, tl in zip(
-        crowd_alert.tolist(),
-        weather_hazard.tolist(),
-        df_merge['precip_mm'].tolist(),
-        df_merge['temp_high_c'].tolist(),
-        df_merge['temp_low_c'].tolist()
-    ):
-        lv = 0
-        d = []
-        if ca:
-            lv += 2
-            d.append('Crowd forecast exceeds threshold')
-        if whz:
-            lv += 1
-            if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) and pr >= precip_high:
-                d.append('High precipitation')
-            if th is not None and not (isinstance(th, float) and np.isnan(th)) and th >= temp_high:
-                d.append('High temperature')
-            if tl is not None and not (isinstance(tl, float) and np.isnan(tl)) and tl <= temp_low:
-                d.append('Low temperature')
-        risk_level.append(int(lv))
-        drivers.append(d)
+        risk_level = []
+        drivers = []
+        for ca, whz, pr, th, tl in zip(
+            crowd_alert.tolist(),
+            weather_hazard.tolist(),
+            df_merge['precip_mm'].tolist(),
+            df_merge['temp_high_c'].tolist(),
+            df_merge['temp_low_c'].tolist()
+        ):
+            lv = 0
+            d = []
+            if bool(ca) and not (isinstance(ca, float) and np.isnan(ca)):
+                lv += 2
+                d.append('Crowd forecast exceeds threshold')
+            if bool(whz) and not (isinstance(whz, float) and np.isnan(whz)):
+                lv += 1
+                if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) and pr >= precip_high:
+                    d.append('High precipitation')
+                if th is not None and not (isinstance(th, float) and np.isnan(th)) and th >= temp_high:
+                    d.append('High temperature')
+                if tl is not None and not (isinstance(tl, float) and np.isnan(tl)) and tl <= temp_low:
+                    d.append('Low temperature')
+            risk_level.append(int(lv))
+            drivers.append(d)
 
-    p_warn = [0.85 if s else 0.15 for s in suitability.tolist()]
+        p_warn = [0.85 if s else 0.15 for s in suitability.tolist()]
+
+        return {
+            'risk_level': risk_level,
+            'drivers': drivers,
+            'p_warn': p_warn,
+        }
+
+    risk_champ = _compute_risk('champion_pred')
+    risk_runner = _compute_risk('runner_pred') if runner_available else None
+
+    # Holiday intervals (for markArea)
+    holiday_ranges = []
+    for hh in HOLIDAYS_CONFIG:
+        holiday_ranges.append({
+            'start': hh['start'],
+            'end': hh['end'],
+            'name': hh.get('name', 'Holiday'),
+            'type': hh.get('type', 'festival')
+        })
+
+    time_axis = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in df_merge['date'].tolist()]
+    forecast_start_idx = max(0, len(time_axis) - h)
+
+    def _to_num_list(col):
+        out = []
+        for v in df_merge[col].tolist():
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                out.append(None)
+            else:
+                try:
+                    out.append(float(v))
+                except Exception:
+                    out.append(None)
+        return out
 
     return jsonify({
         'meta': {
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'model_name': model_key,
-            'run_dir': run_dir,
+            'champion': {
+                'model_name': champ_key,
+                'run_dir': champ_run,
+            },
+            'runner_up': ({
+                'model_name': run_key,
+                'run_dir': run_run,
+            } if runner_available else None)
         },
-        'time_axis': [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in df_merge['date'].tolist()],
-        'visitor_actual': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['y_true'].tolist()],
-        'visitor_pred': [float(v) for v in df_merge['y_pred'].tolist()],
+        'time_axis': time_axis,
+        'forecast': {
+            'h': h,
+            'start_index': forecast_start_idx
+        },
+        'series': {
+            'actual': _to_num_list('actual'),
+            'champion_pred': _to_num_list('champion_pred'),
+            'runner_pred': _to_num_list('runner_pred'),
+        },
         'thresholds': {
-            'crowd': threshold_crowd
+            'crowd': threshold_crowd,
+            'weather': {
+                'precip_high': precip_high,
+                'temp_high': temp_high,
+                'temp_low': temp_low,
+            },
+            'weather_quantiles': {
+                'precip_high': quantiles.get('precip_high'),
+                'temp_high': quantiles.get('temp_high'),
+                'temp_low': quantiles.get('temp_low'),
+            }
         },
         'weather': {
-            'precip_mm': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['precip_mm'].tolist()],
-            'temp_high_c': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['temp_high_c'].tolist()],
-            'temp_low_c': [None if (isinstance(v, float) and np.isnan(v)) else float(v) for v in df_merge['temp_low_c'].tolist()],
+            'precip_mm': _to_num_list('precip_mm'),
+            'temp_high_c': _to_num_list('temp_high_c'),
+            'temp_low_c': _to_num_list('temp_low_c'),
+            'weather_code_en': [None if v is None or (isinstance(v, float) and np.isnan(v)) else str(v) for v in df_merge.get('weather_code_en', pd.Series([None] * len(df_merge))).tolist()],
+            'wind_level': _to_num_list('wind_level') if 'wind_level' in df_merge.columns else [None] * len(df_merge),
+            'wind_dir_en': [None if v is None or (isinstance(v, float) and np.isnan(v)) else str(v) for v in df_merge.get('wind_dir_en', pd.Series([None] * len(df_merge))).tolist()],
+            'wind_max': _to_num_list('wind_max') if 'wind_max' in df_merge.columns else [None] * len(df_merge),
+            'aqi_value': _to_num_list('aqi_value') if 'aqi_value' in df_merge.columns else [None] * len(df_merge),
+            'aqi_level_en': [None if v is None or (isinstance(v, float) and np.isnan(v)) else str(v) for v in df_merge.get('aqi_level_en', pd.Series([None] * len(df_merge))).tolist()],
         },
-        'crowd_alert': crowd_alert.astype(bool).tolist(),
-        'weather_hazard': weather_hazard.astype(bool).tolist(),
-        'suitability_warning_bin': suitability.astype(bool).tolist(),
-        'risk_level': risk_level,
-        'p_warn': p_warn,
-        'drivers': drivers,
+        'holidays': holiday_ranges,
+        'risk': {
+            'champion': risk_champ,
+            'runner_up': risk_runner
+        },
         'warning': warning
     })
 
