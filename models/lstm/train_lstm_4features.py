@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple
@@ -27,7 +28,12 @@ from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.preprocessing import MinMaxScaler
 
 # 导入通用评估器
-from models.common.evaluator import calculate_metrics, save_metrics_to_files
+# Ensure project root is on sys.path when running as a script
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models.common.core_evaluation import evaluate_and_save_run
 
 matplotlib.use("Agg")
 
@@ -270,8 +276,6 @@ def main() -> None:
 
     # 模型权重保存在 output/runs/<run_name>/weights/ 目录中
     model_path = weights_dir / "lstm_jiuzhaigou.h5"
-    metrics_json_path = run_dir / "lstm_metrics.json"
-    metrics_csv_path = run_dir / "lstm_metrics.csv"
     pred_path = run_dir / "lstm_test_predictions.csv"
     history_path = run_dir / "lstm_history.csv"
 
@@ -326,20 +330,11 @@ def main() -> None:
     ).sort_values("date")
     pred_df.to_csv(pred_path, index=False, encoding="utf-8-sig")
 
-    # 7. 使用通用评估器计算指标
-    metrics = calculate_metrics(
-        y_true=y_true,
-        y_pred=y_pred,
-        y_train_scaled=y_train,
-        scaler=scaler,
-        peak_quantile=args.peak_quantile,
-    )
-
-    # 8. 保存模型和指标
+    # 8. 保存模型
     model.save(model_path)
-    
-    # 使用通用评估器的保存函数
-    additional_info = {
+
+    # 9. Unified core metrics + figures
+    extra_meta = {
         "samples": int(len(df)),
         "look_back": int(args.look_back),
         "epochs_requested": int(args.epochs),
@@ -347,47 +342,25 @@ def main() -> None:
         "train_samples": int(len(x_train)),
         "val_samples": int(len(x_val)),
         "test_samples": int(len(x_test)),
-        "input_dim": 4,
         "features": ["visitor_count_scaled", "month_norm", "day_of_week_norm", "is_holiday"],
     }
-    
-    save_metrics_to_files(
-        metrics=metrics,
-        run_dir=str(run_dir),
-        run_name=run_name,
-        model_name="lstm",
-        additional_info=additional_info,
-    )
 
     # 9. 保存训练历史
     history_df = pd.DataFrame(history.history)
     history_df.insert(0, "epoch", np.arange(1, len(history_df) + 1))
     history_df.to_csv(history_path, index=False, encoding="utf-8-sig")
 
-    # 10. 使用统一评估器计算指标和可视化
-    from models.common.evaluator import Evaluator, load_global_threshold
-    
-    # 加载统一的峰值阈值
-    peak_threshold = load_global_threshold()
-    
-    # 初始化评估器
-    evaluator = Evaluator(
-        peak_threshold=peak_threshold,
-        scaler=scaler
+    evaluate_and_save_run(
+        run_dir=str(run_dir),
+        model_name="lstm",
+        feature_count=4,
+        y_true=y_true,
+        y_pred=y_pred,
+        dates=pd.to_datetime(pred_df["date"]),
+        horizon=1,
+        extra_meta=extra_meta,
+        save_figures=bool(args.save_plots),
     )
-    
-    # 计算指标
-    metrics_eval = evaluator.evaluate(y_true, y_pred)
-    
-    # 保存可视化
-    if args.save_plots:
-        evaluator.generate_visualizations(
-            out_dir=fig_dir,
-            history=history.history,
-            dates=pd.to_datetime(pred_df["date"]),
-            y_true=y_true,
-            y_pred=y_pred
-        )
 
     # 11. 输出结果
     print(f"LSTM训练完成！")
@@ -396,16 +369,8 @@ def main() -> None:
     print(f"预测结果: {pred_path}")
     print(f"训练历史: {history_path}")
     
-    print("\n回归指标:")
-    for key, value in metrics["regression"].items():
-        print(f"  {key.upper()}: {value:.4f}")
-    
-    print("\n分类指标 (高峰日预测):")
-    for key, value in metrics["classification"].items():
-        if key != "peak_threshold":
-            print(f"  {key}: {value:.4f}")
-        else:
-            print(f"  {key}: {value:.2f}")
+    # metrics are saved into output artifacts; keep console output lightweight
+    print("Core metrics saved to:", run_dir / "metrics.json")
 
 
 if __name__ == "__main__":

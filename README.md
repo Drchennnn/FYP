@@ -56,9 +56,7 @@ FYP/
 │   ├── gru/               # GRU 系列模型
 │   │   ├── train_gru_8features.py # GRU (8特征)
 │   │   └── train_gru_4features.py # GRU (4特征)
-│   └── prophet/           # Prophet 系列模型
-│       ├── train_prophet_8features.py # Prophet (8特征)
-│       └── train_prophet_4features.py # Prophet (4特征)
+│   
 ├── output/                # 统一训练输出目录
 │   └── runs/              # 单次实验产物
 │       └── <model>_<features>features_<timestamp>/
@@ -204,11 +202,6 @@ python run_benchmark.py
 - **架构**: GRU + Dropout + 自定义损失函数
 - **特点**: 相比LSTM参数更少，训练更快
 
-**Prophet**
-- **位置**: `models/prophet/train_prophet_4features.py` (4特征) 和 `models/prophet/train_prophet_8features.py` (8特征)
-- **架构**: 基于统计学的时间序列预测模型
-- **特点**: 自动处理节假日和趋势，易于解释
-
 ### 核心架构：Seq2Seq + Attention (非自回归直接多步预测)
 
 **位置**: `models/lstm/train_seq2seq_attention_8features.py`
@@ -237,20 +230,16 @@ python run_benchmark.py
 | LSTM (8特征) | 4623.18 | 6987.45 | 25.34% | 24.12% | 0.68 | 0.81 |
 | GRU (4特征) | 4856.78 | 7213.45 | 27.56% | 25.89% | 0.64 | 0.79 |
 | GRU (8特征) | 4512.90 | 6876.34 | 24.89% | 23.67% | 0.70 | 0.82 |
-| Prophet (4特征) | 5234.56 | 7567.89 | 29.87% | 28.12% | 0.58 | 0.75 |
-| Prophet (8特征) | 5012.34 | 7423.56 | 28.78% | 27.34% | 0.61 | 0.77 |
 | **Seq2Seq+Attention (8特征)** | **4428.82** | **6499.69** | **22.05%** | **21.34%** | **0.73** | **0.84** |
 
 #### 关键发现 (Key Findings)
 - **最佳模型**: Seq2Seq+Attention (8特征) 综合表现最佳
 - **特征提升**: 8特征版本相比4特征版本在所有模型上都有显著提升
 - **架构优势**: Seq2Seq+Attention架构在RMSE和MAPE指标上有明显优势
-- **稳定性**: Prophet模型具有较好的可解释性，但预测精度不如深度学习模型
 
 #### 推荐方案 (Recommendation)
 - **生产部署**: 使用Seq2Seq+Attention (8特征) 模型
 - **快速预测**: 使用GRU (8特征) 模型
-- **可解释性**: 使用Prophet (8特征) 模型
 - **基线对比**: 保留LSTM (4特征) 作为基准模型
 
 ---

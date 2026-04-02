@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple, List
@@ -29,7 +30,12 @@ from sklearn.metrics import ConfusionMatrixDisplay
 from sklearn.preprocessing import MinMaxScaler
 
 # 导入通用评估器
-from models.common.evaluator import calculate_metrics, save_metrics_to_files
+# Ensure project root is on sys.path when running as a script
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models.common.core_evaluation import evaluate_and_save_run
 
 matplotlib.use("Agg")
 
@@ -496,8 +502,6 @@ def main() -> None:
 
     # 模型权重保存在 output/runs/<run_name>/weights/ 目录中
     model_path = weights_dir / "seq2seq_jiuzhaigou.keras"
-    metrics_json_path = run_dir / "seq2seq_metrics.json"
-    metrics_csv_path = run_dir / "seq2seq_metrics.csv"
     pred_path = run_dir / "seq2seq_test_predictions.csv"
     history_path = run_dir / "seq2seq_history.csv"
 
@@ -578,23 +582,10 @@ def main() -> None:
     y_pred = scaler.inverse_transform(y_pred.reshape(-1, 1)).reshape(-1, args.decoder_steps)
     y_true = scaler.inverse_transform(y_test[:, :, 0].reshape(-1, 1)).reshape(-1, args.decoder_steps)
 
-    # 9. 计算指标
-    # 转换为二维数组（扁平化）
-    y_true_flat = y_true.reshape(-1)
-    y_pred_flat = y_pred.reshape(-1)
-
-    metrics = calculate_metrics(
-        y_true=y_true_flat,
-        y_pred=y_pred_flat,
-        y_train_scaled=y_train[:, :, 0].flatten(),
-        scaler=scaler,
-        peak_quantile=args.peak_quantile,
-    )
-
-    # 10. 保存模型和指标
+    # 10. 保存模型
     model.save(model_path)
     
-    additional_info = {
+    extra_meta = {
         "samples": int(len(df)),
         "encoder_steps": int(args.encoder_steps),
         "decoder_steps": int(args.decoder_steps),
@@ -603,7 +594,6 @@ def main() -> None:
         "train_samples": int(len(x_encoder_train)),
         "val_samples": int(len(x_encoder_train) * 0.15),
         "test_samples": int(len(x_encoder_test)),
-        "input_dim": 8,
         "features": [
             "visitor_count_scaled",      # 目标客流（归一化）
             "month_norm",                # 月份归一化
@@ -618,75 +608,41 @@ def main() -> None:
         "feature_version": "8_features_v1",
         "loss_function": "CustomAsymmetricLoss",
     }
-    
-    save_metrics_to_files(
-        metrics=metrics,
-        run_dir=str(run_dir),
-        run_name=run_name,
-        model_name="seq2seq",
-        additional_info=additional_info,
-    )
 
     # 11. 保存训练历史
     history_df = pd.DataFrame(history.history)
     history_df.insert(0, "epoch", np.arange(1, len(history_df) + 1))
     history_df.to_csv(history_path, index=False, encoding="utf-8-sig")
 
-    # 12. 保存测试预测结果
-    pred_df = []
+    # 12. 保存测试预测结果 (also used for dates in plots)
+    pred_rows = []
+    pred_dates = []
     for i in range(len(x_encoder_test)):
         for j in range(args.decoder_steps):
             date_idx = len(df) - len(x_encoder_test) - args.decoder_steps + i + j
             if date_idx >= len(df):
                 continue
                 
-            pred_df.append({
+            pred_dates.append(pd.to_datetime(df["date"].iloc[date_idx]))
+            pred_rows.append({
                 "date": str(df["date"].iloc[date_idx]),
                 "y_true": y_true[i, j],
                 "y_pred": y_pred[i, j]
             })
-    
-    pd.DataFrame(pred_df).to_csv(pred_path, index=False, encoding="utf-8-sig")
+    pd.DataFrame(pred_rows).to_csv(pred_path, index=False, encoding="utf-8-sig")
 
-    
-
-    # 13. 使用统一评估器计算指标和可视化
-    from models.common.evaluator import Evaluator, load_global_threshold
-    
-    # 加载统一的峰值阈值
-    peak_threshold = load_global_threshold()
-    
-    # 初始化评估器
-    evaluator = Evaluator(
-        peak_threshold=peak_threshold,
-        scaler=scaler
+    # 13. Unified core metrics + figures (multi-horizon)
+    evaluate_and_save_run(
+        run_dir=str(run_dir),
+        model_name="seq2seq_attention",
+        feature_count=8,
+        y_true=y_true,
+        y_pred=y_pred,
+        dates=pred_dates,
+        horizon=int(args.decoder_steps),
+        extra_meta=extra_meta,
+        save_figures=bool(args.save_plots),
     )
-    
-    # 计算指标（使用已经扁平化的数据）
-    metrics_eval = evaluator.evaluate(y_true_flat, y_pred_flat)
-    
-    # 保存可视化
-    if args.save_plots:
-        fig_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 准备预测日期用于可视化（需要重构 pred_df 逻辑）
-        pred_dates = []
-        for i in range(len(x_encoder_test)):
-            for j in range(args.decoder_steps):
-                date_idx = len(df) - len(x_encoder_test) - args.decoder_steps + i + j
-                if date_idx < len(df):
-                    pred_dates.append(pd.to_datetime(df["date"].iloc[date_idx]))
-        
-        # 创建 dates 数组，与 pred_df 长度相同
-        dates = pd.Series(pred_dates).dt.date  # 转换为日期格式
-        
-        evaluator.generate_visualizations(
-            out_dir=fig_dir,
-            history=history.history,
-            dates=dates,
-            y_true=y_true_flat,
-            y_pred=y_pred_flat
-        )
 
     # 14. 输出结果
     print(f"\n{'='*80}")
@@ -697,16 +653,7 @@ def main() -> None:
     print(f"预测结果: {pred_path}")
     print(f"训练历史: {history_path}")
     
-    print("\n回归指标:")
-    for key, value in metrics["regression"].items():
-        print(f"  {key.upper()}: {value:.4f}")
-    
-    print("\n分类指标 (高峰日预测):")
-    for key, value in metrics["classification"].items():
-        if key != "peak_threshold":
-            print(f"  {key}: {value:.4f}")
-        else:
-            print(f"  {key}: {value:.2f}")
+    print("Core metrics saved to:", run_dir / "metrics.json")
 
 
 if __name__ == "__main__":
