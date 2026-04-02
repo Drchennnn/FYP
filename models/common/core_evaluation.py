@@ -47,6 +47,86 @@ from sklearn.metrics import (
 
 DEFAULT_PEAK_THRESHOLD = 18500
 
+# Default horizon weights from README (Section 7.4.0), used for H=7.
+DEFAULT_HORIZON_WEIGHTS_H7 = [0.28, 0.20, 0.15, 0.12, 0.10, 0.08, 0.07]
+
+
+# Route B (data-driven) default quantiles for weather hazard thresholds.
+# We treat hazard as: precip >= q_precip_high OR temp_high >= q_temp_high OR temp_low <= q_temp_low
+DEFAULT_WEATHER_QUANTILES = {
+    "precip_high": 0.90,
+    "temp_high": 0.90,
+    "temp_low": 0.10,
+}
+
+
+def _nanquantile(x: np.ndarray, q: float) -> float:
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x)]
+    if x.size == 0:
+        return float("nan")
+    return float(np.quantile(x, q))
+
+
+def compute_weather_thresholds_quantile(
+    *,
+    train_precip: np.ndarray,
+    train_temp_high: np.ndarray,
+    train_temp_low: np.ndarray,
+    quantiles: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """Compute Route B weather hazard thresholds from TRAIN split only.
+
+    All inputs must be in real units (NOT scaled). This avoids leakage by
+    computing quantiles only on the training window.
+    """
+
+    q = dict(DEFAULT_WEATHER_QUANTILES)
+    if quantiles:
+        q.update({k: float(v) for k, v in quantiles.items()})
+
+    thresholds = {
+        "method": "quantile_route_b",
+        "quantiles": q,
+        "precip_high": _nanquantile(train_precip, q["precip_high"]),
+        "temp_high": _nanquantile(train_temp_high, q["temp_high"]),
+        "temp_low": _nanquantile(train_temp_low, q["temp_low"]),
+    }
+    return thresholds
+
+
+def compute_weather_hazard(
+    *,
+    precip: np.ndarray,
+    temp_high: np.ndarray,
+    temp_low: np.ndarray,
+    thresholds: Dict[str, Any],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute weather hazard binary label and a simple severity score.
+
+    Returns:
+      - weather_hazard_bin: 0/1
+      - weather_hazard_severity: integer in [0, 3] (# triggered conditions)
+
+    Shapes follow broadcasting rules; caller should pass arrays aligned to y.
+    """
+
+    precip = np.asarray(precip, dtype=float)
+    temp_high = np.asarray(temp_high, dtype=float)
+    temp_low = np.asarray(temp_low, dtype=float)
+
+    thr_p = float(thresholds.get("precip_high", float("nan")))
+    thr_th = float(thresholds.get("temp_high", float("nan")))
+    thr_tl = float(thresholds.get("temp_low", float("nan")))
+
+    cond_p = np.isfinite(precip) & np.isfinite(thr_p) & (precip >= thr_p)
+    cond_th = np.isfinite(temp_high) & np.isfinite(thr_th) & (temp_high >= thr_th)
+    cond_tl = np.isfinite(temp_low) & np.isfinite(thr_tl) & (temp_low <= thr_tl)
+
+    severity = cond_p.astype(int) + cond_th.astype(int) + cond_tl.astype(int)
+    hazard = (severity > 0).astype(int)
+    return hazard, severity
+
 
 def _to_1d(a: np.ndarray) -> np.ndarray:
     a = np.asarray(a)
@@ -176,6 +256,22 @@ def compute_core_metrics(
     peak_threshold: float = DEFAULT_PEAK_THRESHOLD,
     horizon: Optional[int] = None,
     warning_temperature: float = 1000.0,
+    horizon_weights: Optional[Iterable[float]] = None,
+    fn_fp_cost_ratio: Tuple[float, float] = (5.0, 1.0),
+    # --- Weather hazard (Route B: train-quantile thresholds) ---
+    # If provided, these arrays must be in real units and aligned with y_true/y_pred
+    # (shape (N,) for single-step, shape (N,H) for multi-horizon).
+    weather_precip: Optional[np.ndarray] = None,
+    weather_temp_high: Optional[np.ndarray] = None,
+    weather_temp_low: Optional[np.ndarray] = None,
+    # Provide ONE of:
+    #   - weather_thresholds: precomputed thresholds (recommended for walk-forward)
+    #   - weather_train_* arrays: training window used to compute quantile thresholds
+    weather_thresholds: Optional[Dict[str, Any]] = None,
+    weather_train_precip: Optional[np.ndarray] = None,
+    weather_train_temp_high: Optional[np.ndarray] = None,
+    weather_train_temp_low: Optional[np.ndarray] = None,
+    weather_quantiles: Optional[Dict[str, float]] = None,
 ) -> Tuple[Dict[str, Any], Optional[pd.DataFrame]]:
     """Compute the unified core metrics.
 
@@ -217,19 +313,93 @@ def compute_core_metrics(
     else:
         peak_mae = float("nan")
 
-    # crowd_alert (deterministic)
+    # crowd_alert (deterministic, from visitor volume)
     y_true_peak = (y_true_flat >= float(peak_threshold)).astype(int)
     y_pred_peak = (y_pred_flat >= float(peak_threshold)).astype(int)
     crowd_alert = _clf_prf(y_true_peak, y_pred_peak)
 
-    # suitability_warning (probabilistic via transform)
-    y_prob_warn = visitor_count_to_warning_prob(
+    # --- Weather hazard (optional) ---
+    weather_hazard_bin_flat = np.zeros_like(y_true_peak, dtype=int)
+    weather_hazard_sev_flat = np.zeros_like(y_true_peak, dtype=int)
+    weather_meta: Dict[str, Any] = {
+        "enabled": False,
+        "assumption": (
+            "If the model does not predict weather, weather inputs are treated as exogenous "
+            "(forecast/observed from dataset) and used directly for hazard."
+        ),
+    }
+
+    weather_inputs_provided = (
+        weather_precip is not None and weather_temp_high is not None and weather_temp_low is not None
+    )
+    if weather_inputs_provided:
+        # thresholds: prefer explicitly provided thresholds; else compute from TRAIN arrays
+        thr = weather_thresholds
+        if thr is None:
+            if (
+                weather_train_precip is not None
+                and weather_train_temp_high is not None
+                and weather_train_temp_low is not None
+            ):
+                thr = compute_weather_thresholds_quantile(
+                    train_precip=weather_train_precip,
+                    train_temp_high=weather_train_temp_high,
+                    train_temp_low=weather_train_temp_low,
+                    quantiles=weather_quantiles,
+                )
+            else:
+                # Safety default: no thresholds => disable hazard (avoid leakage).
+                thr = None
+
+        if thr is not None:
+            wh, sev = compute_weather_hazard(
+                precip=_to_1d(np.asarray(weather_precip)),
+                temp_high=_to_1d(np.asarray(weather_temp_high)),
+                temp_low=_to_1d(np.asarray(weather_temp_low)),
+                thresholds=thr,
+            )
+            weather_hazard_bin_flat = wh.astype(int)
+            weather_hazard_sev_flat = sev.astype(int)
+            weather_meta = {
+                "enabled": True,
+                "thresholds": {
+                    "method": thr.get("method"),
+                    "quantiles": thr.get("quantiles"),
+                    "precip_high": thr.get("precip_high"),
+                    "temp_high": thr.get("temp_high"),
+                    "temp_low": thr.get("temp_low"),
+                },
+                "prevalence": float(np.mean(weather_hazard_bin_flat)) if len(weather_hazard_bin_flat) else float("nan"),
+                "assumption": (
+                    "If the model does not predict weather, weather inputs are treated as exogenous "
+                    "(forecast/observed from dataset) and used directly for hazard."
+                ),
+            }
+
+    # suitability_warning = crowd_alert OR weather_hazard
+    suitability_true = ((y_true_peak == 1) | (weather_hazard_bin_flat == 1)).astype(int)
+
+    # probabilistic warning: combine visitor-derived prob with weather hazard (deterministic)
+    p_crowd = visitor_count_to_warning_prob(
         y_pred_flat, peak_threshold=float(peak_threshold), temperature=float(warning_temperature)
     )
+    p_weather = weather_hazard_bin_flat.astype(float)  # deterministic (0 or 1)
+    y_prob_warn = 1.0 - (1.0 - p_crowd) * (1.0 - p_weather)
     y_pred_warn = (y_prob_warn >= 0.5).astype(int)
-    suitability_warning = _clf_prf(y_true_peak, y_pred_warn)
-    brier = brier_score(y_true_peak, y_prob_warn)
-    ece, ece_table = expected_calibration_error(y_true_peak, y_prob_warn, n_bins=10)
+    suitability_warning = _clf_prf(suitability_true, y_pred_warn)
+
+    # auxiliary business-cost view (default FN:FP = 5:1)
+    fn_cost, fp_cost = float(fn_fp_cost_ratio[0]), float(fn_fp_cost_ratio[1])
+    fn = float(np.sum((suitability_true == 1) & (y_pred_warn == 0)))
+    fp = float(np.sum((suitability_true == 0) & (y_pred_warn == 1)))
+    expected_cost = (
+        (fn_cost * fn + fp_cost * fp) / float(len(suitability_true))
+        if len(suitability_true)
+        else float("nan")
+    )
+
+    brier = brier_score(suitability_true, y_prob_warn)
+    ece, ece_table = expected_calibration_error(suitability_true, y_prob_warn, n_bins=10)
 
     # Per-horizon regression metrics
     if np.asarray(y_true).ndim == 2 and horizon and horizon > 1:
@@ -245,16 +415,135 @@ def compute_core_metrics(
             )
         by_horizon_df = pd.DataFrame(rows)
 
+    # Per-horizon warning metrics + weighted aggregation (for multi-horizon models)
+    warning_by_h_df: Optional[pd.DataFrame] = None
+    warning_weighted: Optional[Dict[str, float]] = None
+    if y_true.ndim == 2 and horizon and horizon > 1:
+        if horizon_weights is None:
+            if int(horizon) == 7:
+                horizon_weights = DEFAULT_HORIZON_WEIGHTS_H7
+            else:
+                horizon_weights = [1.0 / float(horizon)] * int(horizon)
+
+        w = np.asarray(list(horizon_weights), dtype=float)
+        if w.shape[0] != int(horizon):
+            raise ValueError(
+                f"horizon_weights length mismatch: len={len(w)} vs horizon={horizon}"
+            )
+        if not np.isfinite(w).all():
+            raise ValueError("horizon_weights contains non-finite values")
+        if float(np.sum(w)) <= 0:
+            raise ValueError("horizon_weights must sum to a positive value")
+        w = w / float(np.sum(w))
+
+        rows = []
+        f1s = []
+        recalls = []
+        briers = []
+        eces = []
+        costs = []
+
+        fn_cost, fp_cost = float(fn_fp_cost_ratio[0]), float(fn_fp_cost_ratio[1])
+
+        # Prepare weather hazard matrix (optional)
+        wh_mat: Optional[np.ndarray] = None
+        if (
+            weather_inputs_provided
+            and weather_thresholds is not None
+            and np.asarray(weather_precip).ndim == 2
+        ):
+            wh_mat, _ = compute_weather_hazard(
+                precip=np.asarray(weather_precip),
+                temp_high=np.asarray(weather_temp_high),
+                temp_low=np.asarray(weather_temp_low),
+                thresholds=weather_thresholds,
+            )
+        elif (
+            weather_inputs_provided
+            and weather_thresholds is None
+            and weather_meta.get("enabled")
+            and np.asarray(weather_precip).ndim == 2
+        ):
+            # thresholds were computed above into weather_meta
+            thr2 = weather_meta.get("thresholds") or {}
+            wh_mat, _ = compute_weather_hazard(
+                precip=np.asarray(weather_precip),
+                temp_high=np.asarray(weather_temp_high),
+                temp_low=np.asarray(weather_temp_low),
+                thresholds=thr2,
+            )
+
+        for h in range(int(horizon)):
+            yt_peak = (y_true[:, h] >= float(peak_threshold)).astype(int)
+            yt_weather = (
+                wh_mat[:, h].astype(int) if wh_mat is not None else np.zeros_like(yt_peak)
+            )
+            yt = ((yt_peak == 1) | (yt_weather == 1)).astype(int)
+
+            p_c = visitor_count_to_warning_prob(
+                y_pred[:, h],
+                peak_threshold=float(peak_threshold),
+                temperature=float(warning_temperature),
+            )
+            p_w = yt_weather.astype(float)
+            yp_prob = 1.0 - (1.0 - p_c) * (1.0 - p_w)
+            yp = (yp_prob >= 0.5).astype(int)
+            prf = _clf_prf(yt, yp)
+
+            # cost per-sample (aux): 5*FN + 1*FP
+            fn = float(np.sum((yt == 1) & (yp == 0)))
+            fp = float(np.sum((yt == 0) & (yp == 1)))
+            exp_cost = (fn_cost * fn + fp_cost * fp) / float(len(yt)) if len(yt) else float("nan")
+
+            br = brier_score(yt, yp_prob)
+            e, _ = expected_calibration_error(yt, yp_prob, n_bins=10)
+
+            rows.append(
+                {
+                    "horizon": h + 1,
+                    "weight": float(w[h]),
+                    "precision": prf["precision"],
+                    "recall": prf["recall"],
+                    "f1": prf["f1"],
+                    "brier": float(br),
+                    "ece": float(e),
+                    "expected_cost": float(exp_cost),
+                }
+            )
+            f1s.append(prf["f1"])
+            recalls.append(prf["recall"])
+            briers.append(float(br))
+            eces.append(float(e))
+            costs.append(float(exp_cost))
+
+        warning_by_h_df = pd.DataFrame(rows)
+        warning_weighted = {
+            "f1_weighted": float(np.sum(w * np.asarray(f1s, dtype=float))),
+            "recall_weighted": float(np.sum(w * np.asarray(recalls, dtype=float))),
+            "brier_weighted": float(np.sum(w * np.asarray(briers, dtype=float))),
+            "ece_weighted": float(np.sum(w * np.asarray(eces, dtype=float))),
+            "expected_cost_weighted": float(np.sum(w * np.asarray(costs, dtype=float))),
+        }
+
     metrics = {
         "regression": reg,
         "peak_only_mae": float(peak_mae),
         "crowd_alert": crowd_alert,
+        "weather_hazard": {
+            **weather_meta,
+            "severity_mean": float(np.mean(weather_hazard_sev_flat)) if len(weather_hazard_sev_flat) else float("nan"),
+        },
         "suitability_warning": {
             **suitability_warning,
             "brier": float(brier),
             "ece": float(ece),
             "warning_temperature": float(warning_temperature),
+            "expected_cost": float(expected_cost),
         },
+        "suitability_warning_by_horizon": (
+            warning_by_h_df.to_dict(orient="records") if warning_by_h_df is not None else None
+        ),
+        "suitability_warning_weighted": warning_weighted,
         "meta": {
             "peak_threshold": float(peak_threshold),
             "horizon": int(horizon),
@@ -300,11 +589,37 @@ def save_metrics_artifacts(
         "crowd_alert_precision": metrics["crowd_alert"]["precision"],
         "crowd_alert_recall": metrics["crowd_alert"]["recall"],
         "crowd_alert_f1": metrics["crowd_alert"]["f1"],
+        "weather_hazard_enabled": (metrics.get("weather_hazard") or {}).get("enabled"),
+        "weather_hazard_prevalence": (metrics.get("weather_hazard") or {}).get("prevalence"),
+        "weather_hazard_severity_mean": (metrics.get("weather_hazard") or {}).get("severity_mean"),
+        "weather_thr_precip_high": ((metrics.get("weather_hazard") or {}).get("thresholds") or {}).get(
+            "precip_high"
+        ),
+        "weather_thr_temp_high": ((metrics.get("weather_hazard") or {}).get("thresholds") or {}).get(
+            "temp_high"
+        ),
+        "weather_thr_temp_low": ((metrics.get("weather_hazard") or {}).get("thresholds") or {}).get(
+            "temp_low"
+        ),
         "suitability_warning_precision": metrics["suitability_warning"]["precision"],
         "suitability_warning_recall": metrics["suitability_warning"]["recall"],
         "suitability_warning_f1": metrics["suitability_warning"]["f1"],
         "suitability_warning_brier": metrics["suitability_warning"]["brier"],
         "suitability_warning_ece": metrics["suitability_warning"]["ece"],
+        "suitability_warning_expected_cost": metrics["suitability_warning"].get("expected_cost"),
+        "suitability_warning_f1_weighted": (metrics.get("suitability_warning_weighted") or {}).get("f1_weighted"),
+        "suitability_warning_recall_weighted": (metrics.get("suitability_warning_weighted") or {}).get(
+            "recall_weighted"
+        ),
+        "suitability_warning_brier_weighted": (metrics.get("suitability_warning_weighted") or {}).get(
+            "brier_weighted"
+        ),
+        "suitability_warning_ece_weighted": (metrics.get("suitability_warning_weighted") or {}).get(
+            "ece_weighted"
+        ),
+        "suitability_warning_expected_cost_weighted": (
+            (metrics.get("suitability_warning_weighted") or {}).get("expected_cost_weighted")
+        ),
         "peak_threshold": metrics["meta"]["peak_threshold"],
         "horizon": metrics["meta"]["horizon"],
         "n_samples": metrics["meta"]["n_samples"],
@@ -313,6 +628,13 @@ def save_metrics_artifacts(
 
     if by_horizon_df is not None:
         by_horizon_df.to_csv(os.path.join(run_dir, "metrics_by_horizon.csv"), index=False)
+
+    # suitability warning by horizon (if present)
+    warn_by_h = metrics.get("suitability_warning_by_horizon")
+    if isinstance(warn_by_h, list) and len(warn_by_h) > 0:
+        pd.DataFrame(warn_by_h).to_csv(
+            os.path.join(run_dir, "suitability_warning_by_horizon.csv"), index=False
+        )
 
 
 def plot_true_vs_pred(
@@ -481,22 +803,48 @@ def generate_core_figures(
     peak_threshold: float,
     warning_temperature: float,
     by_horizon_df: Optional[pd.DataFrame],
+    # Weather inputs (optional, for suitability_warning = crowd OR weather)
+    weather_precip: Optional[np.ndarray] = None,
+    weather_temp_high: Optional[np.ndarray] = None,
+    weather_temp_low: Optional[np.ndarray] = None,
+    weather_thresholds: Optional[Dict[str, Any]] = None,
 ) -> None:
     fig_dir = os.path.join(run_dir, "figures")
     _ensure_dir(fig_dir)
 
     y_true_flat = _to_1d(y_true)
     y_pred_flat = _to_1d(y_pred)
-    y_true_bin = (y_true_flat >= float(peak_threshold)).astype(int)
+    y_true_peak = (y_true_flat >= float(peak_threshold)).astype(int)
     y_pred_bin = (y_pred_flat >= float(peak_threshold)).astype(int)
-    y_prob = visitor_count_to_warning_prob(
+
+    # Weather hazard (optional)
+    wh_bin = np.zeros_like(y_true_peak, dtype=int)
+    if (
+        weather_precip is not None
+        and weather_temp_high is not None
+        and weather_temp_low is not None
+        and weather_thresholds is not None
+    ):
+        wh_bin, _ = compute_weather_hazard(
+            precip=_to_1d(np.asarray(weather_precip)),
+            temp_high=_to_1d(np.asarray(weather_temp_high)),
+            temp_low=_to_1d(np.asarray(weather_temp_low)),
+            thresholds=weather_thresholds,
+        )
+        wh_bin = wh_bin.astype(int)
+
+    y_true_bin = ((y_true_peak == 1) | (wh_bin == 1)).astype(int)
+
+    p_crowd = visitor_count_to_warning_prob(
         y_pred_flat, peak_threshold=float(peak_threshold), temperature=float(warning_temperature)
     )
+    p_weather = wh_bin.astype(float)
+    y_prob = 1.0 - (1.0 - p_crowd) * (1.0 - p_weather)
 
     plot_true_vs_pred(fig_dir, dates, y_true_flat, y_pred_flat)
     if by_horizon_df is not None and not by_horizon_df.empty:
         plot_error_by_horizon(fig_dir, by_horizon_df)
-    plot_confusion_matrix_crowd_alert(fig_dir, y_true_bin, y_pred_bin)
+    plot_confusion_matrix_crowd_alert(fig_dir, y_true_peak, y_pred_bin)
     plot_suitability_warning_timeline(fig_dir, dates, y_true_bin, y_prob)
 
     # reliability diagram uses the same binning as metrics
@@ -515,6 +863,18 @@ def evaluate_and_save_run(
     peak_threshold: float = DEFAULT_PEAK_THRESHOLD,
     horizon: Optional[int] = None,
     warning_temperature: float = 1000.0,
+    horizon_weights: Optional[Iterable[float]] = None,
+    fn_fp_cost_ratio: Tuple[float, float] = (5.0, 1.0),
+    # Weather hazard (Route B quantile thresholds).
+    # All arrays must be in real units (NOT scaled).
+    weather_precip: Optional[np.ndarray] = None,
+    weather_temp_high: Optional[np.ndarray] = None,
+    weather_temp_low: Optional[np.ndarray] = None,
+    weather_thresholds: Optional[Dict[str, Any]] = None,
+    weather_train_precip: Optional[np.ndarray] = None,
+    weather_train_temp_high: Optional[np.ndarray] = None,
+    weather_train_temp_low: Optional[np.ndarray] = None,
+    weather_quantiles: Optional[Dict[str, float]] = None,
     extra_meta: Optional[Dict[str, Any]] = None,
     save_figures: bool = True,
 ) -> Dict[str, Any]:
@@ -524,12 +884,30 @@ def evaluate_and_save_run(
         peak_threshold=peak_threshold,
         horizon=horizon,
         warning_temperature=warning_temperature,
+        horizon_weights=horizon_weights,
+        fn_fp_cost_ratio=fn_fp_cost_ratio,
+        weather_precip=weather_precip,
+        weather_temp_high=weather_temp_high,
+        weather_temp_low=weather_temp_low,
+        weather_thresholds=weather_thresholds,
+        weather_train_precip=weather_train_precip,
+        weather_train_temp_high=weather_train_temp_high,
+        weather_train_temp_low=weather_train_temp_low,
+        weather_quantiles=weather_quantiles,
     )
 
     metrics["meta"].update(
         {
             "model_name": str(model_name),
             "feature_count": int(feature_count),
+            "horizon_weights": list(horizon_weights)
+            if horizon_weights is not None
+            else (
+                DEFAULT_HORIZON_WEIGHTS_H7
+                if int(metrics.get("meta", {}).get("horizon", 1)) == 7
+                else None
+            ),
+            "fn_fp_cost_ratio": [float(fn_fp_cost_ratio[0]), float(fn_fp_cost_ratio[1])],
         }
     )
     if extra_meta:
@@ -537,6 +915,10 @@ def evaluate_and_save_run(
 
     save_metrics_artifacts(run_dir, metrics, by_horizon_df)
     if save_figures:
+        # If thresholds were computed inside compute_core_metrics, pull them from metrics.
+        thr_for_fig = weather_thresholds
+        if thr_for_fig is None:
+            thr_for_fig = (metrics.get("weather_hazard") or {}).get("thresholds")
         generate_core_figures(
             run_dir,
             dates=dates,
@@ -545,7 +927,10 @@ def evaluate_and_save_run(
             peak_threshold=peak_threshold,
             warning_temperature=warning_temperature,
             by_horizon_df=by_horizon_df,
+            weather_precip=weather_precip,
+            weather_temp_high=weather_temp_high,
+            weather_temp_low=weather_temp_low,
+            weather_thresholds=thr_for_fig,
         )
 
     return metrics
-

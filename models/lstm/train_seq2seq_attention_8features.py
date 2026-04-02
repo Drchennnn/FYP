@@ -346,7 +346,7 @@ def prepare_seq2seq_data(
     encoder_steps: int = 30,
     decoder_steps: int = 7,
     test_ratio: float = 0.2
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """准备非自回归Seq2Seq模型的训练/测试数据
     
     架构：非自回归直接多步预测 + Attention
@@ -361,12 +361,14 @@ def prepare_seq2seq_data(
         test_ratio: 测试集比例
         
     Returns:
-        x_encoder_train: 训练集Encoder输入
-        x_decoder_train: 训练集Decoder输入（纯外部特征）
-        y_train: 训练集目标值（含节假日标记）
-        x_encoder_test: 测试集Encoder输入
-        x_decoder_test: 测试集Decoder输入（纯外部特征）
-        y_test: 测试集目标值（含节假日标记）
+        x_encoder_train, x_decoder_train, y_train,
+        x_encoder_test, x_decoder_test, y_test,
+        weather_train, weather_test
+
+    weather_* have shape (N, decoder_steps, 3) in real units:
+      [:, :, 0] precip_sum
+      [:, :, 1] temp_high
+      [:, :, 2] temp_low
     """
     # Encoder特征列（包含visitor_count）
     encoder_feature_cols = [
@@ -394,11 +396,31 @@ def prepare_seq2seq_data(
     values_encoder = df[encoder_feature_cols].values.astype(np.float32)
     values_decoder = df[decoder_feature_cols].values.astype(np.float32)
     dates = df["date"].values
+
+    # Weather columns (real units; treated as exogenous forecast/observed from dataset)
+    def _pick_col(candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    precip_col = _pick_col(["meteo_precip_sum", "meteo_rain_sum", "precip_sum"])
+    temp_high_col = _pick_col(["meteo_temp_max", "temp_high_c", "temp_high"])
+    temp_low_col = _pick_col(["meteo_temp_min", "temp_low_c", "temp_low"])
+    if precip_col is None or temp_high_col is None or temp_low_col is None:
+        raise ValueError(
+            f"Missing required weather columns for hazard: precip={precip_col}, temp_high={temp_high_col}, temp_low={temp_low_col}"
+        )
+
+    precip_real = df[precip_col].values.astype(float)
+    temp_high_real = df[temp_high_col].values.astype(float)
+    temp_low_real = df[temp_low_col].values.astype(float)
     
     # 创建序列数据
     encoder_input = []
     decoder_input = []
     decoder_target = []
+    weather_target = []
     
     total_steps = encoder_steps + decoder_steps
     for i in range(total_steps, len(df)):
@@ -412,15 +434,19 @@ def prepare_seq2seq_data(
         
         # Decoder目标：未来decoder_steps天的目标值 + 节假日标记
         dec_target = []
+        dec_weather = []
         for j in range(decoder_steps):
             idx = i - decoder_steps + j
             # 格式：[真实值, 节假日标记]
             dec_target.append([values_encoder[idx, 0], values_encoder[idx, 3]])
+            dec_weather.append([precip_real[idx], temp_high_real[idx], temp_low_real[idx]])
         decoder_target.append(dec_target)
+        weather_target.append(dec_weather)
     
     encoder_input = np.array(encoder_input)
     decoder_input = np.array(decoder_input)
     decoder_target = np.array(decoder_target)
+    weather_target = np.array(weather_target, dtype=float)
     
     # 时间划分训练/测试集
     n = len(encoder_input)
@@ -434,6 +460,9 @@ def prepare_seq2seq_data(
     x_encoder_test = encoder_input[train_size:]
     x_decoder_test = decoder_input[train_size:]
     y_test = decoder_target[train_size:]
+
+    weather_train = weather_target[:train_size]
+    weather_test = weather_target[train_size:]
     
     print(f"数据准备完成:")
     print(f"  总样本数: {n}")
@@ -442,8 +471,17 @@ def prepare_seq2seq_data(
     print(f"  Decoder输入形状: {x_decoder_train.shape}")
     print(f"  目标形状: {y_train.shape}")
     
-    return (x_encoder_train, x_decoder_train, y_train,
-            x_encoder_test, x_decoder_test, y_test)
+    return (
+        x_encoder_train,
+        x_decoder_train,
+        y_train,
+        x_encoder_test,
+        x_decoder_test,
+        y_test,
+        weather_train,
+        weather_test,
+        np.array([precip_col, temp_high_col, temp_low_col], dtype=object),
+    )
 
 
 def main() -> None:
@@ -513,12 +551,21 @@ def main() -> None:
     df["visitor_count_scaled"] = scaler.fit_transform(df[["visitor_count"]]).reshape(-1)
 
     # 3. 准备Seq2Seq数据
-    (x_encoder_train, x_decoder_train, y_train,
-     x_encoder_test, x_decoder_test, y_test) = prepare_seq2seq_data(
+    (
+        x_encoder_train,
+        x_decoder_train,
+        y_train,
+        x_encoder_test,
+        x_decoder_test,
+        y_test,
+        weather_train,
+        weather_test,
+        weather_cols,
+    ) = prepare_seq2seq_data(
         df,
         encoder_steps=args.encoder_steps,
         decoder_steps=args.decoder_steps,
-        test_ratio=args.test_ratio
+        test_ratio=args.test_ratio,
     )
 
     # 4. 创建Seq2Seq + Attention模型
@@ -640,6 +687,14 @@ def main() -> None:
         y_pred=y_pred,
         dates=pred_dates,
         horizon=int(args.decoder_steps),
+        # Weather hazard uses Route B quantile thresholds computed on TRAIN split only.
+        # Weather is treated as exogenous (from dataset/API) since the model does not predict weather.
+        weather_precip=np.asarray(weather_test[:, :, 0], dtype=float),
+        weather_temp_high=np.asarray(weather_test[:, :, 1], dtype=float),
+        weather_temp_low=np.asarray(weather_test[:, :, 2], dtype=float),
+        weather_train_precip=np.asarray(weather_train[:, :, 0], dtype=float).reshape(-1),
+        weather_train_temp_high=np.asarray(weather_train[:, :, 1], dtype=float).reshape(-1),
+        weather_train_temp_low=np.asarray(weather_train[:, :, 2], dtype=float).reshape(-1),
         extra_meta=extra_meta,
         save_figures=bool(args.save_plots),
     )

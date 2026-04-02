@@ -19,6 +19,14 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+
+# Ensure project root is on sys.path when running as a script
+import sys
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models.common.core_evaluation import evaluate_and_save_run
 from matplotlib import pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 
@@ -354,9 +362,42 @@ def main() -> None:
 
     # 3. 构建序列
     x, y, d = build_sequences(df, look_back=args.look_back)
+
+    # Weather arrays aligned to each y sample date (real units, NOT scaled).
+    # Assumption: weather is exogenous (from dataset/API) and available at prediction time.
+    def _pick_col(candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    precip_col = _pick_col(["meteo_precip_sum", "meteo_rain_sum", "precip_sum"])
+    temp_high_col = _pick_col(["meteo_temp_max", "temp_high_c", "temp_high"])
+    temp_low_col = _pick_col(["meteo_temp_min", "temp_low_c", "temp_low"])
+
+    if precip_col is None or temp_high_col is None or temp_low_col is None:
+        raise ValueError(
+            f"Missing required weather columns for hazard: precip={precip_col}, temp_high={temp_high_col}, temp_low={temp_low_col}"
+        )
+
+    weather_precip_all = df[precip_col].values[args.look_back :].astype(float)
+    weather_temp_high_all = df[temp_high_col].values[args.look_back :].astype(float)
+    weather_temp_low_all = df[temp_low_col].values[args.look_back :].astype(float)
+
     x_train, y_train, d_train, x_val, y_val, d_val, x_test, y_test, d_test = split_by_time(
         x, y, d, test_ratio=args.test_ratio, val_ratio=args.val_ratio
     )
+
+    # Split weather arrays using the same time split.
+    n_train = len(y_train)
+    n_val = len(y_val)
+    weather_train_precip = weather_precip_all[:n_train]
+    weather_train_temp_high = weather_temp_high_all[:n_train]
+    weather_train_temp_low = weather_temp_low_all[:n_train]
+
+    weather_test_precip = weather_precip_all[n_train + n_val :]
+    weather_test_temp_high = weather_temp_high_all[n_train + n_val :]
+    weather_test_temp_low = weather_temp_low_all[n_train + n_val :]
 
     # 4. 创建并训练GRU模型
     model = create_gru_model(args.look_back)
@@ -401,78 +442,47 @@ def main() -> None:
     pred_df.to_csv(pred_path, index=False, encoding="utf-8-sig")
 
     # 7. 使用通用评估器计算指标
-    metrics = calculate_metrics(
-        y_true=y_true,
-        y_pred=y_pred,
-        y_train_scaled=y_train,
-        scaler=scaler,
-        peak_quantile=args.peak_quantile,
-    )
+    # NOTE: keep evaluator API stable (no train-split arguments here).
+    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
 
     # 8. 保存模型和指标
     model.save(model_path)
     
-    # 使用通用评估器的保存函数
-    additional_info = {
-        "samples": int(len(df)),
-        "look_back": int(args.look_back),
-        "epochs_requested": int(args.epochs),
-        "epochs_trained": int(len(history.history["loss"])),
-        "train_samples": int(len(x_train)),
-        "val_samples": int(len(x_val)),
-        "test_samples": int(len(x_test)),
-        "input_dim": 8,
-        "features": [
-            "visitor_count_scaled",      # 目标客流（归一化）
-            "month_norm",                # 月份归一化
-            "day_of_week_norm",          # 星期归一化
-            "is_holiday",                # 节假日标记
-            "tourism_num_lag_7_scaled",  # 滞后7天客流（归一化）
-            "meteo_precip_sum_scaled",   # 降水量（归一化）
-            "temp_high_scaled",          # 最高温度（归一化）
-            "temp_low_scaled"            # 最低温度（归一化）
-        ],
-        "model_architecture": "GRU-128-64-32",
-        "feature_version": "8_features_v1",
-    }
-    
-    save_metrics_to_files(
-        metrics=metrics,
-        run_dir=str(run_dir),
-        run_name=run_name,
-        model_name="gru",
-        additional_info=additional_info,
-    )
+    # Legacy evaluator artifact save (kept best-effort; unified core artifacts are authoritative)
+    try:
+        save_metrics_to_files(metrics, str(run_dir), "gru_baseline")
+    except TypeError:
+        # tolerate older evaluator signatures
+        pass
 
     # 9. 保存训练历史
     history_df = pd.DataFrame(history.history)
     history_df.insert(0, "epoch", np.arange(1, len(history_df) + 1))
     history_df.to_csv(history_path, index=False, encoding="utf-8-sig")
 
-    # 10. 使用统一评估器计算指标和可视化
-    from models.common.evaluator import Evaluator, load_global_threshold
-    
-    # 加载统一的峰值阈值
-    peak_threshold = load_global_threshold()
-    
-    # 初始化评估器
-    evaluator = Evaluator(
-        peak_threshold=peak_threshold,
-        scaler=scaler
+    # 10. Unified core evaluation artifacts (authoritative for benchmark)
+    evaluate_and_save_run(
+        str(run_dir),
+        model_name="gru",
+        feature_count=8,
+        y_true=np.asarray(y_true),
+        y_pred=np.asarray(y_pred),
+        dates=pd.to_datetime(pred_df["date"]).values,
+        horizon=1,
+        warning_temperature=1000.0,
+        fn_fp_cost_ratio=(5.0, 1.0),
+        weather_precip=np.asarray(weather_test_precip),
+        weather_temp_high=np.asarray(weather_test_temp_high),
+        weather_temp_low=np.asarray(weather_test_temp_low),
+        weather_train_precip=np.asarray(weather_train_precip),
+        weather_train_temp_high=np.asarray(weather_train_temp_high),
+        weather_train_temp_low=np.asarray(weather_train_temp_low),
+        extra_meta={
+            "look_back": int(args.look_back),
+            "epochs_requested": int(args.epochs),
+            "epochs_trained": int(len(history.history.get("loss", []))),
+        },
     )
-    
-    # 计算指标
-    metrics_eval = evaluator.evaluate(y_true, y_pred)
-    
-    # 保存可视化
-    if args.save_plots:
-        evaluator.generate_visualizations(
-            out_dir=fig_dir,
-            history=history.history,
-            dates=pd.to_datetime(pred_df["date"]),
-            y_true=y_true,
-            y_pred=y_pred
-        )
 
     # 11. 输出结果
     print(f"GRU训练完成！")
@@ -485,10 +495,17 @@ def main() -> None:
     for key, value in metrics["regression"].items():
         print(f"  {key.upper()}: {value:.4f}")
     
-    print("\n分类指标 (高峰日预测):")
+    print("\nClassification metrics (peak-day prediction):")
     for key, value in metrics["classification"].items():
-        if key != "peak_threshold":
-            print(f"  {key}: {value:.4f}")
+        if key == "peak_threshold":
+            continue
+        # evaluator may include arrays (e.g., y_true_cls/y_pred_cls); skip non-scalars
+        if isinstance(value, (np.ndarray, list, tuple, dict)):
+            continue
+        try:
+            print(f"  {key}: {float(value):.4f}")
+        except Exception:
+            continue
 
 
 if __name__ == "__main__":

@@ -25,6 +25,14 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 
+# Ensure project root is on sys.path when running as a script
+import sys
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from models.common.core_evaluation import evaluate_and_save_run
+
 def safe_json_serializer(obj):
     if isinstance(obj, np.float32) or isinstance(obj, np.float64):
         return float(obj)
@@ -212,6 +220,26 @@ def main() -> None:
     from data.data_loader import build_sequences
     
     X, y, dates = build_sequences(df, args.look_back, model_type="lstm", features=8)
+
+    # Weather arrays aligned to each y sample date (real units, NOT scaled).
+    # Assumption: weather is exogenous (from dataset/API) and available at prediction time.
+    def _pick_col(candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    precip_col = _pick_col(["meteo_precip_sum", "meteo_rain_sum", "precip_sum"])
+    temp_high_col = _pick_col(["meteo_temp_max", "temp_high_c", "temp_high"])
+    temp_low_col = _pick_col(["meteo_temp_min", "temp_low_c", "temp_low"])
+    if precip_col is None or temp_high_col is None or temp_low_col is None:
+        raise ValueError(
+            f"Missing required weather columns for hazard: precip={precip_col}, temp_high={temp_high_col}, temp_low={temp_low_col}"
+        )
+
+    weather_precip_all = df[precip_col].values[args.look_back :].astype(float)
+    weather_temp_high_all = df[temp_high_col].values[args.look_back :].astype(float)
+    weather_temp_low_all = df[temp_low_col].values[args.look_back :].astype(float)
     
     # 时间划分训练/测试集
     n = len(X)
@@ -223,6 +251,14 @@ def main() -> None:
     
     X_test = X[train_size:]
     y_test = y[train_size:]
+
+    weather_train_precip = weather_precip_all[:train_size]
+    weather_train_temp_high = weather_temp_high_all[:train_size]
+    weather_train_temp_low = weather_temp_low_all[:train_size]
+
+    weather_test_precip = weather_precip_all[train_size:]
+    weather_test_temp_high = weather_temp_high_all[train_size:]
+    weather_test_temp_low = weather_temp_low_all[train_size:]
     
     print(f"数据准备完成:")
     print(f"  总样本数: {n}")
@@ -367,6 +403,34 @@ def main() -> None:
     if args.save_plots and fig_dir:
         dates = pd.to_datetime(df['date'].iloc[-len(y_true):])
         generate_visualizations(fig_dir, history.history, dates, y_true, y_pred)
+
+    # 13b. Unified core evaluation artifacts (metrics.json/metrics.csv/figures/*.png)
+    try:
+        test_dates = pd.to_datetime(df["date"].iloc[-len(y_true) :]).values
+    except Exception:
+        test_dates = None
+    evaluate_and_save_run(
+        str(run_dir),
+        model_name="lstm",
+        feature_count=8,
+        y_true=np.asarray(y_true),
+        y_pred=np.asarray(y_pred),
+        dates=test_dates,
+        horizon=1,
+        warning_temperature=1000.0,
+        fn_fp_cost_ratio=(5.0, 1.0),
+        weather_precip=np.asarray(weather_test_precip),
+        weather_temp_high=np.asarray(weather_test_temp_high),
+        weather_temp_low=np.asarray(weather_test_temp_low),
+        weather_train_precip=np.asarray(weather_train_precip),
+        weather_train_temp_high=np.asarray(weather_train_temp_high),
+        weather_train_temp_low=np.asarray(weather_train_temp_low),
+        extra_meta={
+            "look_back": int(args.look_back),
+            "epochs_requested": int(args.epochs),
+            "epochs_trained": int(len(history.history.get("loss", []))),
+        },
+    )
     
     # 保存指标
     save_metrics_to_files(metrics, str(run_dir), "lstm_baseline")

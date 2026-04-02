@@ -53,6 +53,7 @@ def required_artifacts_exist(run_dir: Path) -> Dict[str, bool]:
 
 
 def metrics_to_row(model_label: str, m: Dict) -> Dict:
+    weighted = m.get("suitability_warning_weighted") or {}
     return {
         "model": model_label,
         "feature_count": m.get("meta", {}).get("feature_count"),
@@ -69,6 +70,22 @@ def metrics_to_row(model_label: str, m: Dict) -> Dict:
         "suitability_warning_f1": m.get("suitability_warning", {}).get("f1"),
         "suitability_warning_brier": m.get("suitability_warning", {}).get("brier"),
         "suitability_warning_ece": m.get("suitability_warning", {}).get("ece"),
+        "suitability_warning_expected_cost": m.get("suitability_warning", {}).get("expected_cost"),
+        "suitability_warning_recall_weighted": weighted.get(
+            "recall_weighted", m.get("suitability_warning", {}).get("recall")
+        ),
+        "suitability_warning_f1_weighted": weighted.get(
+            "f1_weighted", m.get("suitability_warning", {}).get("f1")
+        ),
+        "suitability_warning_brier_weighted": weighted.get(
+            "brier_weighted", m.get("suitability_warning", {}).get("brier")
+        ),
+        "suitability_warning_ece_weighted": weighted.get(
+            "ece_weighted", m.get("suitability_warning", {}).get("ece")
+        ),
+        "suitability_warning_expected_cost_weighted": weighted.get(
+            "expected_cost_weighted", m.get("suitability_warning", {}).get("expected_cost")
+        ),
     }
 
 
@@ -82,8 +99,8 @@ def main() -> None:
     ap.add_argument(
         "--epochs",
         type=int,
-        default=5,
-        help="Epochs for quick benchmark runs (override as needed).",
+        default=120,
+        help="Epochs for benchmark runs (default 120).",
     )
     ap.add_argument("--look-back", type=int, default=30)
     ap.add_argument("--decoder-steps", type=int, default=7)
@@ -100,8 +117,10 @@ def main() -> None:
     runs_root.mkdir(parents=True, exist_ok=True)
 
     # --- Run training scripts ---
-    lstm_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_lstm_4features"
-    gru_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_gru_4features"
+    lstm4_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_lstm_4features"
+    lstm8_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_lstm_8features"
+    gru4_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_gru_4features"
+    gru8_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_gru_8features"
     seq_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_seq2seq_attention_8features"
 
     py = sys.executable
@@ -122,9 +141,29 @@ def main() -> None:
                 "--model-dir",
                 args.model_dir,
                 "--run-name",
-                lstm_run,
+                lstm4_run,
             ],
             "LSTM (4 features)",
+        )
+
+        run_cmd(
+            [
+                py,
+                str(ROOT / "models" / "lstm" / "train_lstm_8features.py"),
+                "--input-csv",
+                args.input_csv_8f,
+                "--look-back",
+                str(args.look_back),
+                "--epochs",
+                str(args.epochs),
+                "--output-dir",
+                args.output_dir,
+                "--model-dir",
+                args.model_dir,
+                "--run-name",
+                lstm8_run,
+            ],
+            "LSTM (8 features)",
         )
 
         run_cmd(
@@ -142,9 +181,29 @@ def main() -> None:
                 "--model-dir",
                 args.model_dir,
                 "--run-name",
-                gru_run,
+                gru4_run,
             ],
             "GRU (4 features)",
+        )
+
+        run_cmd(
+            [
+                py,
+                str(ROOT / "models" / "gru" / "train_gru_8features.py"),
+                "--input-csv",
+                args.input_csv_8f,
+                "--look-back",
+                str(args.look_back),
+                "--epochs",
+                str(args.epochs),
+                "--output-dir",
+                args.output_dir,
+                "--model-dir",
+                args.model_dir,
+                "--run-name",
+                gru8_run,
+            ],
+            "GRU (8 features)",
         )
 
         # Seq2Seq+Attention currently supports 8 features (encoder=8, decoder=7)
@@ -171,18 +230,24 @@ def main() -> None:
         )
 
     # --- Load metrics ---
-    lstm_dir = runs_root / lstm_run
-    gru_dir = runs_root / gru_run
+    lstm4_dir = runs_root / lstm4_run
+    lstm8_dir = runs_root / lstm8_run
+    gru4_dir = runs_root / gru4_run
+    gru8_dir = runs_root / gru8_run
     seq_dir = runs_root / seq_run
 
-    lstm_m = load_metrics(lstm_dir)
-    gru_m = load_metrics(gru_dir)
+    lstm4_m = load_metrics(lstm4_dir)
+    lstm8_m = load_metrics(lstm8_dir)
+    gru4_m = load_metrics(gru4_dir)
+    gru8_m = load_metrics(gru8_dir)
     seq_m = load_metrics(seq_dir)
 
     df = pd.DataFrame(
         [
-            metrics_to_row("lstm_4features", lstm_m),
-            metrics_to_row("gru_4features", gru_m),
+            metrics_to_row("lstm_4features", lstm4_m),
+            metrics_to_row("lstm_8features", lstm8_m),
+            metrics_to_row("gru_4features", gru4_m),
+            metrics_to_row("gru_8features", gru8_m),
             metrics_to_row("seq2seq_attention_8features", seq_m),
         ]
     )
@@ -199,13 +264,21 @@ def main() -> None:
     lines.append("")
     lines.append("## Run Folders")
     lines.append("")
-    lines.append(f"- LSTM (4 features): {lstm_dir}")
-    lines.append(f"- GRU (4 features): {gru_dir}")
+    lines.append(f"- LSTM (4 features): {lstm4_dir}")
+    lines.append(f"- LSTM (8 features): {lstm8_dir}")
+    lines.append(f"- GRU (4 features): {gru4_dir}")
+    lines.append(f"- GRU (8 features): {gru8_dir}")
     lines.append(f"- Seq2Seq+Attention (8 features): {seq_dir}")
     lines.append("")
     lines.append("## Artifact Checks")
     lines.append("")
-    for label, rdir in [("lstm", lstm_dir), ("gru", gru_dir), ("seq2seq", seq_dir)]:
+    for label, rdir in [
+        ("lstm_4f", lstm4_dir),
+        ("lstm_8f", lstm8_dir),
+        ("gru_4f", gru4_dir),
+        ("gru_8f", gru8_dir),
+        ("seq2seq", seq_dir),
+    ]:
         checks = required_artifacts_exist(rdir)
         lines.append(f"### {label}")
         for k, v in checks.items():
