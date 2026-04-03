@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>九寨沟客流预测系统</title>
+
+  <!-- ECharts -->
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+  <!-- Google Fonts: Inter (Apple-like sans) + Roboto Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="/static/css/dashboard_v3.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     NAV BAR
+═══════════════════════════════════════════════════════════ -->
+<nav class="v3-nav" id="v3Nav">
+  <div class="v3-nav__inner">
+    <div class="v3-nav__brand">
+      <span class="v3-nav__dot"></span>
+      <span class="v3-nav__title" id="v3NavTitle">九寨沟客流预测</span>
+    </div>
+
+    <!-- Page tabs -->
+    <div class="v3-nav__tabs" role="tablist">
+      <button class="v3-tab v3-tab--active" data-page="forecast" role="tab" id="tabForecast">
+        <span data-i18n="tab_forecast">预测</span>
+      </button>
+      <button class="v3-tab" data-page="analysis" role="tab" id="tabAnalysis">
+        <span data-i18n="tab_analysis">分析</span>
+      </button>
+      <button class="v3-tab" data-page="models" role="tab" id="tabModels">
+        <span data-i18n="tab_models">模型</span>
+      </button>
+    </div>
+
+    <div class="v3-nav__actions">
+      <!-- Horizon selector -->
+      <div class="v3-seg" role="group" aria-label="horizon">
+        <button class="v3-seg__btn" data-h="1">1D</button>
+        <button class="v3-seg__btn v3-seg__btn--active" data-h="7">7D</button>
+        <button class="v3-seg__btn" data-h="14">14D</button>
+      </div>
+
+      <!-- Online toggle -->
+      <label class="v3-pill-toggle" title="在线预测">
+        <input type="checkbox" id="v3Online" />
+        <span class="v3-pill-toggle__track">
+          <span class="v3-pill-toggle__thumb"></span>
+        </span>
+        <span class="v3-pill-toggle__label" data-i18n="online">在线</span>
+      </label>
+
+      <!-- Lang -->
+      <button class="v3-icon-btn" id="v3Lang" title="Language" aria-label="切换语言">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      </button>
+
+      <!-- Theme -->
+      <button class="v3-icon-btn" id="v3Theme" title="Theme" aria-label="切换主题">
+        <svg class="v3-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="v3-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+
+      <!-- Refresh -->
+      <button class="v3-icon-btn" id="v3Refresh" title="刷新" aria-label="刷新数据">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- Spinner overlay -->
+<div class="v3-spinner-overlay" id="v3Spinner" aria-hidden="true">
+  <div class="v3-spinner"></div>
+</div>
+
+<!-- Error banner -->
+<div class="v3-error-banner" id="v3Error" role="alert" style="display:none">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+  <span id="v3ErrorMsg">数据加载失败</span>
+  <button class="v3-error-banner__close" id="v3ErrorClose" aria-label="关闭">✕</button>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════
+     PAGE: FORECAST
+═══════════════════════════════════════════════════════════ -->
+<main class="v3-page" id="pageForecast">
+
+  <!-- ── Hero KPI strip ── -->
+  <section class="v3-kpi-strip">
+    <div class="v3-kpi" id="kpiLatest">
+      <span class="v3-kpi__label" data-i18n="kpi_latest">最新客流</span>
+      <span class="v3-kpi__value" id="kpiLatestVal">—</span>
+      <span class="v3-kpi__unit" data-i18n="kpi_unit">人</span>
+    </div>
+    <div class="v3-kpi-divider"></div>
+    <div class="v3-kpi" id="kpiPeak">
+      <span class="v3-kpi__label" data-i18n="kpi_peak">预测峰值</span>
+      <span class="v3-kpi__value" id="kpiPeakVal">—</span>
+      <span class="v3-kpi__unit" data-i18n="kpi_unit">人</span>
+    </div>
+    <div class="v3-kpi-divider"></div>
+    <div class="v3-kpi" id="kpiRisk">
+      <span class="v3-kpi__label" data-i18n="kpi_risk">综合风险</span>
+      <span class="v3-kpi__value v3-kpi__value--risk" id="kpiRiskVal">—</span>
+    </div>
+    <div class="v3-kpi-divider"></div>
+    <div class="v3-kpi" id="kpiModel">
+      <span class="v3-kpi__label" data-i18n="kpi_model">冠军模型</span>
+      <span class="v3-kpi__value v3-kpi__value--sm" id="kpiModelVal">—</span>
+    </div>
+  </section>
+
+  <!-- ── Main content grid ── -->
+  <div class="v3-grid">
+
+    <!-- Left: chart card -->
+    <div class="v3-card v3-card--chart">
+      <div class="v3-card__head">
+        <div>
+          <h2 class="v3-card__title" data-i18n="chart_title">客流预测</h2>
+          <p class="v3-card__sub" id="v3ChartSub">—</p>
+        </div>
+        <!-- Model toggles -->
+        <div class="v3-seg v3-seg--sm" role="group">
+          <button class="v3-seg__btn v3-seg__btn--active" data-model="both" data-i18n="model_all">全部</button>
+          <button class="v3-seg__btn" data-model="champion" data-i18n="model_champ">冠军</button>
+          <button class="v3-seg__btn" data-model="runner" data-i18n="model_runner">亚军</button>
+          <button class="v3-seg__btn" data-model="third" data-i18n="model_third">第三</button>
+        </div>
+      </div>
+      <div class="v3-chart-box" id="v3Chart"></div>
+    </div>
+
+    <!-- Right: side panel -->
+    <aside class="v3-side">
+
+      <!-- Weather card -->
+      <div class="v3-card v3-card--weather" id="v3WeatherCard">
+        <div class="v3-weather__top">
+          <div>
+            <p class="v3-weather__date" id="v3WDate">—</p>
+            <p class="v3-weather__loc">九寨沟，四川</p>
+          </div>
+          <div class="v3-weather__icon-wrap" id="v3WIconWrap">
+            <!-- animated icon injected by JS -->
+          </div>
+        </div>
+        <div class="v3-weather__temp" id="v3WTemp">—°</div>
+        <div class="v3-weather__grid">
+          <div class="v3-weather__item">
+            <span class="v3-weather__item-label" data-i18n="w_precip">降水</span>
+            <span class="v3-weather__item-val" id="v3WPrecip">—</span>
+          </div>
+          <div class="v3-weather__item">
+            <span class="v3-weather__item-label" data-i18n="w_temphl">温度区间</span>
+            <span class="v3-weather__item-val" id="v3WTempHL">—</span>
+          </div>
+          <div class="v3-weather__item">
+            <span class="v3-weather__item-label" data-i18n="w_wind">风力</span>
+            <span class="v3-weather__item-val" id="v3WWind">—</span>
+          </div>
+          <div class="v3-weather__item">
+            <span class="v3-weather__item-label" data-i18n="w_aqi">AQI</span>
+            <span class="v3-weather__item-val" id="v3WAqi">—</span>
+          </div>
+        </div>
+        <div class="v3-weather__flags" id="v3WFlags"></div>
+      </div>
+
+      <!-- Risk card -->
+      <div class="v3-card v3-card--risk">
+        <div class="v3-card__head">
+          <h3 class="v3-card__title" data-i18n="risk_title">适宜性预警</h3>
+          <span class="v3-risk-badge" id="v3RiskBadge">—</span>
+        </div>
+        <div class="v3-risk-body">
+          <!-- Thermometer -->
+          <div class="v3-thermo">
+            <div class="v3-thermo__tube">
+              <div class="v3-thermo__fill" id="v3ThermoFill" style="height:0%"></div>
+            </div>
+            <div class="v3-thermo__labels">
+              <span>100</span>
+              <span>75</span>
+              <span>50</span>
+              <span>25</span>
+              <span>0</span>
+            </div>
+          </div>
+          <div class="v3-risk-detail">
+            <div class="v3-risk-score" id="v3RiskScore">0</div>
+            <div class="v3-risk-level" id="v3RiskLevel" data-i18n="risk_normal">正常</div>
+            <div class="v3-risk-drivers" id="v3RiskDrivers"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Best window card -->
+      <div class="v3-card v3-card--reco">
+        <h3 class="v3-card__title" data-i18n="reco_title">推荐出行窗口</h3>
+        <div class="v3-reco-list" id="v3Reco">
+          <p class="v3-reco-empty" data-i18n="reco_loading">加载中…</p>
+        </div>
+      </div>
+
+    </aside>
+  </div>
+
+  <!-- ── 7-day forecast strip ── -->
+  <section class="v3-forecast-strip" id="v3ForecastStrip">
+    <!-- 7 day cards injected by JS -->
+  </section>
+
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════
+     PAGE: ANALYSIS
+═══════════════════════════════════════════════════════════ -->
+<main class="v3-page v3-page--hidden" id="pageAnalysis">
+
+  <div class="v3-section-header">
+    <h1 class="v3-section-title" data-i18n="analysis_title">模型分析</h1>
+    <p class="v3-section-sub" data-i18n="analysis_sub">Walk-forward 评估 · 特征消融 · 校准诊断</p>
+  </div>
+
+  <div class="v3-analysis-grid">
+
+    <!-- Walk-forward metrics -->
+    <div class="v3-card v3-card--full">
+      <div class="v3-card__head">
+        <div>
+          <h2 class="v3-card__title" data-i18n="wf_title">Walk-forward 评估（4折）</h2>
+          <p class="v3-card__sub" data-i18n="wf_sub">Expanding Window · 每折测试90天 · 覆盖不同季节</p>
+        </div>
+      </div>
+      <div class="v3-chart-box v3-chart-box--md" id="v3WfChart"></div>
+    </div>
+
+    <!-- Reliability diagram -->
+    <div class="v3-card">
+      <div class="v3-card__head">
+        <h2 class="v3-card__title" data-i18n="calib_title">校准可靠性图</h2>
+      </div>
+      <div class="v3-chart-box v3-chart-box--sm" id="v3CalibChart"></div>
+      <p class="v3-card__note" data-i18n="calib_note">注：当前预警概率为确定性分类器近似（temperature=1000），非真正概率输出。</p>
+    </div>
+
+    <!-- Model comparison table -->
+    <div class="v3-card">
+      <div class="v3-card__head">
+        <h2 class="v3-card__title" data-i18n="cmp_title">三模型指标对比</h2>
+      </div>
+      <div class="v3-metrics-table" id="v3MetricsTable">
+        <!-- injected by JS -->
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════
+     PAGE: MODELS
+═══════════════════════════════════════════════════════════ -->
+<main class="v3-page v3-page--hidden" id="pageModels">
+
+  <div class="v3-section-header">
+    <h1 class="v3-section-title" data-i18n="models_title">模型详情</h1>
+    <p class="v3-section-sub" data-i18n="models_sub">架构 · 特征 · 训练参数 · Attention 热力图</p>
+  </div>
+
+  <div class="v3-models-grid" id="v3ModelsGrid">
+    <!-- 3 model cards injected by JS -->
+  </div>
+
+</main>
+
+<!-- ═══════════════════════════════════════════════════════════
+     STATUS BAR
+═══════════════════════════════════════════════════════════ -->
+<footer class="v3-statusbar">
+  <span class="v3-statusbar__item">
+    <span class="v3-status-dot" id="v3StatusDot"></span>
+    <span id="v3StatusText" data-i18n="status_loading">加载中</span>
+  </span>
+  <span class="v3-statusbar__sep"></span>
+  <span class="v3-statusbar__item" id="v3GenAt">—</span>
+  <span class="v3-statusbar__sep"></span>
+  <span class="v3-statusbar__item" data-i18n="status_source">数据来源：九寨沟官网 · Open-Meteo</span>
+</footer>
+
+<script src="/static/js/dashboard_v3.js"></script>
+</body>
+</html>

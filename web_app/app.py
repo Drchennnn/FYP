@@ -608,10 +608,9 @@ def mark_core_holiday(date_val):
 
 # --- Routes ---
 
-@app.route('/')
+@app.route('/legacy')
 def index():
-    print("Request received for root route /")
-    return redirect(url_for('dashboard'))
+    return redirect(url_for('dashboard_v3'))
 
 
 @app.route('/legacy')
@@ -627,11 +626,15 @@ def dashboard():
 
 @app.route('/dashboard/v2')
 def dashboard_v2():
-    """Dashboard v2 (P0 functional).
-
-    This route intentionally does not replace /dashboard.
-    """
+    """Dashboard v2 (legacy, kept for compatibility)."""
     return render_template('dashboard_v2.html')
+
+
+@app.route('/dashboard/v3')
+@app.route('/')
+def dashboard_v3():
+    """Dashboard v3 — Apple-inspired redesign (current default)."""
+    return render_template('dashboard_v3.html')
 
 
 @app.route('/compare')
