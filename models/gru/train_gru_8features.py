@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.common.core_evaluation import evaluate_and_save_run
+from models.common.core_evaluation import evaluate_and_save_run, compute_dynamic_peak_threshold
 from matplotlib import pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 
@@ -295,14 +295,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="GRU 客流预测训练脚本（基线模型）")
     parser.add_argument(
         "--input-csv",
-        default="data/raw/jiuzhaigou_tourism_weather_2024_2026_latest.csv",
+        default="data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
         help="输入 CSV（需包含 date + 客流列）。",
     )
     parser.add_argument("--look-back", type=int, default=30, help="历史窗口长度。")
     parser.add_argument("--epochs", type=int, default=120, help="训练轮次（建议 >=100）。")
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--test-ratio", type=float, default=0.2)
-    parser.add_argument("--val-ratio", type=float, default=0.15)
+    parser.add_argument("--test-ratio", type=float, default=0.1)
+    parser.add_argument("--val-ratio", type=float, default=0.125)
     parser.add_argument("--peak-quantile", type=float, default=0.75)
     parser.add_argument("--output-dir", default="output")
     parser.add_argument("--model-dir", default="model")
@@ -388,6 +388,13 @@ def main() -> None:
         x, y, d, test_ratio=args.test_ratio, val_ratio=args.val_ratio
     )
 
+    # 动态峰值阈值：仅从训练集客流量计算，避免测试集泄露
+    train_visitor_counts = scaler.inverse_transform(y_train.reshape(-1, 1)).reshape(-1)
+    dynamic_peak_threshold = compute_dynamic_peak_threshold(
+        train_visitor_counts, quantile=args.peak_quantile
+    )
+    print(f"动态峰值阈值（训练集 {args.peak_quantile*100:.0f} 分位数）: {dynamic_peak_threshold:.0f}")
+
     # Split weather arrays using the same time split.
     n_train = len(y_train)
     n_val = len(y_val)
@@ -469,6 +476,7 @@ def main() -> None:
         y_pred=np.asarray(y_pred),
         dates=pd.to_datetime(pred_df["date"]).values,
         horizon=1,
+        peak_threshold=dynamic_peak_threshold,
         warning_temperature=1000.0,
         fn_fp_cost_ratio=(5.0, 1.0),
         weather_precip=np.asarray(weather_test_precip),
@@ -481,6 +489,8 @@ def main() -> None:
             "look_back": int(args.look_back),
             "epochs_requested": int(args.epochs),
             "epochs_trained": int(len(history.history.get("loss", []))),
+            "peak_threshold_source": "dynamic_train_quantile",
+            "peak_quantile": float(args.peak_quantile),
         },
     )
 

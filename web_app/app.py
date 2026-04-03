@@ -38,6 +38,23 @@ if not tf:
 if not keras and not tf:
     print("CRITICAL WARNING: Neither Keras nor TensorFlow could be imported. Prediction will fail.")
 
+# --- Seq2Seq Custom Objects ---
+_seq2seq_custom_objects = {}
+try:
+    from models.lstm.train_seq2seq_attention_8features import (
+        AttentionLayer,
+        Seq2SeqWithAttention,
+        create_custom_asymmetric_loss,
+    )
+    _seq2seq_custom_objects = {
+        'AttentionLayer': AttentionLayer,
+        'Seq2SeqWithAttention': Seq2SeqWithAttention,
+        'custom_asymmetric_loss': create_custom_asymmetric_loss(),
+    }
+    print("Seq2Seq custom objects registered successfully.")
+except Exception as _e:
+    print(f"WARNING: Could not import Seq2Seq custom objects: {_e}")
+
 # --- Path Setup ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
@@ -98,9 +115,9 @@ def _load_compare_metrics(backup_dir: str):
 
 
 def _pick_champion_and_runner_up(df_cmp: pd.DataFrame):
-    """Pick champion and runner-up based on weighted suitability warning metrics."""
+    """Pick champion, runner-up, and third based on weighted suitability warning metrics."""
     if df_cmp is None or df_cmp.empty:
-        return None, None
+        return None, None, None
 
     df = df_cmp.copy()
     needed = [
@@ -113,7 +130,7 @@ def _pick_champion_and_runner_up(df_cmp: pd.DataFrame):
     ]
     for c in needed:
         if c not in df.columns:
-            return None, None
+            return None, None, None
 
     # Champion policy: Recall>=0.8; maximize weighted F1; tie-breakers: lower Brier then lower ECE.
     df = df.sort_values(
@@ -125,12 +142,13 @@ def _pick_champion_and_runner_up(df_cmp: pd.DataFrame):
         ],
         ascending=[False, False, True, True]
     )
-    top = df.head(2).to_dict(orient='records')
+    top = df.head(3).to_dict(orient='records')
     if not top:
-        return None, None
+        return None, None, None
     champ = top[0]
     runner = top[1] if len(top) > 1 else None
-    return champ, runner
+    third = top[2] if len(top) > 2 else None
+    return champ, runner, third
 
 
 def _resolve_backup_run_dir(backup_dir: str, run_dir_in_report: str):
@@ -306,7 +324,7 @@ def load_model():
             try:
                 print("Attempting load with tf.keras.models.load_model...")
                 # 显式指定 compile=False
-                lstm_model = tf.keras.models.load_model(path, compile=False)
+                lstm_model = tf.keras.models.load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
                 print("Model loaded successfully (tf.keras).")
                 return
             except Exception as e:
@@ -317,13 +335,13 @@ def load_model():
             try:
                 print(f"Attempting load with keras (v{keras.__version__})...")
                 if hasattr(keras, 'saving') and hasattr(keras.saving, 'load_model'):
-                    lstm_model = keras.saving.load_model(path, compile=False)
+                    lstm_model = keras.saving.load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
                 elif hasattr(keras.models, 'load_model'):
-                    lstm_model = keras.models.load_model(path, compile=False)
+                    lstm_model = keras.models.load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
                 else:
                     from keras.models import load_model as k_load_model
-                    lstm_model = k_load_model(path, compile=False)
-                
+                    lstm_model = k_load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
+
                 if lstm_model:
                     print("Model loaded successfully (keras).")
                     return
@@ -477,6 +495,15 @@ def dashboard():
     return render_template('dashboard.html')
 
 
+@app.route('/dashboard/v2')
+def dashboard_v2():
+    """Dashboard v2 (P0 functional).
+
+    This route intentionally does not replace /dashboard.
+    """
+    return render_template('dashboard_v2.html')
+
+
 @app.route('/compare')
 def compare():
     return render_template('compare.html')
@@ -515,10 +542,10 @@ def test_risk():
 
 @app.route('/api/models', methods=['GET'])
 def api_models():
-    """Offline artifact mode: return champion + runner-up from latest backup."""
+    """Offline artifact mode: return champion + runner-up + third from latest backup."""
     backup_dir = _get_latest_backup_dir()
     df_cmp = _load_compare_metrics(backup_dir)
-    champ, runner = _pick_champion_and_runner_up(df_cmp)
+    champ, runner, third = _pick_champion_and_runner_up(df_cmp)
 
     if not champ:
         return jsonify({
@@ -529,6 +556,7 @@ def api_models():
 
     champ_run = _resolve_backup_run_dir(backup_dir, champ.get('run_dir'))
     runner_run = _resolve_backup_run_dir(backup_dir, runner.get('run_dir')) if runner else None
+    third_run = _resolve_backup_run_dir(backup_dir, third.get('run_dir')) if third else None
 
     models = [
         {
@@ -544,6 +572,13 @@ def api_models():
             'display_name': _pretty_model_name(runner.get('model')),
             'model_key': runner.get('model'),
             'run_dir': runner_run,
+        })
+    if third and third_run:
+        models.append({
+            'model_id': 'third',
+            'display_name': _pretty_model_name(third.get('model')),
+            'model_key': third.get('model'),
+            'run_dir': third_run,
         })
 
     return jsonify({
@@ -624,6 +659,13 @@ def api_forecast():
         if df_r is None or df_r.empty:
             runner_available = False
 
+    third_available = include_all and ('third' in models)
+    third_run, third_key, third_metrics, df_t = (None, None, {}, None)
+    if third_available:
+        third_run, third_key, third_metrics, df_t = _load_one('third')
+        if df_t is None or df_t.empty:
+            third_available = False
+
     # Master time axis: prefer full processed history (expected 2024-2026)
     warning = None
     df_master = _load_master_history_from_processed()
@@ -654,6 +696,15 @@ def api_forecast():
             df_base['runner_pred'] = np.nan
     else:
         df_base['runner_pred'] = np.nan
+
+    if third_available:
+        df_base = pd.merge(df_base, df_t[['date', 'y_pred']], on='date', how='left', suffixes=('', '_third'))
+        if 'y_pred_third' in df_base.columns:
+            df_base = df_base.rename(columns={'y_pred_third': 'third_pred'})
+        else:
+            df_base['third_pred'] = np.nan
+    else:
+        df_base['third_pred'] = np.nan
 
     df_merge = df_base.sort_values('date')
 
@@ -713,6 +764,7 @@ def api_forecast():
             if df_future is not None and not df_future.empty:
                 online_used = True
                 df_future['runner_pred'] = np.nan
+                df_future['third_pred'] = np.nan
                 # Add empty weather fields for future dates
                 for c in ['actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']:
                     if c not in df_future.columns:
@@ -722,7 +774,7 @@ def api_forecast():
                 # Keep the same column set and append
                 df_merge = pd.concat([
                     df_merge,
-                    df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en', 'champion_pred', 'runner_pred']]
+                    df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en', 'champion_pred', 'runner_pred', 'third_pred']]
                 ], ignore_index=True)
                 df_merge = df_merge.sort_values('date')
         except Exception as e:
@@ -811,6 +863,7 @@ def api_forecast():
 
     risk_champ = _compute_risk('champion_pred')
     risk_runner = _compute_risk('runner_pred') if runner_available else None
+    risk_third = _compute_risk('third_pred') if third_available else None
 
     # Holiday intervals (for markArea), with CN/EN names
     holiday_ranges = []
@@ -862,8 +915,10 @@ def api_forecast():
             },
             'runner_up': ({
                 'model_name': _pretty_model_name(run_key),
-            } if runner_available else None)
-            ,
+            } if runner_available else None),
+            'third': ({
+                'model_name': _pretty_model_name(third_key),
+            } if third_available else None),
             'forecast_mode': forecast_mode
         },
         'time_axis': time_axis,
@@ -876,6 +931,7 @@ def api_forecast():
             'actual': _to_num_list('actual'),
             'champion_pred': _to_num_list('champion_pred'),
             'runner_pred': _to_num_list('runner_pred'),
+            'third_pred': _to_num_list('third_pred'),
         },
         'thresholds': {
             'crowd': threshold_crowd,
@@ -904,7 +960,8 @@ def api_forecast():
         'holidays': holiday_ranges,
         'risk': {
             'champion': risk_champ,
-            'runner_up': risk_runner
+            'runner_up': risk_runner,
+            'third': risk_third
         },
         'warning': warning
     })
@@ -1061,18 +1118,53 @@ def predict():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+# --- Scheduler Setup ---
+def _start_scheduler():
+    """Start APScheduler background scheduler for daily auto-crawl at 09:00."""
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from realtime.daily_update import daily_update
+
+        scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
+        scheduler.add_job(daily_update, 'cron', hour=9, minute=0, id='daily_crawl',
+                          replace_existing=True)
+        scheduler.start()
+        print("Scheduler started: daily crawl job registered at 09:00 Asia/Shanghai.")
+        return scheduler
+    except ImportError:
+        print("WARNING: APScheduler not installed. Run: pip install APScheduler==3.10.4")
+        return None
+    except Exception as e:
+        print(f"WARNING: Scheduler failed to start: {e}")
+        return None
+
+
+@app.route('/api/scheduler/status', methods=['GET'])
+def api_scheduler_status():
+    """Return scheduler status."""
+    sched = app.config.get('_scheduler')
+    if sched is None:
+        return jsonify({'running': False, 'jobs': [], 'warning': 'Scheduler not started.'})
+    jobs = [{'id': j.id, 'next_run': str(j.next_run_time)} for j in sched.get_jobs()]
+    return jsonify({'running': sched.running, 'jobs': jobs})
+
+
 # --- App Entry Point ---
 if __name__ == '__main__':
     with app.app_context():
         load_model()
         db.create_all()
-        
+
     print("Attempting to sync latest data...")
     try:
         sync_data()
     except Exception as e:
         print(f"Sync failed: {e}")
 
+    _sched = _start_scheduler()
+    if _sched:
+        app.config['_scheduler'] = _sched
+
     # Use port 5000 as requested
     print("Starting Flask server on port 5000...")
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5000)

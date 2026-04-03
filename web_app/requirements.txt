@@ -6,3 +6,4 @@ numpy==1.26.3
 python-dotenv==1.0.1
 tensorflow==2.15.0
 chinesecalendar==1.8.0
+APScheduler==3.10.4

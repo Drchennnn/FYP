@@ -35,7 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from models.common.core_evaluation import evaluate_and_save_run
+from models.common.core_evaluation import evaluate_and_save_run, compute_dynamic_peak_threshold
 
 matplotlib.use("Agg")
 
@@ -223,69 +223,80 @@ class Seq2SeqWithAttention(tf.keras.Model):
 
     def call(self, inputs, training=True):
         """前向传播（非自回归版本）
-        
+
         Args:
             inputs: [encoder_input, decoder_input]
             encoder_input: (batch, encoder_steps, 8)  - 历史30天数据
             decoder_input: (batch, decoder_steps, 7)  - 预测未来7天的外部特征
-            
+
         Returns:
             predictions: (batch, decoder_steps, 1)    - 预测值（只返回这个用于训练）
         """
         encoder_input, decoder_input = inputs
-        
+
         # 步骤1：特征压缩
         encoder_compressed = self.encoder_feature_compress(encoder_input)
         decoder_compressed = self.decoder_feature_compress(decoder_input)
-        
+
         # 步骤2：Encoder编码
         encoder_outputs, forward_h, forward_c, backward_h, backward_c = \
             self.encoder(encoder_compressed, training=training)
-        
+
         # 合并双向LSTM的状态（维度转换）
         encoder_hidden = tf.keras.layers.concatenate([forward_h, backward_h])
         encoder_cell = tf.keras.layers.concatenate([forward_c, backward_c])
-        
+
         # 解决维度匹配问题：双向状态 → Decoder状态
         decoder_initial_hidden = self.state_transition(encoder_hidden)
         decoder_initial_cell = self.state_transition(encoder_cell)
-        
+
         # 步骤3：Decoder初始化
         decoder_hidden = decoder_initial_hidden
         decoder_cell = decoder_initial_cell
         decoder_outputs = []
-        
+        all_attention_weights = []
+
         # 步骤4：逐个时间步解码（with Attention）
         for t in range(decoder_input.shape[1]):
             # 获取当前时间步的特征
             decoder_input_t = tf.expand_dims(decoder_input[:, t, :], axis=1)
-            
+
             # 注意力机制：获取上下文向量
             context_vector, attention_weights = self.attention(
                 decoder_hidden, encoder_outputs
             )
-            
+            all_attention_weights.append(attention_weights)  # (batch, encoder_steps, 1)
+
             # 拼接上下文向量与当前特征
             decoder_input_with_context = tf.concat([
-                tf.expand_dims(context_vector, 1), 
+                tf.expand_dims(context_vector, 1),
                 decoder_compressed[:, t:t+1, :]
             ], axis=-1)
-            
+
             # LSTM前向传播
             decoder_output, decoder_hidden, decoder_cell = self.decoder_lstm(
                 decoder_input_with_context,
                 initial_state=[decoder_hidden, decoder_cell],
                 training=training
             )
-            
+
             # 输出预测值
             prediction = self.fc(decoder_output)
             decoder_outputs.append(prediction)
-        
+
         # 整理输出
         predictions = tf.concat(decoder_outputs, axis=1)
-        
+        # attention_matrix: (batch, decoder_steps, encoder_steps)
+        self._last_attention = tf.concat(
+            [tf.squeeze(w, axis=-1)[:, tf.newaxis, :] for w in all_attention_weights], axis=1
+        )
+
         return predictions
+
+    def get_attention_weights(self, inputs):
+        """推理时获取 attention 权重矩阵，shape=(batch, decoder_steps, encoder_steps)"""
+        self(inputs, training=False)
+        return self._last_attention.numpy()
 
 
 def create_custom_asymmetric_loss(holiday_weight=2.0, peak_weight=1.5):
@@ -484,19 +495,106 @@ def prepare_seq2seq_data(
     )
 
 
+def _save_attention_heatmap(
+    model: "Seq2SeqWithAttention",
+    x_encoder_test: np.ndarray,
+    x_decoder_test: np.ndarray,
+    pred_dates: list,
+    decoder_steps: int,
+    encoder_steps: int,
+    fig_dir: Path,
+    n_samples: int = 5,
+) -> None:
+    """生成并保存 Attention 权重热力图。
+
+    每张图展示一个测试样本：
+    - X 轴：Encoder 历史天（-encoder_steps ~ -1）
+    - Y 轴：Decoder 预测步（Day+1 ~ Day+decoder_steps）
+    - 颜色：注意力权重（越亮表示该历史天对该预测步影响越大）
+
+    同时生成一张平均热力图（所有测试样本的均值），
+    反映模型整体上"最关注"哪些历史时间位置。
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+
+    # 取前 n_samples 个测试样本
+    n = min(n_samples, len(x_encoder_test))
+    x_enc = x_encoder_test[:n]
+    x_dec = x_decoder_test[:n]
+
+    # 获取 attention 权重，shape=(n, decoder_steps, encoder_steps)
+    attn = model.get_attention_weights([x_enc, x_dec])
+
+    # ── 1. 平均热力图（所有测试样本均值）──
+    # 用全部测试集计算均值，更稳定
+    batch_size = 64
+    all_attn = []
+    for start in range(0, len(x_encoder_test), batch_size):
+        end = min(start + batch_size, len(x_encoder_test))
+        a = model.get_attention_weights([x_encoder_test[start:end], x_decoder_test[start:end]])
+        all_attn.append(a)
+    mean_attn = np.concatenate(all_attn, axis=0).mean(axis=0)  # (decoder_steps, encoder_steps)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    im = ax.imshow(mean_attn, aspect="auto", cmap="YlOrRd", interpolation="nearest")
+    ax.set_xlabel("Encoder History (days before prediction)", fontsize=10)
+    ax.set_ylabel("Decoder Step (forecast horizon)", fontsize=10)
+    ax.set_title("Attention Weight Heatmap — Mean over Test Set", fontsize=11)
+    ax.set_xticks(range(encoder_steps))
+    ax.set_xticklabels([f"-{encoder_steps - i}" for i in range(encoder_steps)],
+                       fontsize=6, rotation=90)
+    ax.set_yticks(range(decoder_steps))
+    ax.set_yticklabels([f"Day+{i+1}" for i in range(decoder_steps)], fontsize=8)
+    plt.colorbar(im, ax=ax, label="Attention Weight")
+    plt.tight_layout()
+    save_path = fig_dir / "attention_heatmap_mean.png"
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"  Attention 均值热力图已保存: {save_path}")
+
+    # ── 2. 单样本热力图（取最后一个测试样本，对应最新预测窗口）──
+    last_attn = attn[-1]  # (decoder_steps, encoder_steps)
+    # 尝试获取对应日期
+    try:
+        sample_date = str(pd.Timestamp(pred_dates[-decoder_steps]).date()) if pred_dates else "latest"
+    except Exception:
+        sample_date = "latest"
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    im = ax.imshow(last_attn, aspect="auto", cmap="YlOrRd", interpolation="nearest")
+    ax.set_xlabel("Encoder History (days before prediction)", fontsize=10)
+    ax.set_ylabel("Decoder Step (forecast horizon)", fontsize=10)
+    ax.set_title(f"Attention Weight Heatmap — Sample ending {sample_date}", fontsize=11)
+    ax.set_xticks(range(encoder_steps))
+    ax.set_xticklabels([f"-{encoder_steps - i}" for i in range(encoder_steps)],
+                       fontsize=6, rotation=90)
+    ax.set_yticks(range(decoder_steps))
+    ax.set_yticklabels([f"Day+{i+1}" for i in range(decoder_steps)], fontsize=8)
+    plt.colorbar(im, ax=ax, label="Attention Weight")
+    plt.tight_layout()
+    save_path = fig_dir / "attention_heatmap_sample.png"
+    plt.savefig(save_path, dpi=150)
+    plt.close()
+    print(f"  Attention 样本热力图已保存: {save_path}")
+
+    # ── 3. 保存原始权重数据（供后续分析）──
+    np.save(str(fig_dir / "attention_weights_mean.npy"), mean_attn)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seq2Seq + Attention 客流预测训练脚本。")
     parser.add_argument(
         "--input-csv",
-        default="data/processed/jiuzhaigou_8features_latest.csv",
+        default="data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
         help="输入 CSV（需包含 date + 客流列）。",
     )
     parser.add_argument("--encoder-steps", type=int, default=30, help="历史窗口长度。")
     parser.add_argument("--decoder-steps", type=int, default=7, help="预测天数。")
     parser.add_argument("--epochs", type=int, default=120, help="训练轮次（建议 >=100）。")
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--test-ratio", type=float, default=0.2)
-    parser.add_argument("--val-ratio", type=float, default=0.15)
+    parser.add_argument("--test-ratio", type=float, default=0.1)
+    parser.add_argument("--val-ratio", type=float, default=0.125)
     parser.add_argument("--peak-quantile", type=float, default=0.75)
     parser.add_argument("--output-dir", default="output")
     parser.add_argument("--model-dir", default="model")
@@ -567,6 +665,15 @@ def main() -> None:
         decoder_steps=args.decoder_steps,
         test_ratio=args.test_ratio,
     )
+
+    # 动态峰值阈值：仅从训练集客流量计算，避免测试集泄露
+    train_visitor_counts = scaler.inverse_transform(
+        y_train[:, :, 0].reshape(-1, 1)
+    ).reshape(-1)
+    dynamic_peak_threshold = compute_dynamic_peak_threshold(
+        train_visitor_counts, quantile=args.peak_quantile
+    )
+    print(f"动态峰值阈值（训练集 {args.peak_quantile*100:.0f} 分位数）: {dynamic_peak_threshold:.0f}")
 
     # 4. 创建Seq2Seq + Attention模型
     model = Seq2SeqWithAttention(
@@ -687,6 +794,7 @@ def main() -> None:
         y_pred=y_pred,
         dates=pred_dates,
         horizon=int(args.decoder_steps),
+        peak_threshold=dynamic_peak_threshold,
         # Weather hazard uses Route B quantile thresholds computed on TRAIN split only.
         # Weather is treated as exogenous (from dataset/API) since the model does not predict weather.
         weather_precip=np.asarray(weather_test[:, :, 0], dtype=float),
@@ -695,9 +803,25 @@ def main() -> None:
         weather_train_precip=np.asarray(weather_train[:, :, 0], dtype=float).reshape(-1),
         weather_train_temp_high=np.asarray(weather_train[:, :, 1], dtype=float).reshape(-1),
         weather_train_temp_low=np.asarray(weather_train[:, :, 2], dtype=float).reshape(-1),
-        extra_meta=extra_meta,
+        extra_meta={**extra_meta, "peak_threshold_source": "dynamic_train_quantile",
+                    "peak_quantile": float(args.peak_quantile)},
         save_figures=bool(args.save_plots),
     )
+
+    # 14. Attention 权重可视化（热力图）
+    if args.save_plots:
+        try:
+            _save_attention_heatmap(
+                model=model,
+                x_encoder_test=x_encoder_test,
+                x_decoder_test=x_decoder_test,
+                pred_dates=pred_dates,
+                decoder_steps=args.decoder_steps,
+                encoder_steps=args.encoder_steps,
+                fig_dir=fig_dir,
+            )
+        except Exception as e:
+            print(f"警告：Attention 可视化失败（不影响训练结果）: {e}")
 
     # 14. 输出结果
     print(f"\n{'='*80}")

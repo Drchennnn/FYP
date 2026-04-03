@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+
+{% block title %}Dashboard v2 - Jiuzhaigou Forecast{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/uiw_components.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard_v2.css') }}" />
+{% endblock %}
+
+{% block content %}
+<!-- v2 keeps DOM minimal: a control bar, 1 main chart, and 2 info cards (weather + risk). -->
+
+<div class="uiw-spinner" id="uiwSpinner" aria-hidden="true" style="display:none;">
+  <div class="uiw-spinner__inner" role="status" aria-label="Loading"></div>
+</div>
+
+<div class="uiw-alert" id="uiwAlert" role="status" aria-live="polite" style="display:none;"></div>
+
+<div class="dv2">
+  <header class="dv2__bar" aria-label="dashboard v2 control bar">
+    <div class="dv2__title">
+      <div class="dv2__h1" id="dv2Title">九寨沟客流预测看板 v2</div>
+      <div class="dv2__sub" id="dv2Meta">Offline artifact mode</div>
+    </div>
+
+    <div class="dv2__controls">
+      <div class="uiw-chip-group" role="group" aria-label="horizon">
+        <button class="uiw-chip" type="button" data-h="1" id="dv2H1">1D</button>
+        <button class="uiw-chip" type="button" data-h="3" id="dv2H3">3D</button>
+        <button class="uiw-chip uiw-chip--active" type="button" data-h="7" id="dv2H7">7D</button>
+      </div>
+
+      <div class="uiw-sep" aria-hidden="true"></div>
+
+      <div class="uiw-chip-group" role="group" aria-label="model view">
+        <button class="uiw-chip uiw-chip--active" type="button" data-model="both" id="dv2ModelBoth">All</button>
+        <button class="uiw-chip" type="button" data-model="champion" id="dv2ModelChampion">Champion</button>
+        <button class="uiw-chip" type="button" data-model="runner" id="dv2ModelRunner">Runner</button>
+        <button class="uiw-chip" type="button" data-model="third" id="dv2ModelThird">Third</button>
+      </div>
+
+      <div class="uiw-sep" aria-hidden="true"></div>
+
+      <label class="uiw-mini-toggle" title="Theme" aria-label="theme toggle">
+        <input id="dv2Theme" type="checkbox" />
+        <span class="uiw-mini-toggle__ui" aria-hidden="true"></span>
+        <span class="uiw-mini-toggle__label" data-i18n="tgl_theme">日/夜</span>
+      </label>
+
+      <label class="uiw-mini-toggle" title="Language" aria-label="language toggle">
+        <input id="dv2Lang" type="checkbox" />
+        <span class="uiw-mini-toggle__ui" aria-hidden="true"></span>
+        <span class="uiw-mini-toggle__label" data-i18n="tgl_lang">中/EN</span>
+      </label>
+
+      <label class="uiw-mini-toggle" title="Forecast mode" aria-label="online forecast toggle">
+        <input id="dv2Online" type="checkbox" />
+        <span class="uiw-mini-toggle__ui" aria-hidden="true"></span>
+        <span class="uiw-mini-toggle__label" data-i18n="tgl_online">在线预测</span>
+      </label>
+
+      <button class="uiw-btn" id="dv2Refresh" type="button" data-i18n="btn_refresh">刷新</button>
+      <button class="uiw-btn-primary" id="dv2Reset" type="button" data-i18n="btn_reset">一键重置</button>
+    </div>
+  </header>
+
+  <section class="dv2__main">
+    <div class="dv2__chart">
+      <div class="dv2__chartHead">
+        <div class="dv2__chartTitle" id="dv2ChartTitle" data-i18n="panel_visitors">客流预测</div>
+        <div class="dv2__chartHint" id="dv2ChartHint" data-i18n="hint_click">点击日期同步“天气/风险”，滚轮缩放，拖拽平移。</div>
+      </div>
+      <div id="dv2VisitorChart" class="dv2__chartBox" aria-label="visitor forecast chart"></div>
+    </div>
+
+    <aside class="dv2__side">
+      <section class="dv2__card">
+        <div class="dv2__cardTitle" data-i18n="panel_weather">天气</div>
+        <div class="uiw-weather-card" id="dv2WeatherCard" aria-live="polite">
+          <div class="uiw-weather-card__header">
+            <div>
+              <div class="uiw-weather-card__place" id="dv2Place">九寨沟</div>
+              <div class="uiw-weather-card__date" id="dv2WeatherDate" data-i18n="weather_no_date">未选择日期</div>
+            </div>
+            <div class="uiw-weather-card__temp" id="dv2WeatherTemp">--°C</div>
+          </div>
+          <div class="uiw-weather-card__meta" id="dv2WeatherMeta" data-i18n="weather_click_tip">点击图表上的点查看当日天气与风险标记。</div>
+          <div class="uiw-weather-card__flags" id="dv2WeatherFlags" style="display:none;"></div>
+          <div class="uiw-weather-card__grid">
+            <div class="uiw-weather-kv"><div class="uiw-weather-k" data-i18n="weather_precip">降水</div><div class="uiw-weather-v" id="dv2WPrecip">--</div></div>
+            <div class="uiw-weather-kv"><div class="uiw-weather-k" data-i18n="weather_temp_hl">温度（高/低）</div><div class="uiw-weather-v" id="dv2WTempHL">--</div></div>
+            <div class="uiw-weather-kv"><div class="uiw-weather-k" data-i18n="weather_wind">风</div><div class="uiw-weather-v" id="dv2WWind">--</div></div>
+            <div class="uiw-weather-kv"><div class="uiw-weather-k" data-i18n="weather_aqi">空气质量</div><div class="uiw-weather-v" id="dv2WAqi">--</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="dv2__card">
+        <div class="dv2__cardTitle" data-i18n="panel_thresholds">阈值 &amp; 风险</div>
+        <div class="uiw-thermo" id="dv2Thermo" aria-label="risk thermometer">
+          <div class="uiw-thermo__head">
+            <div class="uiw-thermo__title" id="dv2ThermoTitle" data-i18n="thermo_no_date">未选择日期</div>
+            <div class="uiw-thermo__subtitle" id="dv2ThermoSubtitle" data-i18n="thermo_default">展示默认阈值</div>
+          </div>
+          <div class="uiw-thermo__body">
+            <div class="uiw-thermo__tube" aria-hidden="true">
+              <div class="uiw-thermo__fill" id="dv2ThermoFill" style="height: 12%;"></div>
+            </div>
+            <div class="uiw-thermo__value">
+              <div class="uiw-thermo__score" id="dv2ThermoScore">--</div>
+              <div class="uiw-thermo__level" id="dv2ThermoLevel">--</div>
+            </div>
+          </div>
+          <div class="uiw-thermo__foot" id="dv2ThermoFoot"><span data-i18n="thermo_crowd_thr">客流阈值</span>: <span id="dv2ThrCrowd">--</span> · <span data-i18n="thermo_weather_q">天气分位阈值</span>: <span id="dv2ThrWeather">--</span></div>
+        </div>
+      </section>
+
+      <section class="dv2__card">
+        <div class="dv2__cardTitle" data-i18n="panel_best_window">最佳出行窗口（视窗）</div>
+        <div class="dv2__reco" id="dv2Reco" data-i18n="best_wait">等待预测结果…</div>
+      </section>
+    </aside>
+  </section>
+</div>
+{% endblock %}
+
+{% block page_js %}
+<script src="{{ url_for('static', filename='js/dashboard_v2.js') }}"></script>
+{% endblock %}

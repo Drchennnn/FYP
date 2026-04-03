@@ -60,6 +60,36 @@ DEFAULT_WEATHER_QUANTILES = {
 }
 
 
+def compute_dynamic_peak_threshold(
+    train_visitor_counts: np.ndarray,
+    quantile: float = 0.75,
+    fallback: float = DEFAULT_PEAK_THRESHOLD,
+) -> float:
+    """从训练集动态计算峰值阈值（数据驱动）。
+
+    设计原则：
+    - 仅使用训练集数据，避免测试集泄露
+    - 默认取 75 分位数，与景区"高峰期"定义对齐
+    - 若训练集数据不足（< 30 条），回退到硬编码默认值
+
+    Args:
+        train_visitor_counts: 训练集客流量数组（真实值，非归一化）
+        quantile: 分位数（默认 0.75）
+        fallback: 数据不足时的回退值（默认 18500）
+
+    Returns:
+        float: 动态计算的峰值阈值
+    """
+    counts = np.asarray(train_visitor_counts, dtype=float)
+    counts = counts[np.isfinite(counts) & (counts > 0)]
+    if len(counts) < 30:
+        return float(fallback)
+    threshold = float(np.quantile(counts, quantile))
+    # 合理性检查：阈值不应低于 5000 或高于 80000
+    threshold = float(np.clip(threshold, 5000.0, 80000.0))
+    return threshold
+
+
 def _nanquantile(x: np.ndarray, q: float) -> float:
     x = np.asarray(x, dtype=float)
     x = x[np.isfinite(x)]
