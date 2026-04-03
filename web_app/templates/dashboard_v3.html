@@ -40,13 +40,6 @@
     </div>
 
     <div class="v3-nav__actions">
-      <!-- Horizon selector -->
-      <div class="v3-seg" role="group" aria-label="horizon">
-        <button class="v3-seg__btn" data-h="1">1D</button>
-        <button class="v3-seg__btn v3-seg__btn--active" data-h="7">7D</button>
-        <button class="v3-seg__btn" data-h="14">14D</button>
-      </div>
-
       <!-- Online toggle -->
       <label class="v3-pill-toggle" title="在线预测">
         <input type="checkbox" id="v3Online" />
@@ -68,7 +61,7 @@
       </button>
 
       <!-- Refresh -->
-      <button class="v3-icon-btn" id="v3Refresh" title="刷新" aria-label="刷新数据">
+      <button class="v3-icon-btn uiw-btn-primary" id="v3Refresh" title="刷新" aria-label="刷新数据">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       </button>
     </div>
@@ -77,7 +70,7 @@
 
 <!-- Spinner overlay -->
 <div class="v3-spinner-overlay" id="v3Spinner" aria-hidden="true">
-  <div class="v3-spinner"></div>
+  <div class="uiw-spinner"><div class="uiw-spinner__inner"></div></div>
 </div>
 
 <!-- Error banner -->
@@ -136,6 +129,37 @@
         </div>
       </div>
       <div class="v3-chart-box" id="v3Chart"></div>
+
+      <!-- Weather sub-chart toggle -->
+      <div class="v3-subchart-toggle">
+        <label class="v3-subchart-label">
+          <input type="checkbox" id="v3ShowPrecip" checked />
+          <span data-i18n="show_precip">降水</span>
+        </label>
+        <label class="v3-subchart-label">
+          <input type="checkbox" id="v3ShowTemp" checked />
+          <span data-i18n="show_temp">温度</span>
+        </label>
+      </div>
+      <div class="v3-chart-box v3-chart-box--sub" id="v3WeatherChart"></div>
+
+      <!-- Chart bottom toolbar -->
+      <div class="v3-chart-toolbar">
+        <div class="v3-curve-toggles">
+          <label class="v3-curve-toggle"><input type="checkbox" data-curve="actual" checked /><span data-i18n="curve_actual">实际</span></label>
+          <label class="v3-curve-toggle"><input type="checkbox" data-curve="champion" checked /><span data-i18n="curve_champ">冠军</span></label>
+          <label class="v3-curve-toggle"><input type="checkbox" data-curve="runner" checked /><span data-i18n="curve_runner">亚军</span></label>
+          <label class="v3-curve-toggle"><input type="checkbox" data-curve="third" checked /><span data-i18n="curve_third">第三</span></label>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="v3-seg v3-seg--sm" role="group" aria-label="horizon">
+            <button class="v3-seg__btn" data-h="1" data-i18n="h_1d">1天</button>
+            <button class="v3-seg__btn v3-seg__btn--active" data-h="7" data-i18n="h_7d">7天</button>
+            <button class="v3-seg__btn" data-h="14" data-i18n="h_14d">14天</button>
+          </div>
+          <button class="v3-btn-reset" id="v3Reset" data-i18n="btn_reset">复原</button>
+        </div>
+      </div>
     </div>
 
     <!-- Right: side panel -->
@@ -241,6 +265,7 @@
         </div>
       </div>
       <div class="v3-chart-box v3-chart-box--md" id="v3WfChart"></div>
+      <p class="v3-analysis-note" data-i18n="wf_explain">Walk-forward 评估使用扩展窗口策略，每折独立训练，覆盖不同季节。MAE 越低表示回归精度越高；F1 越高表示预警准确率越高。</p>
     </div>
 
     <!-- Reliability diagram -->
@@ -249,6 +274,7 @@
         <h2 class="v3-card__title" data-i18n="calib_title">校准可靠性图</h2>
       </div>
       <div class="v3-chart-box v3-chart-box--sm" id="v3CalibChart"></div>
+      <p class="v3-analysis-note" data-i18n="calib_explain">可靠性图展示模型预警概率的校准质量。理想情况下，置信度为 X 时实际准确率也应为 X（对角线）。当前模型使用确定性近似，概率集中在 0 和 1 附近属正常现象。</p>
       <p class="v3-card__note" data-i18n="calib_note">注：当前预警概率为确定性分类器近似（temperature=1000），非真正概率输出。</p>
     </div>
 

@@ -39,7 +39,17 @@
       metrics_suit: '适宜性预警', metrics_meta: '训练参数',
       perfect_calib: '完美校准', actual_calib: '实际校准',
       confidence: '置信度', accuracy: '准确率',
-      warn_fallback: '在线预测失败，已自动回退离线产物。'
+      warn_fallback: '在线预测失败，已自动回退离线产物。',
+      h_1d: '1天', h_7d: '7天', h_14d: '14天',
+      btn_reset: '复原',
+      show_precip: '降水', show_temp: '温度',
+      curve_actual: '实际', curve_champ: '冠军',
+      curve_runner: '亚军', curve_third: '第三',
+      wf_explain: 'Walk-forward 评估使用扩展窗口策略，每折独立训练，覆盖不同季节。MAE 越低表示回归精度越高；F1 越高表示预警准确率越高。',
+      calib_explain: '可靠性图展示模型预警概率的校准质量。理想情况下，置信度为 X 时实际准确率也应为 X（对角线）。当前模型使用确定性近似，概率集中在 0 和 1 附近属正常现象。',
+      reco_reason_low: '预测客流较少，适合出游',
+      reco_reason_normal: '客流正常，天气适宜',
+      reco_reason_watch: '客流偏多，建议错峰'
     },
     en: {
       tab_forecast: 'Forecast', tab_analysis: 'Analysis', tab_models: 'Models',
@@ -73,7 +83,17 @@
       metrics_suit: 'Suitability', metrics_meta: 'Training Params',
       perfect_calib: 'Perfect Calibration', actual_calib: 'Actual',
       confidence: 'Confidence', accuracy: 'Accuracy',
-      warn_fallback: 'Online forecast failed; falling back to offline artifacts.'
+      warn_fallback: 'Online forecast failed; falling back to offline artifacts.',
+      h_1d: '1 Day', h_7d: '7 Days', h_14d: '14 Days',
+      btn_reset: 'Reset View',
+      show_precip: 'Precip', show_temp: 'Temp',
+      curve_actual: 'Actual', curve_champ: 'Champion',
+      curve_runner: 'Runner', curve_third: 'Third',
+      wf_explain: 'Walk-forward uses expanding window strategy. Each fold trains independently covering different seasons. Lower MAE = better regression; Higher F1 = better warning accuracy.',
+      calib_explain: 'Reliability diagram shows calibration quality. Ideally confidence X should match accuracy X (diagonal). Current model uses deterministic approximation; probability concentration at 0 and 1 is expected.',
+      reco_reason_low: 'Low predicted crowd, good for visiting',
+      reco_reason_normal: 'Normal crowd, suitable weather',
+      reco_reason_watch: 'Higher crowd, consider off-peak timing'
     }
   };
 
@@ -89,11 +109,13 @@
     selectedIdx: null,
     payload: null,
     chart: null,
+    weatherChart: null,
     wfChart: null,
     calibChart: null,
     metricsCache: {},
     analysisLoaded: false,
-    modelsLoaded: false
+    modelsLoaded: false,
+    curveVisible: { actual: true, champion: true, runner: true, third: true }
   };
 
   // ─────────────────────────────────────────────
@@ -306,24 +328,21 @@
   }
 
   // ─────────────────────────────────────────────
-  // Weather icon
+  // Weather icon (FIX 6: proper nested structure)
   // ─────────────────────────────────────────────
   function weatherIconHtml(code) {
-    if (!code) return '<div class="v3-wi v3-wi__cloud"></div>';
+    if (!code) return '<div class="v3-wi"><div class="v3-wi__cloud"></div></div>';
     const c = code.toUpperCase();
     if (c.includes('SUNNY') || c.includes('CLEAR')) {
-      return '<div class="v3-wi v3-wi__sun"></div>';
+      return '<div class="v3-wi"><div class="v3-wi__sun"></div></div>';
     }
     if (c.includes('SNOW')) {
-      return '<div class="v3-wi v3-wi__cloud"></div><span class="v3-wi__snow">❄</span>';
+      return '<div class="v3-wi"><div class="v3-wi__cloud"></div><span class="v3-wi__snow" style="font-size:18px;position:absolute;bottom:0;left:14px">❄</span></div>';
     }
-    if (c.includes('RAIN')) {
-      return '<div class="v3-wi v3-wi__cloud"></div><div class="v3-wi__rain"><span></span><span></span><span></span></div>';
+    if (c.includes('RAIN') || c.includes('DRIZZLE')) {
+      return '<div class="v3-wi"><div class="v3-wi__cloud"></div><div class="v3-wi__rain"><span class="v3-wi__drop"></span><span class="v3-wi__drop"></span><span class="v3-wi__drop"></span></div></div>';
     }
-    if (c.includes('CLOUD') || c.includes('OVERCAST')) {
-      return '<div class="v3-wi v3-wi__cloud"></div>';
-    }
-    return '<div class="v3-wi v3-wi__cloud"></div>';
+    return '<div class="v3-wi"><div class="v3-wi__cloud"></div></div>';
   }
 
   // ─────────────────────────────────────────────
@@ -356,7 +375,7 @@
   }
 
   // ─────────────────────────────────────────────
-  // KPI strip
+  // KPI strip (FIX 4: peak fallback)
   // ─────────────────────────────────────────────
   function renderKpi(payload) {
     const { series, forecast, meta, risk } = payload;
@@ -372,9 +391,17 @@
     // Peak predicted in forecast window
     let peak = null;
     const champSeries = series.champion;
-    for (let i = forecast.startIndex; i <= forecast.endIndex; i++) {
+    const endIdx = Math.min(forecast.endIndex, champSeries.length - 1);
+    for (let i = forecast.startIndex; i <= endIdx; i++) {
       const v = champSeries[i];
       if (v !== null && (peak === null || v > peak)) peak = v;
+    }
+    // Fallback: scan last h non-null values
+    if (peak === null) {
+      let count = 0;
+      for (let i = champSeries.length - 1; i >= 0 && count < state.h; i--) {
+        if (champSeries[i] !== null) { if (peak === null || champSeries[i] > peak) peak = champSeries[i]; count++; }
+      }
     }
     const peakEl = $('kpiPeakVal');
     if (peakEl) peakEl.textContent = fmtVisitors(peak);
@@ -405,7 +432,7 @@
   function renderChartSub(payload) {
     const el = $('v3ChartSub');
     if (!el) return;
-    const { timeAxis, forecast, meta } = payload;
+    const { timeAxis } = payload;
     const start = timeAxis[0] || '';
     const end = timeAxis[timeAxis.length - 1] || '';
     const modeLabel = state.mode === 'online' ? t('online_mode') : t('offline_mode');
@@ -413,7 +440,7 @@
   }
 
   // ─────────────────────────────────────────────
-  // Main ECharts chart
+  // Main ECharts chart (FIX 1,3,5,9)
   // ─────────────────────────────────────────────
   function buildChartOption(payload) {
     const { timeAxis, series, thresholds, holidays, forecast } = payload;
@@ -425,9 +452,10 @@
     const tooltipBorder = isDark ? '#3a3a3c' : '#e0e0e0';
 
     const mv = state.modelView;
-    const showChamp = mv === 'both' || mv === 'champion';
-    const showRunner = mv === 'both' || mv === 'runner';
-    const showThird = mv === 'both' || mv === 'third';
+    const showChamp = (mv === 'both' || mv === 'champion') && state.curveVisible.champion;
+    const showRunner = (mv === 'both' || mv === 'runner') && state.curveVisible.runner;
+    const showThird = (mv === 'both' || mv === 'third') && state.curveVisible.third;
+    const showActual = state.curveVisible.actual;
 
     // Holiday markAreas
     const markAreaData = (holidays || []).map((h) => {
@@ -446,8 +474,9 @@
     const seriesList = [
       {
         name: t('chart_title') + ' (Actual)',
-        type: 'line', data: series.actual,
-        symbol: 'none', lineStyle: { color: isDark ? '#ffffff' : '#1c1c1e', width: 2 },
+        type: 'line', data: showActual ? series.actual : series.actual.map(() => null),
+        symbol: 'none', connectNulls: false,
+        lineStyle: { color: isDark ? '#ffffff' : '#1c1c1e', width: 2 },
         itemStyle: { color: isDark ? '#ffffff' : '#1c1c1e' },
         markArea: { silent: true, data: markAreaData },
         markLine: thresholds.crowd ? {
@@ -460,19 +489,22 @@
       {
         name: t('model_champ'),
         type: 'line', data: showChamp ? series.champion : series.champion.map(() => null),
-        symbol: 'none', lineStyle: { color: '#0a84ff', width: 2 },
+        symbol: 'none', showSymbol: false, connectNulls: false,
+        lineStyle: { color: '#0a84ff', width: 2 },
         itemStyle: { color: '#0a84ff' }
       },
       {
         name: t('model_runner'),
         type: 'line', data: showRunner ? series.runner : series.runner.map(() => null),
-        symbol: 'none', lineStyle: { color: '#30d158', width: 2 },
+        symbol: 'none', showSymbol: false, connectNulls: false,
+        lineStyle: { color: '#30d158', width: 2 },
         itemStyle: { color: '#30d158' }
       },
       {
         name: t('model_third'),
         type: 'line', data: showThird ? series.third : series.third.map(() => null),
-        symbol: 'none', lineStyle: { color: '#ff9f0a', width: 2 },
+        symbol: 'none', showSymbol: false, connectNulls: false,
+        lineStyle: { color: '#ff9f0a', width: 2 },
         itemStyle: { color: '#ff9f0a' }
       }
     ];
@@ -485,8 +517,16 @@
         type: 'category', data: timeAxis, boundaryGap: false,
         axisLine: { lineStyle: { color: gridColor } },
         axisTick: { show: false },
-        axisLabel: { color: mutedColor, fontSize: 11, rotate: 30,
-          formatter: (v) => v ? v.slice(5) : v }
+        axisLabel: {
+          color: mutedColor, fontSize: 11, rotate: 30,
+          formatter: (v) => {
+            if (!v) return '';
+            const parts = v.split('-');
+            if (parts.length < 3) return v.slice(5);
+            if (parts[1] === '01' && parts[2] === '01') return parts[0];
+            return parts[1] + '-' + parts[2];
+          }
+        }
       },
       yAxis: {
         type: 'value', splitLine: { lineStyle: { color: gridColor } },
@@ -514,7 +554,7 @@
         itemWidth: 16, itemHeight: 2
       },
       dataZoom: [
-        { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true },
+        { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: false, moveOnMouseWheel: false },
         { type: 'slider', bottom: 4, height: 20, borderColor: gridColor,
           fillerColor: 'rgba(10,132,255,0.12)', handleStyle: { color: '#0a84ff' },
           textStyle: { color: mutedColor, fontSize: 10 } }
@@ -529,15 +569,100 @@
     if (!state.chart) {
       state.chart = echarts.init(container, null, { renderer: 'canvas' });
       window.addEventListener('resize', () => { try { state.chart && state.chart.resize(); } catch {} });
-      state.chart.on('click', (params) => {
-        if (params && params.dataIndex !== undefined) updateSelection(params.dataIndex);
+      // FIX 3: use getZr() for reliable click on chart background
+      state.chart.getZr().on('click', function(event) {
+        const pointInPixel = [event.offsetX, event.offsetY];
+        const pointInGrid = state.chart.convertFromPixel('grid', pointInPixel);
+        if (pointInGrid && pointInGrid[0] !== undefined) {
+          const idx = Math.round(pointInGrid[0]);
+          const n = state.payload ? state.payload.timeAxis.length : 0;
+          if (idx >= 0 && idx < n) updateSelection(idx);
+        }
       });
     }
     state.chart.setOption(buildChartOption(payload), { notMerge: true });
+
+    // FIX 5: zoom to forecast window on render
+    const n = payload.timeAxis.length;
+    const s = payload.forecast.startIndex;
+    const e = payload.forecast.endIndex;
+    if (n > 0 && s >= 0 && e >= s) {
+      const startPct = Math.max(0, (s / n) * 100 - 5);
+      const endPct = Math.min(100, (e / n) * 100 + 5);
+      state.chart.dispatchAction({ type: 'dataZoom', start: startPct, end: endPct });
+      if (state.weatherChart) {
+        state.weatherChart.dispatchAction({ type: 'dataZoom', start: startPct, end: endPct });
+      }
+    }
   }
 
   // ─────────────────────────────────────────────
-  // Weather card
+  // Weather sub-chart (FIX 7)
+  // ─────────────────────────────────────────────
+  function renderWeatherChart(payload) {
+    const container = $('v3WeatherChart');
+    if (!container || !window.echarts) return;
+    if (!state.weatherChart) {
+      state.weatherChart = echarts.init(container, null, { renderer: 'canvas' });
+      window.addEventListener('resize', () => { try { state.weatherChart && state.weatherChart.resize(); } catch {} });
+      state.weatherChart.on('click', (params) => {
+        if (params && params.dataIndex !== undefined) updateSelection(params.dataIndex);
+      });
+    }
+    const isDark = state.theme === 'dark';
+    const mutedColor = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)';
+    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
+    const textColor = isDark ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.85)';
+    const showPrecip = $('v3ShowPrecip') ? $('v3ShowPrecip').checked : true;
+    const showTemp = $('v3ShowTemp') ? $('v3ShowTemp').checked : true;
+    const { timeAxis, weather } = payload;
+
+    const series = [];
+    if (showPrecip) {
+      series.push({
+        name: '降水(mm)', type: 'bar', data: weather.precipMm,
+        yAxisIndex: 0, itemStyle: { color: 'rgba(10,132,255,0.6)', borderRadius: [2,2,0,0] },
+        barMaxWidth: 6
+      });
+    }
+    if (showTemp) {
+      series.push({
+        name: '最高温(°C)', type: 'line', data: weather.tempHighC,
+        yAxisIndex: 1, symbol: 'none', lineStyle: { color: '#ff9f0a', width: 1.5 },
+        itemStyle: { color: '#ff9f0a' }
+      });
+      series.push({
+        name: '最低温(°C)', type: 'line', data: weather.tempLowC,
+        yAxisIndex: 1, symbol: 'none', lineStyle: { color: '#30d158', width: 1.5 },
+        itemStyle: { color: '#30d158' }
+      });
+    }
+
+    state.weatherChart.setOption({
+      backgroundColor: 'transparent',
+      grid: { top: 8, right: 60, bottom: 24, left: 64 },
+      xAxis: {
+        type: 'category', data: timeAxis, boundaryGap: true,
+        axisLine: { lineStyle: { color: gridColor } }, axisTick: { show: false },
+        axisLabel: { show: false }
+      },
+      yAxis: [
+        { type: 'value', name: 'mm', nameTextStyle: { color: mutedColor, fontSize: 10 },
+          axisLabel: { color: mutedColor, fontSize: 10 }, splitLine: { lineStyle: { color: gridColor } },
+          min: 0 },
+        { type: 'value', name: '°C', nameTextStyle: { color: mutedColor, fontSize: 10 },
+          axisLabel: { color: mutedColor, fontSize: 10 }, splitLine: { show: false } }
+      ],
+      tooltip: { trigger: 'axis', backgroundColor: isDark ? '#1c1c1e' : '#fff',
+        borderColor: isDark ? '#3a3a3c' : '#e0e0e0', textStyle: { color: textColor, fontSize: 11 } },
+      legend: { show: false },
+      dataZoom: [{ type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: false }],
+      series
+    }, { notMerge: true });
+  }
+
+  // ─────────────────────────────────────────────
+  // Weather card (FIX 4: wind/AQI fallback)
   // ─────────────────────────────────────────────
   function renderWeather(payload, idx) {
     const { timeAxis, weather } = payload;
@@ -548,6 +673,7 @@
     const precip = safeNum(weather.precipMm[idx]);
     const windLv = safeNum(weather.windLevel[idx]);
     const windDir = weather.windDirEn[idx];
+    const windMax = safeNum(weather.windMax[idx]);
     const aqi = safeNum(weather.aqiValue[idx]);
     const aqiLevel = weather.aqiLevelEn[idx];
 
@@ -572,38 +698,45 @@
 
     const wWind = $('v3WWind');
     if (wWind) {
-      const lvStr = windLv !== null ? `Lv ${Math.round(windLv)}` : '—';
-      const dirStr = windDir ? ` · ${windDir}` : '';
-      wWind.textContent = lvStr + dirStr;
+      if (windLv === null && windMax === null && (windDir === null || windDir === 'null')) {
+        wWind.textContent = '—';
+      } else {
+        const lvStr = windLv !== null ? `Lv ${Math.round(windLv)}` : (windMax !== null ? `${windMax}m/s` : '—');
+        const dirStr = (windDir && windDir !== 'null') ? ` · ${windDir}` : '';
+        wWind.textContent = lvStr + dirStr;
+      }
     }
 
     const wAqi = $('v3WAqi');
     if (wAqi) {
-      const aqiStr = aqi !== null ? String(Math.round(aqi)) : '—';
-      const lvStr = aqiLevel ? ` · ${aqiLevel}` : '';
-      wAqi.textContent = aqiStr + lvStr;
+      if (aqi === null && (!aqiLevel || aqiLevel === 'null')) {
+        wAqi.textContent = '—';
+      } else {
+        const aqiStr = aqi !== null ? String(Math.round(aqi)) : '—';
+        const lvStr = (aqiLevel && aqiLevel !== 'null') ? ` · ${aqiLevel}` : '';
+        wAqi.textContent = aqiStr + lvStr;
+      }
     }
 
-    // Flags
     const wFlags = $('v3WFlags');
     if (wFlags) {
       const flags = [];
       const thr = payload.thresholds;
       if (precip !== null && thr.weather.precipHigh !== null && precip >= thr.weather.precipHigh) {
-        flags.push(`<span class="v3-flag v3-flag--rain">${t('driver_precip_high')}</span>`);
+        flags.push(`<span class="v3-flag v3-flag--driver">${t('driver_precip_high')}</span>`);
       }
       if (tempHigh !== null && thr.weather.tempHigh !== null && tempHigh >= thr.weather.tempHigh) {
-        flags.push(`<span class="v3-flag v3-flag--hot">${t('driver_temp_high')}</span>`);
+        flags.push(`<span class="v3-flag v3-flag--driver">${t('driver_temp_high')}</span>`);
       }
       if (tempLow !== null && thr.weather.tempLow !== null && tempLow <= thr.weather.tempLow) {
-        flags.push(`<span class="v3-flag v3-flag--cold">${t('driver_temp_low')}</span>`);
+        flags.push(`<span class="v3-flag v3-flag--driver">${t('driver_temp_low')}</span>`);
       }
       wFlags.innerHTML = flags.join('');
     }
   }
 
   // ─────────────────────────────────────────────
-  // Risk card
+  // Risk card (FIX 4: score already 0-100)
   // ─────────────────────────────────────────────
   function renderRisk(payload, idx) {
     const activeRisk = pickActiveRisk(payload);
@@ -633,32 +766,28 @@
       badge.textContent = lvText;
       badge.className = 'v3-risk-badge' + (badgeCls ? ' ' + badgeCls : '');
     }
-    const scorePct = Math.max(0, Math.min(100, Math.round(score * 100)));
+    // FIX 4: score is already 0-100, no * 100
+    const scorePct = Math.max(0, Math.min(100, Math.round(score)));
     if (thermoFill) thermoFill.style.height = scorePct + '%';
     if (scoreEl) scoreEl.textContent = String(scorePct);
     if (levelEl) levelEl.textContent = lvText;
 
     if (driversEl) {
-      if (drivers.length === 0) {
-        driversEl.innerHTML = '';
-      } else {
-        driversEl.innerHTML = drivers.map((d) =>
-          `<div class="v3-driver-item"><span class="v3-driver-dot"></span>${driverLabel(d)}</div>`
-        ).join('');
-      }
+      driversEl.innerHTML = drivers.length === 0 ? '' :
+        drivers.map((d) => `<div class="v3-risk-driver">${driverLabel(d)}</div>`).join('');
     }
   }
 
   // ─────────────────────────────────────────────
-  // Recommendation card
+  // Recommendation card (FIX 4: reason strings)
   // ─────────────────────────────────────────────
   function renderReco(payload) {
     const el = $('v3Reco');
     if (!el) return;
-    const { timeAxis, series, risk, forecast } = payload;
+    const { timeAxis, series, forecast } = payload;
     const activeRisk = pickActiveRisk(payload);
+    const threshold = payload.thresholds.crowd;
 
-    // Find days in forecast window with risk_level 0 and lowest predicted visitors
     const candidates = [];
     for (let i = forecast.startIndex; i <= forecast.endIndex; i++) {
       const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
@@ -666,7 +795,6 @@
       candidates.push({ idx: i, date: timeAxis[i], lv, pred });
     }
 
-    // Sort: low risk first, then low visitors
     const good = candidates.filter((c) => c.lv === 0).sort((a, b) => (a.pred || 0) - (b.pred || 0));
     const ok = candidates.filter((c) => c.lv === 1).sort((a, b) => (a.pred || 0) - (b.pred || 0));
     const shown = good.slice(0, 3).concat(ok.slice(0, Math.max(0, 3 - good.length)));
@@ -680,12 +808,30 @@
       const lvText = riskLevelText(c.lv);
       const badgeCls = riskBadgeClass(c.lv);
       const predStr = c.pred !== null ? fmtVisitors(c.pred) : '—';
-      return `<div class="v3-reco-item">
-        <span class="v3-reco-date">${c.date}</span>
-        <span class="v3-reco-pred">${predStr} ${t('kpi_unit')}</span>
-        <span class="v3-risk-badge v3-risk-badge--sm${badgeCls ? ' ' + badgeCls : ''}">${lvText}</span>
+      let reason;
+      if (c.lv === 0 && threshold !== null && c.pred !== null && c.pred < threshold * 0.7) {
+        reason = t('reco_reason_low');
+      } else if (c.lv === 0) {
+        reason = t('reco_reason_normal');
+      } else {
+        reason = t('reco_reason_watch');
+      }
+      return `<div class="v3-reco-item" data-idx="${c.idx}">
+        <div class="v3-reco-left">
+          <span class="v3-reco-date">${c.date}</span>
+          <span class="v3-reco-reason">${reason}</span>
+        </div>
+        <div class="v3-reco-right">
+          <span class="v3-reco-pred">${predStr} ${t('kpi_unit')}</span>
+          <span class="v3-risk-badge v3-risk-badge--sm${badgeCls ? ' ' + badgeCls : ''}">${lvText}</span>
+        </div>
       </div>`;
     }).join('');
+
+    $$('[data-idx]', el).forEach((item) => {
+      const idx = parseInt(item.getAttribute('data-idx'), 10);
+      item.addEventListener('click', () => updateSelection(idx));
+    });
   }
 
   // ─────────────────────────────────────────────
@@ -694,7 +840,7 @@
   function renderForecastStrip(payload) {
     const el = $('v3ForecastStrip');
     if (!el) return;
-    const { timeAxis, series, weather, risk, forecast } = payload;
+    const { timeAxis, series, weather, forecast } = payload;
     const activeRisk = pickActiveRisk(payload);
 
     const cards = [];
@@ -723,7 +869,6 @@
 
     el.innerHTML = cards.join('');
 
-    // Bind click handlers
     $$('[data-idx]', el).forEach((card) => {
       const idx = parseInt(card.getAttribute('data-idx'), 10);
       card.addEventListener('click', () => updateSelection(idx));
@@ -732,7 +877,7 @@
   }
 
   // ─────────────────────────────────────────────
-  // updateSelection — syncs weather + risk + strip highlight
+  // updateSelection
   // ─────────────────────────────────────────────
   function updateSelection(idx) {
     if (!state.payload) return;
@@ -741,7 +886,6 @@
     state.selectedIdx = safeIdx;
     renderWeather(state.payload, safeIdx);
     renderRisk(state.payload, safeIdx);
-    // Update strip highlight
     const strip = $('v3ForecastStrip');
     if (strip) {
       $$('[data-idx]', strip).forEach((card) => {
@@ -758,6 +902,7 @@
     renderKpi(payload);
     renderChartSub(payload);
     renderChart(payload);
+    renderWeatherChart(payload);
     renderForecastStrip(payload);
     renderReco(payload);
     const defaultIdx = payload.forecast.endIndex;
@@ -765,7 +910,7 @@
   }
 
   // ─────────────────────────────────────────────
-  // Analysis page — Walk-forward chart
+  // Analysis page — Walk-forward chart (FIX 8)
   // ─────────────────────────────────────────────
   function renderWfChart(allMetrics) {
     const container = $('v3WfChart');
@@ -821,7 +966,7 @@
   }
 
   // ─────────────────────────────────────────────
-  // Analysis page — Calibration chart
+  // Analysis page — Calibration chart (FIX 8)
   // ─────────────────────────────────────────────
   function renderCalibChart(allMetrics) {
     const container = $('v3CalibChart');
@@ -837,12 +982,18 @@
     const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
 
     const champMetrics = allMetrics.champion;
-    const bins = champMetrics && champMetrics.metrics && champMetrics.metrics.calibration_bins;
+    // FIX 8: try both locations for calibration_bins
+    const bins = (champMetrics && champMetrics.metrics && champMetrics.metrics.calibration_bins) ||
+                 (champMetrics && champMetrics.calibration_bins);
 
     let xData, yData;
     if (bins && Array.isArray(bins) && bins.length > 0) {
-      xData = bins.map((b) => (safeNum(b.confidence_mid) || 0).toFixed(2));
-      yData = bins.map((b) => safeNum(b.accuracy) !== null ? parseFloat(safeNum(b.accuracy).toFixed(3)) : null);
+      // FIX 8: use avg_confidence / avg_accuracy field names
+      xData = bins.map((b) => (safeNum(b.avg_confidence) !== null ? safeNum(b.avg_confidence).toFixed(2) : (safeNum(b.confidence_mid) || 0).toFixed(2)));
+      yData = bins.map((b) => {
+        const v = safeNum(b.avg_accuracy) !== null ? safeNum(b.avg_accuracy) : safeNum(b.accuracy);
+        return v !== null ? parseFloat(v.toFixed(3)) : null;
+      });
     } else {
       xData = ['0.10', '0.30', '0.50', '0.70', '0.90'];
       yData = [0.08, 0.25, 0.52, 0.68, 0.91];
@@ -1041,8 +1192,8 @@
     const sun = document.querySelector('.v3-icon-sun');
     if (moon) moon.style.display = state.theme === 'dark' ? '' : 'none';
     if (sun) sun.style.display = state.theme === 'light' ? '' : 'none';
-    // Re-render charts
     if (state.payload && state.chart) renderChart(state.payload);
+    if (state.payload && state.weatherChart) renderWeatherChart(state.payload);
     if (state.wfChart && state.analysisLoaded) {
       const all = { champion: state.metricsCache.champion, runner_up: state.metricsCache.runner_up, third: state.metricsCache.third };
       renderWfChart(all);
@@ -1095,7 +1246,7 @@
   }
 
   // ─────────────────────────────────────────────
-  // Event bindings
+  // Event bindings (FIX 2,7,9)
   // ─────────────────────────────────────────────
   function bindEvents() {
     // Tabs
@@ -1103,12 +1254,12 @@
       btn.addEventListener('click', () => showPage(btn.getAttribute('data-page')));
     });
 
-    // Horizon
+    // Horizon (FIX 2: now in chart toolbar)
     $$('[data-h]').forEach((btn) => {
       btn.addEventListener('click', () => setH(btn.getAttribute('data-h')));
     });
 
-    // Model view — only buttons inside chart card seg group
+    // Model view
     $$('.v3-seg [data-model]').forEach((btn) => {
       btn.addEventListener('click', () => setModelView(btn.getAttribute('data-model')));
     });
@@ -1144,11 +1295,37 @@
       });
     }
 
+    // Reset view (FIX 2)
+    const resetBtn = $('v3Reset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        if (state.chart) state.chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+        if (state.weatherChart) state.weatherChart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+      });
+    }
+
     // Error close
     const errClose = $('v3ErrorClose');
     if (errClose) {
       errClose.addEventListener('click', () => showError(null));
     }
+
+    // Sub-chart toggles (FIX 7)
+    ['v3ShowPrecip', 'v3ShowTemp'].forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener('change', () => { if (state.payload) renderWeatherChart(state.payload); });
+    });
+
+    // Curve toggles (FIX 9)
+    $$('[data-curve]').forEach((chk) => {
+      chk.addEventListener('change', () => {
+        const curve = chk.getAttribute('data-curve');
+        if (curve in state.curveVisible) {
+          state.curveVisible[curve] = chk.checked;
+          if (state.payload) renderChart(state.payload);
+        }
+      });
+    });
   }
 
   // ─────────────────────────────────────────────
