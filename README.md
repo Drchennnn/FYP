@@ -1,84 +1,82 @@
 # 九寨沟景区客流动态预测系统
 
-本项目是一个端到端的客流预测解决方案，集成了数据爬取、特征工程、深度学习模型训练以及基于 Web 的可视化展示平台。系统旨在利用历史客流数据和时间特征，准确预测未来九寨沟景区的游客接待量，辅助景区管理和游客出行决策。
+本项目是一个端到端的客流预测解决方案，集成了数据爬取、特征工程、深度学习模型训练、自动化数据管道以及基于 Web 的可视化展示平台。系统利用 10 年历史客流与气象数据，通过三种深度学习模型（GRU、LSTM、Seq2Seq+Attention）预测未来九寨沟景区的游客接待量，并提供多维度预警机制，辅助景区管理和游客出行决策。
 
 ---
 
 ## 📚 目录
 
-1.  [项目整体架构](#1-项目整体架构)
-2.  [快速开始](#2-快速开始)
-3.  [数据爬取子系统](#3-数据爬取子系统)
-4.  [数据预处理与特征工程](#4-数据预处理与特征工程)
-5.  [模型架构演进](#5-模型架构演进)
-6.  [最新性能指标](#6-最新性能指标)
-7.  [MLOps 与工程化规范](#7-mlops-与工程化规范)
-8.  [Web 应用架构](#8-web-应用架构)
-9.  [数据库设计](#9-数据库设计)
-10. [数据同步机制](#10-数据同步机制)
-11. [项目成果与技术亮点](#11-项目成果与技术亮点)
-12. [已实现的方法论改进](#12-已实现的方法论改进)
+1. [项目整体架构](#1-项目整体架构)
+2. [快速开始](#2-快速开始)
+3. [数据爬取子系统](#3-数据爬取子系统)
+4. [数据预处理与特征工程](#4-数据预处理与特征工程)
+5. [模型架构](#5-模型架构)
+6. [评估体系](#6-评估体系)
+7. [预警定义与风险等级](#7-预警定义与风险等级)
+8. [最新性能指标](#8-最新性能指标)
+9. [自动化数据管道](#9-自动化数据管道)
+10. [可解释性分析](#10-可解释性分析)
+11. [Web 应用架构](#11-web-应用架构)
+12. [MLOps 工程规范](#12-mlops-工程规范)
 13. [项目维护信息](#13-项目维护信息)
 
 ---
 
 ## 1. 项目整体架构
 
-项目采用模块化设计，主要包含以下核心流水线：
-
-1.  **数据层**：
-    *   **爬虫系统**：从九寨沟官网和天气网抓取原始数据
-    *   **存储系统**：CSV 文件用于离线训练，SQLite 数据库用于在线服务
-2.  **模型层**：
-    *   **预处理**：清洗数据，生成滞后特征、周期性时间编码和节假日标记
-    *   **训练**：基于 TensorFlow/Keras 的多种模型架构，支持自动超参数调整
-3.  **应用层**：
-    *   **后端**：Flask 提供 RESTful API 和模型推理服务
-    *   **前端**：基于 Bootstrap 5 和 ECharts 的响应式数据仪表盘
+```
+数据层                    模型层                    应用层
+─────────────────         ─────────────────         ─────────────────
+爬虫（客流+天气）  →      特征工程（8特征）  →      Flask API
+Open-Meteo API    →      GRU / LSTM / Seq2Seq →    Dashboard v2
+SQLite 数据库     ←      评估+预警系统      →      APScheduler
+CSV 训练数据      ←      自动追加+月度重训          在线预测引擎
+```
 
 ### 目录结构
 
 ```text
 FYP/
-├── Jiuzhaigou_Crawler/    # 爬虫子系统
-│   ├── tourism_num.py     # 客流数据抓取
-│   ├── weather_jiuzhaigou.py # 天气数据抓取
+├── Jiuzhaigou_Crawler/         # 爬虫子系统
+│   ├── tourism_num.py          # 客流数据抓取
+│   ├── weather_jiuzhaigou.py   # 天气数据抓取
 │   └── merge_tourism_weather.py # 数据合并与 Open-Meteo 补全
-├── data/                  # 数据存储
-│   ├── raw/               # 原始爬取数据 (CSV)
-│   └── processed/         # 预处理后的特征数据 (CSV)
-├── models/                # 模型代码
-│   ├── common/            # 通用模块
-│   │   ├── core_evaluation.py  # 统一评估模块（含动态阈值）
+├── data/
+│   ├── raw/                    # 原始爬取数据
+│   ├── processed/              # 特征工程后的训练数据（10年）
+│   └── append_log.json         # 每日追加记录
+├── models/
+│   ├── common/
+│   │   ├── core_evaluation.py  # 统一评估（含动态峰值阈值）
 │   │   ├── evaluator.py        # 基础评估模块
-│   │   └── visualization.py   # 可视化模块
-│   ├── lstm/              # LSTM 系列模型
-│   │   ├── train_seq2seq_attention_8features.py  # Seq2Seq+Attention（含 Attention 热力图）
-│   │   ├── train_lstm_8features.py
-│   │   └── train_lstm_4features.py
-│   └── gru/               # GRU 系列模型
-│       ├── train_gru_8features.py
-│       └── train_gru_4features.py
-├── output/                # 训练输出目录
-│   ├── runs/              # 当前运行结果
-│   │   └── run_YYYYMMDD_HHMMSS_lb{lookback}_ep{epochs}_{model}_{features}features/
-│   │       ├── figures/   # 可视化图表（含 attention_heatmap_mean.png）
-│   │       └── weights/   # 模型权重 (.h5/.keras)
-│   ├── backups/           # 历史备份
-│   └── walk_forward/      # Walk-forward 评估结果
-├── scripts/               # 辅助脚本
-│   ├── walk_forward_eval.py   # Walk-forward 滚动窗口评估
-│   └── sync_to_cloud.py       # 数据同步脚本 (CSV -> SQLite)
-├── web_app/               # Web 应用
-│   ├── app.py             # Flask 后端（含 APScheduler 定时爬取）
-│   ├── static/js/dashboard_v2.js  # 三模型对比前端
+│   │   └── visualization.py    # 可视化模块
+│   ├── lstm/
+│   │   ├── train_seq2seq_attention_8features.py  # Seq2Seq+Attention
+│   │   └── train_lstm_8features.py
+│   └── gru/
+│       └── train_gru_8features.py
+├── output/
+│   ├── runs/                   # 训练输出（含 figures/ weights/）
+│   ├── backups/                # 历史备份（Dashboard 读取来源）
+│   ├── walk_forward/           # Walk-forward 评估结果
+│   ├── ablation/               # Ablation Study 结果
+│   └── shap/                   # SHAP 特征重要性结果
+├── scripts/
+│   ├── walk_forward_eval.py    # Walk-forward 滚动窗口评估
+│   ├── ablation_study.py       # 特征消融实验
+│   ├── shap_analysis.py        # SHAP 特征重要性分析
+│   ├── append_and_retrain.py   # 数据追加 + 月度重训管道
+│   └── sync_to_cloud.py        # CSV → SQLite 同步
+├── realtime/
+│   ├── jiuzhaigou_crawler.py   # 实时爬虫
+│   ├── data_fetcher.py         # Open-Meteo 天气获取
+│   └── daily_update.py         # 每日更新脚本
+├── web_app/
+│   ├── app.py                  # Flask 后端（含在线预测+APScheduler）
+│   ├── static/js/dashboard_v2.js
 │   └── templates/dashboard_v2.html
-├── realtime/              # 实时服务模块
-│   ├── daily_update.py    # 每日更新脚本
-│   └── jiuzhaigou_crawler.py
-├── run_pipeline.py        # 一键运行流水线
-├── run_benchmark.py       # 全模型基准测试
-└── jiuzhaigou_fyp.db      # SQLite 数据库
+├── run_pipeline.py             # 一键训练流水线
+└── run_benchmark.py            # 全模型基准测试
 ```
 
 ---
@@ -87,41 +85,51 @@ FYP/
 
 ### 环境准备
 
-推荐使用 **Conda** 创建独立的虚拟环境：
-
 ```bash
 conda activate FYP
 pip install -r requirements_all.txt
+# 可解释性分析额外依赖
+pip install shap
 ```
 
-### 数据获取与准备
+### 数据获取
 
 ```bash
-# 一键执行：客流抓取、天气抓取、数据合并补全
+# 爬取客流+天气，合并为训练 CSV
 python Jiuzhaigou_Crawler/run_crawler.py
 ```
 
-### 运行训练流程
+### 训练模型
 
 ```bash
-# 使用10年数据训练（默认路径已配置）
-python run_pipeline.py --model lstm --features 8
-python run_pipeline.py --model gru --features 8
-python run_pipeline.py --model seq2seq_attention
+# 使用 10 年数据训练（默认路径已配置）
+python run_pipeline.py --model gru --features 8 --epochs 120
+python run_pipeline.py --model lstm --features 8 --epochs 120
+python run_pipeline.py --model seq2seq_attention --epochs 120
 ```
 
-### Walk-forward 评估
+### 评估与分析
 
 ```bash
-# 4折滚动窗口评估（每折测试90天）
+# Walk-forward 滚动评估（4折，每折90天）
 python scripts/walk_forward_eval.py --model gru --folds 4
-python scripts/walk_forward_eval.py --model all --folds 4
+
+# 特征消融实验
+python scripts/ablation_study.py --epochs 80
+
+# SHAP 特征重要性
+python scripts/shap_analysis.py --model gru
+
+# 全模型基准测试
+python run_benchmark.py
 ```
 
-### 基准测试
+### 数据管道（手动触发）
 
 ```bash
-python run_benchmark.py
+python scripts/append_and_retrain.py --append          # 追加昨日数据
+python scripts/append_and_retrain.py --retrain         # 重训三个模型
+python scripts/append_and_retrain.py --append --retrain  # 追加+重训
 ```
 
 ### 启动 Web 应用
@@ -137,134 +145,171 @@ cd web_app && python app.py
 
 位于 `Jiuzhaigou_Crawler/` 目录下。
 
-*   **客流抓取 (`tourism_num.py`)**：使用 `requests` + `BeautifulSoup` 从九寨沟官网解析入园人数
-*   **天气抓取 (`weather_jiuzhaigou.py`)**：请求 2345 天气王历史 AJAX 接口，获取每日温度、天气、风力、AQI
-*   **数据合并 (`merge_tourism_weather.py`)**：以日期为主键合并，集成 Open-Meteo API 补全缺失天气数据
+- **客流抓取 (`tourism_num.py`)**：`requests` + `BeautifulSoup` 从九寨沟官网解析每日入园人数
+- **天气抓取 (`weather_jiuzhaigou.py`)**：请求 2345 天气王历史 AJAX 接口，获取温度、天气状况、风力、AQI
+- **数据合并 (`merge_tourism_weather.py`)**：以日期为主键合并，集成 Open-Meteo API 补全缺失天气
 
-**数据范围**：当前使用 2016-05-01 ~ 2026-04-02 共约 10 年数据（2719 条），存储于 `data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv`。
+**当前数据范围**：2016-05-01 ~ 2026-04-02，约 10 年，2719 条日级记录，存储于：
+`data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv`
+
+**实时数据获取 (`realtime/data_fetcher.py`)**：
+- `get_current_visitor_count()`：获取昨日客流（官网每日更新）
+- `get_weather_forecast(days=7)`：从 Open-Meteo 获取未来 7 天天气预报（用于在线预测）
 
 ---
 
 ## 4. 数据预处理与特征工程
 
-### 特征版本
+### 8特征版本（当前主力）
 
-**4特征版本（基础版）**：
-1. `visitor_count_scaled`：归一化历史客流
-2. `month_norm`：归一化月份
-3. `day_of_week_norm`：归一化星期
-4. `is_holiday`：节假日标记 (0/1)
+| # | 特征名 | 说明 |
+|---|--------|------|
+| 1 | `visitor_count_scaled` | 归一化历史客流（MinMax，训练集拟合） |
+| 2 | `month_norm` | 归一化月份 `(month-1)/11` |
+| 3 | `day_of_week_norm` | 归一化星期 `weekday/6` |
+| 4 | `is_holiday` | 中国法定节假日标记（`chinese_calendar`） |
+| 5 | `tourism_num_lag_7_scaled` | 滞后7天客流（归一化） |
+| 6 | `meteo_precip_sum_scaled` | 降水量（归一化） |
+| 7 | `temp_high_scaled` | 最高温度（归一化） |
+| 8 | `temp_low_scaled` | 最低温度（归一化） |
 
-**8特征版本（增强版）**：
-在4特征基础上增加：
-5. `tourism_num_lag_7_scaled`：滞后7天客流（归一化）
-6. `meteo_precip_sum_scaled`：降水量（归一化）
-7. `temp_high_scaled`：最高温度（归一化）
-8. `temp_low_scaled`：最低温度（归一化）
+### 4特征版本（基线对比）
+
+`visitor_count_scaled`、`month_norm`、`day_of_week_norm`、`is_holiday`
 
 ---
 
-## 5. 模型架构演进
+## 5. 模型架构
 
-### 基线模型
+### GRU（基线，回归精度最佳）
 
-**LSTM**（`models/lstm/train_lstm_8features.py`）：LSTM-128-64-32 + Dropout(0.2)，单步预测
+**位置**：`models/gru/train_gru_8features.py`
 
-**GRU**（`models/gru/train_gru_8features.py`）：GRU-128-64 + Dropout(0.2)，参数更少，训练更快
+架构：`Input(30,8) → GRU(128) → Dropout(0.2) → GRU(64) → Dropout(0.2) → Dense(32) → Dense(1)`
 
-### 核心架构：Seq2Seq + Attention（非自回归直接多步预测）
+- 单步预测（horizon=1）
+- Huber Loss，Adam(lr=1e-3)
+- EarlyStopping(patience=15)
+
+### LSTM（基线）
+
+**位置**：`models/lstm/train_lstm_8features.py`
+
+架构：`Input(30,8) → LSTM(128) → Dropout(0.2) → LSTM(64) → Dropout(0.2) → Dense(32) → Dense(1)`
+
+### Seq2Seq + Attention（多步预测，可解释性最强）
 
 **位置**：`models/lstm/train_seq2seq_attention_8features.py`
 
 **架构**：
-- **编码器**：双向 LSTM（128 单元），将 30 步历史序列编码为隐藏状态
-- **解码器**：单向 LSTM（256 单元）+ Bahdanau 注意力，直接输出未来 7 天预测
-- **特征压缩**：1D 卷积（Encoder: 8→128 维，Decoder: 7→128 维）
-- **Decoder 输入**：纯外部特征（不含 visitor_count），杜绝自回归数据泄露
+- **Encoder**：双向 LSTM（128 单元）+ 1D CNN 特征压缩（8→128 维），编码 30 步历史
+- **Decoder**：单向 LSTM（256 单元）+ Bahdanau 注意力，直接输出未来 7 天
+- **Decoder 输入**：纯外部特征（7维，不含 visitor_count），杜绝自回归数据泄露
+- **输出**：`(batch, 7, 1)` 未来7天预测值
 
 **自定义非对称损失函数**：
 - 节假日预测偏低：惩罚权重 ×2.0
 - 非节假日高客流预测偏低：惩罚权重 ×1.5
 
-**Attention 可视化**：训练完成后自动生成 `figures/attention_heatmap_mean.png`（测试集均值热力图）和 `figures/attention_heatmap_sample.png`（最新预测窗口样本），直观展示模型对历史时间步的关注分布。
+**Attention 可视化**：训练完成后自动生成：
+- `figures/attention_heatmap_mean.png`：测试集均值热力图（X轴=历史天 -30~-1，Y轴=预测步 Day+1~Day+7）
+- `figures/attention_heatmap_sample.png`：最新预测窗口样本热力图
+- `figures/attention_weights_mean.npy`：原始权重矩阵
 
 ---
 
-## 6. 最新性能指标
+## 6. 评估体系
 
-### 2026年4月3日（10年数据重训后）
+### 6.1 固定切分评估（标准基准）
 
-| 模型 | MAE | RMSE | SMAPE | Suitability F1 | Brier |
-|------|-----|------|-------|----------------|-------|
-| GRU (8特征) | **2,809** | **3,993** | **15.0%** | 0.971 | 0.036 |
-| LSTM (8特征) | 3,881 | 5,104 | 20.3% | 0.966 | 0.043 |
-| Seq2Seq+Attention (8特征) | 3,846 | 5,326 | 21.0% | 0.964 | 0.042 |
+训练/验证/测试 = 80% / 10% / 10%，测试集固定为最后 268 天。
 
-> 注：使用 2016-2026 共 10 年数据训练（2688 样本），测试集 268 天。峰值阈值由训练集 75 分位数动态计算。
+**指标**：
+- 回归：MAE、RMSE、SMAPE
+- 分类：Crowd Alert F1/Recall/Precision
+- 预警：Suitability Warning F1/Recall/Brier/ECE
+- 多步（Seq2Seq）：按 horizon 加权汇总
 
-**关键发现**：
-- GRU 在回归精度上表现最佳（MAE 最低）
-- Seq2Seq 相比旧版（2年数据）MAE 从 5320 降至 3846（-28%），10年数据效果显著
-- 三个模型 Suitability Recall 均 ≥ 0.93，满足预警安全约束（≥ 0.80）
+### 6.2 Walk-forward Evaluation（时序泛化评估）
 
----
+**位置**：`scripts/walk_forward_eval.py`
 
-## 7. MLOps 与工程化规范
+**方法**：Expanding Window 策略，模拟真实部署场景：
 
-### 7.1 中央调度流水线
+```
+Fold 1: train=[0, N-4×90)  test=[N-4×90, N-3×90)
+Fold 2: train=[0, N-3×90)  test=[N-3×90, N-2×90)
+Fold 3: train=[0, N-2×90)  test=[N-2×90, N-1×90)
+Fold 4: train=[0, N-1×90)  test=[N-1×90, N)
+```
 
-`run_pipeline.py` 统一管理训练流程，所有模型默认使用 10 年处理数据：
+每个 fold 独立训练，覆盖不同季节（包括春节、五一、国庆等高峰期），输出跨折均值与标准差。
 
 ```bash
-python run_pipeline.py --model lstm --features 8 --epochs 120
-python run_pipeline.py --model gru --features 8 --epochs 120
-python run_pipeline.py --model seq2seq_attention --epochs 120
+python scripts/walk_forward_eval.py --model gru --folds 4 --test-window 90
+python scripts/walk_forward_eval.py --model all --folds 4
 ```
 
-### 7.2 标准化输出结构
+**输出**：`output/walk_forward/<model>_<timestamp>/`
+- `walk_forward_folds.csv`：每折详细指标
+- `walk_forward_summary.json`：跨折均值 ± 标准差
+- `walk_forward_metrics.png`：MAE / SMAPE / Suitability F1 / Recall 趋势图
 
+**与固定切分的区别**：固定切分只在最后 10% 测试，无法反映模型在不同季节的稳定性。Walk-forward 是时序模型泛化能力的更可靠估计。
+
+### 6.3 Ablation Study（特征贡献量化）
+
+**位置**：`scripts/ablation_study.py`
+
+6个消融方案，在 GRU 上训练对比，量化各特征对预警 F1 和回归误差的贡献：
+
+| 方案 | 特征组合 | 目的 |
+|------|---------|------|
+| `baseline_4feat` | visitor, month, dow, holiday | 基线参考 |
+| `no_weather` | 去掉 precip, temp_high, temp_low | 量化天气特征价值 |
+| `no_lag7` | 去掉 tourism_num_lag_7_scaled | 量化滞后特征价值 |
+| `no_holiday` | 去掉 is_holiday | 量化节假日特征价值 |
+| `no_weather_lag7` | 仅时间特征 | 量化外部特征整体价值 |
+| `full_8feat` | 完整8特征 | 对照组 |
+
+```bash
+python scripts/ablation_study.py --epochs 80
 ```
-output/runs/<run_name>/
-├── metrics.json              # 完整评估指标（含动态峰值阈值）
-├── metrics.csv
-├── *_test_predictions.csv    # 测试集预测结果
-├── figures/
-│   ├── true_vs_pred.png
-│   ├── confusion_matrix_crowd_alert.png
-│   ├── reliability_diagram.png
-│   ├── suitability_warning_timeline.png
-│   ├── attention_heatmap_mean.png    # Seq2Seq 专属：均值注意力热力图
-│   └── attention_heatmap_sample.png  # Seq2Seq 专属：样本注意力热力图
-└── weights/
-    └── *.h5 / *.keras
-```
 
-### 7.3 预警定义与风险等级
+**输出**：`output/ablation/<timestamp>/`
+- `ablation_results.csv`：各方案完整指标
+- `ablation_study.png`：MAE / Suitability F1 / Recall 对比柱状图
 
-#### 动态峰值阈值（数据驱动）
+---
 
-峰值阈值不再硬编码，而是从**训练集**动态计算：
+## 7. 预警定义与风险等级
+
+### 动态峰值阈值
+
+**位置**：`models/common/core_evaluation.py`，`compute_dynamic_peak_threshold()`
 
 ```python
 peak_threshold = Quantile(train_visitor_counts, q=0.75)
 ```
 
 - 仅使用训练集数据，避免测试集泄露
-- 默认取 75 分位数，与景区"高峰期"定义对齐
-- 合理性约束：阈值限制在 [5000, 80000] 范围内
+- 合理性约束：限制在 [5000, 80000] 范围内
 - 每次重训练自动更新，反映数据分布变化
 
-#### 拥挤预警 (crowd_alert)
+### 拥挤预警 (crowd_alert)
 
-- `crowd_alert = 1` 当 `visitor_count ≥ peak_threshold`
+`crowd_alert = 1` 当 `visitor_count ≥ peak_threshold`
 
-四级风险映射（基于阈值 T）：
-- **绿色**：`< 0.70·T`
-- **黄色**：`0.70·T ~ 0.85·T`
-- **橙色**：`0.85·T ~ 1.00·T`
-- **红色**：`≥ 1.00·T`
+四级风险映射（T = peak_threshold）：
 
-#### 天气危险 (weather_hazard)
+| 等级 | 条件 | 颜色 |
+|------|------|------|
+| 低风险 | `< 0.70·T` | 绿色 |
+| 中风险 | `0.70·T ~ 0.85·T` | 黄色 |
+| 高风险 | `0.85·T ~ 1.00·T` | 橙色 |
+| 极高风险 | `≥ 1.00·T` | 红色 |
+
+### 天气危险 (weather_hazard)
 
 基于训练集历史分位数（Route B，防止数据泄露）：
 - `P90 = Quantile(train_precip, 0.90)`
@@ -272,46 +317,166 @@ peak_threshold = Quantile(train_visitor_counts, q=0.75)
 - `TL10 = Quantile(train_temp_low, 0.10)`
 - `weather_hazard = 1` 当任一条件触发
 
-#### 综合适宜性预警 (suitability_warning)
+### 综合适宜性预警 (suitability_warning)
 
 `suitability_warning = crowd_alert OR weather_hazard`
 
-> **校准说明**：当前预警概率通过 logistic 变换（temperature=1000）从点预测转换而来，本质上是确定性分类器的近似，而非真正的概率输出。Brier Score 和 ECE 用于衡量这一近似的质量，但不应与真正概率模型的校准指标直接比较。
+> **校准说明**：预警概率通过 logistic 变换（temperature=1000）从点预测转换而来，本质上是确定性分类器的近似。Brier Score 和 ECE 用于衡量近似质量，不应与真正概率模型的校准指标直接比较。
 
-#### 模型选择策略（预警优先）
+### 模型选择策略（预警优先）
 
 1. **硬约束**：`Recall_warning ≥ 0.80`（漏报代价远高于误报）
 2. **主指标**：最大化 `suitability_warning_bin` 的加权 F1
 3. **平局决胜**：更低 Brier Score → 更低 ECE
 
-### 7.4 定时自动爬取
+---
 
-Web 应用集成 APScheduler，每日 09:00（Asia/Shanghai）自动执行爬取任务：
+## 8. 最新性能指标
+
+### 2026年4月3日（10年数据训练）
+
+| 模型 | MAE | RMSE | SMAPE | Suitability F1 | Suitability Recall | Brier |
+|------|-----|------|-------|----------------|--------------------|-------|
+| **GRU (8特征)** | **2,809** | **3,993** | **15.0%** | 0.971 | 0.964 | 0.036 |
+| LSTM (8特征) | 3,881 | 5,104 | 20.3% | 0.966 | 0.945 | 0.043 |
+| Seq2Seq+Attention (8特征) | 3,846 | 5,326 | 21.0% | 0.964 | 0.952 | 0.042 |
+
+> 训练集 2016-2026（2688 样本），测试集 268 天，峰值阈值由训练集 75 分位数动态计算。
+
+**关键发现**：
+- GRU 回归精度最佳（MAE 最低），适合单日精确预测
+- Seq2Seq 相比旧版（2年数据）MAE 从 5320 降至 3846（-28%），10年数据效果显著
+- 三个模型 Suitability Recall 均 ≥ 0.93，满足预警安全约束（≥ 0.80）
+- Seq2Seq 提供 7 天多步预测，适合中期规划
+
+---
+
+## 9. 自动化数据管道
+
+### 9.1 每日数据追加
+
+**位置**：`scripts/append_and_retrain.py`，`append_new_data()`
+
+**自动触发**：每日 08:30（APScheduler，Asia/Shanghai）
+
+**流程**：
+1. 从爬虫获取昨日客流数据
+2. 从 Open-Meteo 历史存档获取对应天气（温度、降水）
+3. 追加到 `data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv`
+4. 重新计算 scaled 特征（MinMax，基于全量数据）
+5. 记录到 `data/append_log.json`
+
+### 9.2 月度重训
+
+**自动触发**：每月1日 02:00（APScheduler）
+
+**流程**：依次调用 `run_pipeline.py` 重训 GRU、LSTM、Seq2Seq，新模型自动进入 `output/runs/`，Dashboard 下次加载时使用最新版本。
+
+### 9.3 手动操作
 
 ```bash
-# 查看调度状态
-GET /api/scheduler/status
+# 追加指定日期数据
+python scripts/append_and_retrain.py --append --date 2026-04-03
+
+# 仅重训（不追加）
+python scripts/append_and_retrain.py --retrain --epochs 120
+
+# 追加+重训
+python scripts/append_and_retrain.py --append --retrain
+
+# 预览（不写入）
+python scripts/append_and_retrain.py --append --dry-run
+```
+
+### 9.4 每日爬取（独立任务）
+
+**自动触发**：每日 09:00（APScheduler）
+
+```bash
+# 手动触发
+python realtime/daily_update.py
 ```
 
 ---
 
-## 8. Web 应用架构
+## 10. 可解释性分析
 
-### 后端 API
+### 10.1 Attention 权重热力图（Seq2Seq 专属）
 
-| 端点 | 说明 |
-|------|------|
-| `GET /api/forecast` | 返回三模型预测、历史数据、天气、风险 |
-| `GET /api/models` | 返回冠军/亚军/第三模型元数据 |
-| `GET /api/metrics` | 返回指定模型的 metrics.json |
-| `GET /api/scheduler/status` | 返回定时任务状态 |
+**位置**：`models/lstm/train_seq2seq_attention_8features.py`，`_save_attention_heatmap()`
 
-### Dashboard v2（推荐）
+每次 Seq2Seq 训练完成后自动生成，无需额外操作：
+
+- `figures/attention_heatmap_mean.png`：测试集所有样本的均值注意力分布
+- `figures/attention_heatmap_sample.png`：最新预测窗口的注意力分布
+
+**解读**：X 轴为 Encoder 历史天（-30~-1），Y 轴为 Decoder 预测步（Day+1~Day+7），颜色越深表示该历史天对该预测步影响越大。通常可观察到模型对 lag-7（7天前同期）和近期数据的高度关注。
+
+### 10.2 SHAP 特征重要性（GRU / LSTM）
+
+**位置**：`scripts/shap_analysis.py`
+
+使用 `shap.GradientExplainer` 计算每个特征对预测结果的贡献：
+
+```bash
+# 安装依赖
+pip install shap
+
+# 分析 GRU 模型
+python scripts/shap_analysis.py --model gru
+
+# 同时分析 GRU 和 LSTM
+python scripts/shap_analysis.py --model all
+
+# 自定义参数
+python scripts/shap_analysis.py --model gru --n-background 100 --n-explain 200
+```
+
+**输出**：`output/shap/<timestamp>/`
+- `shap_summary_bar_<model>.png`：全局特征重要性柱状图（均值绝对 SHAP 值）
+- `shap_importance_<model>.csv`：特征重要性排名表
+- `shap_values_<model>.npy`：原始 SHAP 值矩阵（供进一步分析）
+
+**参数说明**：
+- `--n-background`：背景样本数（默认100，越大越准确但越慢）
+- `--n-explain`：解释样本数（默认200）
+
+---
+
+## 11. Web 应用架构
+
+### 11.1 后端 API
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/forecast` | GET | 三模型预测、历史数据、天气、风险（离线/在线模式） |
+| `/api/models` | GET | 冠军/亚军/第三模型元数据 |
+| `/api/metrics` | GET | 指定模型的 metrics.json |
+| `/api/scheduler/status` | GET | 定时任务状态（爬取/追加/重训） |
+
+**`/api/forecast` 参数**：
+- `h`：预测窗口（1/3/7/14，默认7）
+- `include_all`：是否返回三个模型（0/1，默认0）
+- `mode`：`offline`（离线回测）或 `online`（真实未来预测）
+
+### 11.2 在线预测模式
+
+**位置**：`web_app/app.py`，`_online_future_forecast_all_models()`
+
+当 `mode=online` 时，三个模型均使用 **8特征 + Open-Meteo 未来天气预报**生成真正的未来预测：
+
+- **天气特征**：来自 Open-Meteo API 未来7天预报（实时获取）
+- **LSTM/GRU**：滚动预测，每步更新 lag_7 特征
+- **Seq2Seq**：一次性预测 decoder_steps 天
+- **降级机制**：预测失败时自动回退到离线 artifact 模式
+
+### 11.3 Dashboard v2
 
 访问：`http://localhost:5000/dashboard/v2`
 
 **功能**：
 - 三模型预测对比（Champion / Runner-up / Third，可单独切换）
+- 离线回测 / 在线预测模式切换
 - 预测窗口：1 / 3 / 7 天
 - 风险温度计（实时风险评分 0~100）
 - 天气卡片（点击图表任意日期查看详情）
@@ -320,152 +485,55 @@ GET /api/scheduler/status
 
 ---
 
-## 9. 数据库设计
+## 12. MLOps 工程规范
 
-SQLite（`jiuzhaigou_fyp.db`），表名 `traffic_records`：
-
-| 字段 | 类型 | 描述 |
-|------|------|------|
-| `id` | Integer (PK) | 自增主键 |
-| `record_date` | Date (Unique) | 记录日期 |
-| `actual_visitor` | Integer | 真实游客人数 |
-| `predicted_visitor` | Integer | 模型预测人数 |
-| `is_forecast` | Boolean | 0=历史验证，1=未来预测 |
-
----
-
-## 10. 数据同步机制
-
-`scripts/sync_to_cloud.py`：扫描 `data/processed/` 和 `output/runs/` 最新结果，重建 `traffic_records` 表并写入历史数据与预测结果。
-
----
-
-## 11. 项目成果与技术亮点
-
-### 数据工程
-- 10 年历史数据（2016-2026），2719 条日级记录
-- Open-Meteo API 自动补全缺失天气数据
-- 8 特征工程（时间编码 + 节假日 + 滞后特征 + 天气）
-
-### 模型工程
-- 三模型并行（GRU / LSTM / Seq2Seq+Attention）
-- 非自回归 Seq2Seq 架构，杜绝自回归数据泄露
-- 自定义非对称损失函数，强化节假日高峰预测
-- 动态峰值阈值（训练集分位数，每次重训自动更新）
-- Attention 权重热力图可视化（模型可解释性）
-
-### 评估工程
-- Walk-forward Expanding Window 评估（4 折，每折 90 天）
-- 多维度指标：回归（MAE/RMSE/SMAPE）+ 分类（F1/Recall/Precision）+ 校准（Brier/ECE）
-- 天气危险阈值仅从训练集计算（Route B，防止数据泄露）
-- 预警优先的模型选择策略（Recall ≥ 0.80 硬约束）
-
-### 系统工程
-- Flask + APScheduler 每日自动爬取
-- 三模型对比 Dashboard（ECharts 交互式可视化）
-- Seq2Seq `.keras` 格式自定义类注册（解决加载失败问题）
-
----
-
-## 12. 已实现的方法论改进
-
-### Walk-forward Evaluation（已实现）
-
-**位置**：`scripts/walk_forward_eval.py`
-
-Expanding Window 策略，每个 fold 独立训练，覆盖不同季节，输出跨折均值/标准差与趋势图。
+### 12.1 训练流水线
 
 ```bash
-python scripts/walk_forward_eval.py --model gru --folds 4 --test-window 90
+python run_pipeline.py --model [lstm|gru|seq2seq_attention] --features 8 --epochs 120
 ```
 
-输出：`output/walk_forward/<model>_<timestamp>/`（`walk_forward_folds.csv`、`walk_forward_summary.json`、`walk_forward_metrics.png`）
+所有模型默认使用 10 年处理数据（`data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv`）。
 
-### Attention 权重可视化（已实现）
+### 12.2 标准化输出结构
 
-**位置**：`models/lstm/train_seq2seq_attention_8features.py`，`_save_attention_heatmap()`
-
-Seq2Seq 训练后自动生成均值热力图（`attention_heatmap_mean.png`）和样本热力图（`attention_heatmap_sample.png`）。X 轴为历史天（-30~-1），Y 轴为预测步（Day+1~Day+7），颜色越深表示影响越大。
-
-### 动态峰值阈值（已实现）
-
-**位置**：`models/common/core_evaluation.py`，`compute_dynamic_peak_threshold()`
-
-从训练集 75 分位数动态计算，替代硬编码 18500，每次重训自动更新。
-
-### 三模型在线预测（已实现）
-
-**位置**：`web_app/app.py`，`_online_future_forecast_all_models()`
-
-Dashboard 切换到 `mode=online` 时，三个模型（GRU/LSTM/Seq2Seq）均使用 **8特征 + Open-Meteo 未来天气预报**生成真正的未来预测：
-- 天气特征来自 Open-Meteo API（未来7天预报），而非历史数据
-- LSTM/GRU 采用滚动预测（每步更新 lag_7 特征）
-- Seq2Seq 一次性预测 decoder_steps 天
-- 预测失败时自动降级到离线 artifact 模式
-
-### 数据自动追加 + 月度重训（已实现）
-
-**位置**：`scripts/append_and_retrain.py`
-
-**每日追加**（08:30 自动触发）：
-1. 从爬虫获取昨日客流数据
-2. 从 Open-Meteo 历史存档获取对应天气
-3. 追加到 `data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv`
-4. 重新计算 scaled 特征（MinMax，基于全量数据）
-
-**月度重训**（每月1日 02:00 自动触发）：
-- 依次调用 `run_pipeline.py` 重训 GRU、LSTM、Seq2Seq
-- 新模型自动进入 `output/runs/`，Dashboard 下次加载时使用最新版本
-
-```bash
-# 手动触发
-python scripts/append_and_retrain.py --append          # 追加昨日数据
-python scripts/append_and_retrain.py --retrain         # 重训三个模型
-python scripts/append_and_retrain.py --append --retrain  # 追加+重训
+```
+output/runs/<run_name>/
+├── metrics.json              # 完整评估指标（含动态峰值阈值来源）
+├── metrics.csv
+├── *_test_predictions.csv
+├── figures/
+│   ├── true_vs_pred.png
+│   ├── confusion_matrix_crowd_alert.png
+│   ├── reliability_diagram.png
+│   ├── suitability_warning_timeline.png
+│   ├── attention_heatmap_mean.png    # Seq2Seq 专属
+│   └── attention_heatmap_sample.png  # Seq2Seq 专属
+└── weights/
+    └── *.h5 / *.keras
 ```
 
-### Ablation Study（已实现）
+### 12.3 定时任务总览
 
-**位置**：`scripts/ablation_study.py`
+| 任务 | 触发时间 | 说明 |
+|------|---------|------|
+| 每日爬取 | 09:00 | 爬取昨日客流，更新 SQLite |
+| 每日追加 | 08:30 | 追加数据到训练 CSV，补充天气 |
+| 月度重训 | 每月1日 02:00 | 重训三个模型，更新 output/runs/ |
 
-6个特征消融方案，在 GRU 上训练对比：
-
-| 方案 | 特征 |
-|------|------|
-| 4特征基线 | visitor, month, dow, holiday |
-| 去掉天气特征 | 去掉 precip, temp_high, temp_low |
-| 去掉 Lag-7 | 去掉 tourism_num_lag_7_scaled |
-| 去掉节假日 | 去掉 is_holiday |
-| 去掉天气+Lag-7 | 仅时间特征 |
-| 完整8特征 | 全部特征（对照组） |
-
-输出：`output/ablation/<timestamp>/`（`ablation_results.csv`、`ablation_study.png`）
-
-```bash
-python scripts/ablation_study.py --epochs 80
-```
-
-### SHAP 可解释性（已实现）
-
-**位置**：`scripts/shap_analysis.py`
-
-使用 `shap.GradientExplainer` 对 GRU/LSTM 计算特征重要性：
-- 全局特征重要性柱状图（`shap_summary_bar_<model>.png`）
-- 原始 SHAP 值矩阵（`shap_values_<model>.npy`）
-
-```bash
-pip install shap
-python scripts/shap_analysis.py --model gru
-python scripts/shap_analysis.py --model all
-```
-
-输出：`output/shap/<timestamp>/`
+查看状态：`GET /api/scheduler/status`
 
 ---
 
 ## 13. 项目维护信息
 
-**技术栈**：Python 3.10+, TensorFlow 2.15, Flask 3.0, ECharts, SQLite, APScheduler, SHAP  
+**技术栈**：Python 3.10+, TensorFlow 2.15, Flask 3.0, ECharts, SQLite, APScheduler, SHAP
+
+**依赖安装**：
+```bash
+pip install -r requirements_all.txt
+pip install shap  # 可解释性分析（可选）
+```
+
 **项目状态**：持续开发中  
 **最后更新**：2026年4月4日
-
