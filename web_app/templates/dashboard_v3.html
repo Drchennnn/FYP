@@ -40,15 +40,6 @@
     </div>
 
     <div class="v3-nav__actions">
-      <!-- Online toggle -->
-      <label class="v3-pill-toggle" title="在线预测">
-        <input type="checkbox" id="v3Online" />
-        <span class="v3-pill-toggle__track">
-          <span class="v3-pill-toggle__thumb"></span>
-        </span>
-        <span class="v3-pill-toggle__label" data-i18n="online">在线</span>
-      </label>
-
       <!-- Lang -->
       <button class="v3-icon-btn" id="v3Lang" title="Language" aria-label="切换语言">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
@@ -88,9 +79,9 @@
   <!-- ── Hero KPI strip ── -->
   <section class="v3-kpi-strip">
     <div class="v3-kpi" id="kpiLatest">
-      <span class="v3-kpi__label" data-i18n="kpi_latest">最新客流</span>
+      <span class="v3-kpi__label" data-i18n="kpi_latest">最新预测</span>
       <span class="v3-kpi__value" id="kpiLatestVal">—</span>
-      <span class="v3-kpi__unit" data-i18n="kpi_unit">人</span>
+      <span class="v3-kpi__unit" id="kpiLatestDate"></span>
     </div>
     <div class="v3-kpi-divider"></div>
     <div class="v3-kpi" id="kpiPeak">
@@ -153,9 +144,10 @@
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <div class="v3-seg v3-seg--sm" role="group" aria-label="horizon">
-            <button class="v3-seg__btn" data-h="1" data-i18n="h_1d">1天</button>
-            <button class="v3-seg__btn v3-seg__btn--active" data-h="7" data-i18n="h_7d">7天</button>
-            <button class="v3-seg__btn" data-h="14" data-i18n="h_14d">14天</button>
+            <button class="v3-seg__btn v3-seg__btn--active" data-h="0" data-i18n="h_offline">离线回测</button>
+            <button class="v3-seg__btn" data-h="1" data-i18n="h_1d">预测1天</button>
+            <button class="v3-seg__btn" data-h="7" data-i18n="h_7d">预测7天</button>
+            <button class="v3-seg__btn" data-h="14" data-i18n="h_14d">预测14天</button>
           </div>
           <button class="v3-btn-reset" id="v3Reset" data-i18n="btn_reset">复原</button>
         </div>

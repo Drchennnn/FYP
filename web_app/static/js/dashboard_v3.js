@@ -10,7 +10,7 @@
   const I18N = {
     zh: {
       tab_forecast: '预测', tab_analysis: '分析', tab_models: '模型',
-      online: '在线', kpi_latest: '最新客流', kpi_peak: '预测峰值',
+      online: '在线', kpi_latest: '最新预测', kpi_peak: '预测峰值',
       kpi_risk: '综合风险', kpi_model: '冠军模型', kpi_unit: '人',
       chart_title: '客流预测', model_all: '全部', model_champ: '冠军',
       model_runner: '亚军', model_third: '第三', risk_title: '适宜性预警',
@@ -41,6 +41,7 @@
       confidence: '置信度', accuracy: '准确率',
       warn_fallback: '在线预测失败，已自动回退离线产物。',
       h_1d: '1天', h_7d: '7天', h_14d: '14天',
+      h_offline: '离线回测',
       btn_reset: '复原',
       show_precip: '降水', show_temp: '温度',
       curve_actual: '实际', curve_champ: '冠军',
@@ -53,7 +54,7 @@
     },
     en: {
       tab_forecast: 'Forecast', tab_analysis: 'Analysis', tab_models: 'Models',
-      online: 'Online', kpi_latest: 'Latest Visitors', kpi_peak: 'Forecast Peak',
+      online: 'Online', kpi_latest: 'Latest Forecast', kpi_peak: 'Forecast Peak',
       kpi_risk: 'Risk Level', kpi_model: 'Champion', kpi_unit: 'visitors',
       chart_title: 'Visitor Forecast', model_all: 'All', model_champ: 'Champion',
       model_runner: 'Runner', model_third: 'Third', risk_title: 'Suitability Warning',
@@ -85,6 +86,7 @@
       confidence: 'Confidence', accuracy: 'Accuracy',
       warn_fallback: 'Online forecast failed; falling back to offline artifacts.',
       h_1d: '1 Day', h_7d: '7 Days', h_14d: '14 Days',
+      h_offline: 'Offline',
       btn_reset: 'Reset View',
       show_precip: 'Precip', show_temp: 'Temp',
       curve_actual: 'Actual', curve_champ: 'Champion',
@@ -298,9 +300,37 @@
     showSpinner(true);
     showError(null);
     setStatus('', t('status_loading'));
+
+    const cacheKey = `v3_forecast_${state.mode}_h${state.h}`;
+
+    // Check cache for online mode (cache for 30 minutes)
+    if (state.mode === 'online') {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const { data, ts } = JSON.parse(cached);
+          if (Date.now() - ts < 30 * 60 * 1000) {
+            state.payload = normalizeForecastPayload(data);
+            renderAll(state.payload);
+            showSpinner(false);
+            setStatus('ok', t('online_mode') + ' (cached)', state.payload.meta.generatedAt || '');
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+
     try {
       const url = `/api/forecast?h=${state.h}&include_all=1&mode=${state.mode}`;
       const raw = await apiFetch(url);
+
+      // Cache online results
+      if (state.mode === 'online') {
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({ data: raw, ts: Date.now() }));
+        } catch (e) {}
+      }
+
       state.payload = normalizeForecastPayload(raw);
       if (state.payload.warning) showError(state.payload.warning);
       const modeLabel = state.mode === 'online' ? t('online_mode') : t('offline_mode');
@@ -380,13 +410,20 @@
   function renderKpi(payload) {
     const { series, forecast, meta, risk } = payload;
 
-    // Latest actual
-    let latestActual = null;
-    for (let i = series.actual.length - 1; i >= 0; i--) {
-      if (series.actual[i] !== null) { latestActual = series.actual[i]; break; }
+    // Latest prediction (last non-null champion pred)
+    let latestPred = null;
+    let latestPredDate = null;
+    for (let i = series.champion.length - 1; i >= 0; i--) {
+      if (series.champion[i] !== null) {
+        latestPred = series.champion[i];
+        latestPredDate = timeAxis[i];
+        break;
+      }
     }
     const latestEl = $('kpiLatestVal');
-    if (latestEl) latestEl.textContent = fmtVisitors(latestActual);
+    if (latestEl) latestEl.textContent = fmtVisitors(latestPred);
+    const latestDateEl = $('kpiLatestDate');
+    if (latestDateEl) latestDateEl.textContent = latestPredDate || '';
 
     // Peak predicted in forecast window
     let peak = null;
@@ -452,6 +489,9 @@
     const tooltipBorder = isDark ? '#3a3a3c' : '#e0e0e0';
 
     const mv = state.modelView;
+    const champName = payload.meta.championName || t('model_champ');
+    const runnerName = payload.meta.runnerName || t('model_runner');
+    const thirdName = payload.meta.thirdName || t('model_third');
     const showChamp = (mv === 'both' || mv === 'champion') && state.curveVisible.champion;
     const showRunner = (mv === 'both' || mv === 'runner') && state.curveVisible.runner;
     const showThird = (mv === 'both' || mv === 'third') && state.curveVisible.third;
@@ -483,25 +523,25 @@
           silent: true,
           data: [{ yAxis: thresholds.crowd, name: 'Crowd Threshold',
             lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
-            label: { show: true, color: '#ff453a', formatter: `{c}` } }]
+            label: { show: true, color: '#ff453a', formatter: (params) => fmtVisitors(params.value) } }]
         } : undefined
       },
       {
-        name: t('model_champ'),
+        name: champName,
         type: 'line', data: showChamp ? series.champion : series.champion.map(() => null),
         symbol: 'none', showSymbol: false, connectNulls: false,
         lineStyle: { color: '#0a84ff', width: 2 },
         itemStyle: { color: '#0a84ff' }
       },
       {
-        name: t('model_runner'),
+        name: runnerName,
         type: 'line', data: showRunner ? series.runner : series.runner.map(() => null),
         symbol: 'none', showSymbol: false, connectNulls: false,
         lineStyle: { color: '#30d158', width: 2 },
         itemStyle: { color: '#30d158' }
       },
       {
-        name: t('model_third'),
+        name: thirdName,
         type: 'line', data: showThird ? series.third : series.third.map(() => null),
         symbol: 'none', showSymbol: false, connectNulls: false,
         lineStyle: { color: '#ff9f0a', width: 2 },
@@ -640,11 +680,20 @@
 
     state.weatherChart.setOption({
       backgroundColor: 'transparent',
-      grid: { top: 8, right: 60, bottom: 24, left: 64 },
+      grid: { top: 8, right: 60, bottom: 30, left: 64 },
       xAxis: {
         type: 'category', data: timeAxis, boundaryGap: true,
         axisLine: { lineStyle: { color: gridColor } }, axisTick: { show: false },
-        axisLabel: { show: false }
+        axisLabel: {
+          color: mutedColor, fontSize: 10,
+          formatter: (v) => {
+            if (!v) return '';
+            const parts = v.split('-');
+            if (parts.length < 3) return v.slice(5);
+            if (parts[1] === '01' && parts[2] === '01') return parts[0];
+            return parts[1] + '-' + parts[2];
+          }
+        }
       },
       yAxis: [
         { type: 'value', name: 'mm', nameTextStyle: { color: mutedColor, fontSize: 10 },
@@ -795,6 +844,18 @@
       candidates.push({ idx: i, date: timeAxis[i], lv, pred });
     }
 
+    // FIX 7: if no valid predictions in forecast window, scan last 14 days of champion preds
+    const hasValidPreds = candidates.some((c) => c.pred !== null);
+    if (!hasValidPreds) {
+      candidates.length = 0;
+      for (let i = series.champion.length - 1; i >= 0 && candidates.length < 14; i--) {
+        if (series.champion[i] !== null) {
+          const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
+          candidates.unshift({ idx: i, date: timeAxis[i], lv, pred: series.champion[i] });
+        }
+      }
+    }
+
     const good = candidates.filter((c) => c.lv === 0).sort((a, b) => (a.pred || 0) - (b.pred || 0));
     const ok = candidates.filter((c) => c.lv === 1).sort((a, b) => (a.pred || 0) - (b.pred || 0));
     const shown = good.slice(0, 3).concat(ok.slice(0, Math.max(0, 3 - good.length)));
@@ -844,7 +905,23 @@
     const activeRisk = pickActiveRisk(payload);
 
     const cards = [];
-    for (let i = forecast.startIndex; i <= forecast.endIndex; i++) {
+    let startIdx = forecast.startIndex;
+    let endIdx = forecast.endIndex;
+
+    // FIX 6: if champion preds are null in the forecast window, scan backwards for last h non-null
+    if (series.champion[startIdx] === null && series.champion[endIdx] === null) {
+      console.warn('renderForecastStrip: champion preds null in forecast window, scanning backwards');
+      const nonNullIndices = [];
+      for (let i = series.champion.length - 1; i >= 0 && nonNullIndices.length < forecast.h; i--) {
+        if (series.champion[i] !== null) nonNullIndices.unshift(i);
+      }
+      if (nonNullIndices.length > 0) {
+        startIdx = nonNullIndices[0];
+        endIdx = nonNullIndices[nonNullIndices.length - 1];
+      }
+    }
+
+    for (let i = startIdx; i <= endIdx; i++) {
       const date = timeAxis[i] || '';
       const pred = safeNum(series.champion[i]);
       const code = weather.weatherCodeEn[i];
@@ -896,6 +973,26 @@
   }
 
   // ─────────────────────────────────────────────
+  // Update curve toggle labels to show actual model names
+  // ─────────────────────────────────────────────
+  function updateCurveToggleLabels(payload) {
+    const champName = payload.meta.championName || t('model_champ');
+    const runnerName = payload.meta.runnerName || t('model_runner');
+    const thirdName = payload.meta.thirdName || t('model_third');
+    const map = { champion: champName, runner: runnerName, third: thirdName };
+    $$('[data-curve]').forEach((input) => {
+      const curve = input.getAttribute('data-curve');
+      if (map[curve]) {
+        const label = input.closest('label');
+        if (label) {
+          const span = label.querySelector('span');
+          if (span) span.textContent = map[curve];
+        }
+      }
+    });
+  }
+
+  // ─────────────────────────────────────────────
   // Render all forecast page components
   // ─────────────────────────────────────────────
   function renderAll(payload) {
@@ -905,6 +1002,7 @@
     renderWeatherChart(payload);
     renderForecastStrip(payload);
     renderReco(payload);
+    updateCurveToggleLabels(payload);
     const defaultIdx = payload.forecast.endIndex;
     updateSelection(defaultIdx);
   }
@@ -1225,9 +1323,18 @@
   // Horizon / model view
   // ─────────────────────────────────────────────
   function setH(h) {
-    state.h = [1, 7, 14].includes(Number(h)) ? Number(h) : 7;
+    const hNum = Number(h);
+    if (hNum === 0) {
+      state.mode = 'offline';
+      state.h = 7;
+    } else {
+      state.mode = 'online';
+      state.h = [1, 7, 14].includes(hNum) ? hNum : 7;
+    }
     $$('[data-h]').forEach((btn) => {
-      btn.classList.toggle('v3-seg__btn--active', Number(btn.getAttribute('data-h')) === state.h);
+      const bh = Number(btn.getAttribute('data-h'));
+      const isActive = (hNum === 0 && bh === 0) || (hNum !== 0 && bh === hNum);
+      btn.classList.toggle('v3-seg__btn--active', isActive);
     });
     loadForecast();
   }
@@ -1263,15 +1370,6 @@
     $$('.v3-seg [data-model]').forEach((btn) => {
       btn.addEventListener('click', () => setModelView(btn.getAttribute('data-model')));
     });
-
-    // Online toggle
-    const onlineChk = $('v3Online');
-    if (onlineChk) {
-      onlineChk.addEventListener('change', () => {
-        state.mode = onlineChk.checked ? 'online' : 'offline';
-        loadForecast();
-      });
-    }
 
     // Lang
     const langBtn = $('v3Lang');

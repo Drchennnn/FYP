@@ -816,26 +816,22 @@ def api_forecast():
         df_master['aqi_value'] = np.nan
         df_master['aqi_level_en'] = None
 
-    # Merge predictions into the master axis (null where absent)
+    # Merge predictions into the master axis (null where absent).
+    # Rename y_pred before each merge to avoid column name collisions.
     df_base = df_master[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']].copy()
-    df_base = pd.merge(df_base, df_c[['date', 'y_pred']], on='date', how='left')
-    df_base = df_base.rename(columns={'y_pred': 'champion_pred'})
+
+    df_c_renamed = df_c[['date', 'y_pred']].rename(columns={'y_pred': 'champion_pred'})
+    df_base = pd.merge(df_base, df_c_renamed, on='date', how='left')
 
     if runner_available:
-        df_base = pd.merge(df_base, df_r[['date', 'y_pred']], on='date', how='left', suffixes=('', '_runner'))
-        if 'y_pred_runner' in df_base.columns:
-            df_base = df_base.rename(columns={'y_pred_runner': 'runner_pred'})
-        else:
-            df_base['runner_pred'] = np.nan
+        df_r_renamed = df_r[['date', 'y_pred']].rename(columns={'y_pred': 'runner_pred'})
+        df_base = pd.merge(df_base, df_r_renamed, on='date', how='left')
     else:
         df_base['runner_pred'] = np.nan
 
     if third_available:
-        df_base = pd.merge(df_base, df_t[['date', 'y_pred']], on='date', how='left', suffixes=('', '_third'))
-        if 'y_pred_third' in df_base.columns:
-            df_base = df_base.rename(columns={'y_pred_third': 'third_pred'})
-        else:
-            df_base['third_pred'] = np.nan
+        df_t_renamed = df_t[['date', 'y_pred']].rename(columns={'y_pred': 'third_pred'})
+        df_base = pd.merge(df_base, df_t_renamed, on='date', how='left')
     else:
         df_base['third_pred'] = np.nan
 

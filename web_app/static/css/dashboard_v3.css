@@ -205,9 +205,9 @@ body{
 
 /* ── Chart box ── */
 .v3-chart-box{width:100%;height:420px}
-.v3-chart-box--md{height:280px}
+.v3-chart-box--md{height:320px}
 .v3-chart-box--sm{height:220px}
-.v3-chart-box--sub{height:120px;margin-top:4px}
+.v3-chart-box--sub{height:180px;margin-top:4px}
 
 /* ── Sub-chart toggle ── */
 .v3-subchart-toggle{display:flex;gap:16px;padding:4px 0}
@@ -369,7 +369,7 @@ body{
 .v3-section-header{margin-bottom:28px}
 .v3-section-title{font-size:1.8rem;font-weight:700;letter-spacing:-0.02em}
 .v3-section-sub{font-size:0.85rem;color:var(--text-2);margin-top:6px}
-.v3-analysis-grid{display:flex;flex-direction:column;gap:24px}
+.v3-analysis-grid{display:flex;flex-direction:column;gap:28px}
 .v3-analysis-note{
   font-size:0.78rem;color:var(--text-2);margin-top:12px;
   line-height:1.6;padding:10px 12px;
