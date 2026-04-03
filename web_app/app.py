@@ -492,6 +492,27 @@ def explain():
     return render_template('explain.html')
 
 
+# --- Interaction Test Pages (minimal, single-container pages) ---
+
+
+@app.route('/test/chart')
+def test_chart():
+    """Minimal ECharts interaction test page."""
+    return render_template('test_chart.html')
+
+
+@app.route('/test/weather')
+def test_weather():
+    """Minimal weather card interaction test page."""
+    return render_template('test_weather.html')
+
+
+@app.route('/test/risk')
+def test_risk():
+    """Minimal risk + thermo interaction test page."""
+    return render_template('test_risk.html')
+
+
 @app.route('/api/models', methods=['GET'])
 def api_models():
     """Offline artifact mode: return champion + runner-up from latest backup."""
