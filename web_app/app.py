@@ -559,13 +559,24 @@ def api_forecast():
     latest *h* days as the forecast segment.
 
     Query:
-      - h: int, [1, 14], latest window length
+      - h: int, [1, 14], window length
       - include_all: 1/0, if 1 returns champion + runner-up (if available)
+      - mode: offline|online
+
+    Modes:
+      - offline (default): uses offline artifacts; "latest forecast" is the
+        latest predicted window in artifacts (backtest-style) anchored to last
+        predicted date.
+      - online: generate a true future forecast (h days) via the loaded LSTM
+        model and append to the end of the processed history timeline.
     """
 
     h = int(request.args.get('h', 7))
     h = max(1, min(h, 14))
     include_all = str(request.args.get('include_all', '0')).lower() in ['1', 'true', 'yes']
+    mode = str(request.args.get('mode', 'offline')).strip().lower()
+    if mode not in ['offline', 'online']:
+        mode = 'offline'
 
     models_resp = api_models().get_json() or {}
     models = {m['model_id']: m for m in (models_resp.get('models') or [])}
@@ -623,6 +634,78 @@ def api_forecast():
         df_base['runner_pred'] = np.nan
 
     df_merge = df_base.sort_values('date')
+
+    def _online_future_forecast_from_lstm(df_hist: pd.DataFrame, horizon: int):
+        """Generate true future forecast for `horizon` days using loaded LSTM.
+
+        Uses only the historical actual series for scaling and a minimal
+        feature set (value_norm, month_norm, weekday_norm, holiday_flag),
+        matching the existing /api/predict implementation.
+
+        Returns DataFrame columns: date, champion_pred
+        """
+        if lstm_model is None:
+            raise RuntimeError('Online forecast requested but LSTM model is not loaded.')
+        if df_hist is None or df_hist.empty:
+            raise RuntimeError('History not available for online forecast.')
+
+        s = pd.to_numeric(df_hist['actual'], errors='coerce')
+        s = s.dropna()
+        if s.shape[0] < 30:
+            raise RuntimeError('Not enough history (need >= 30 days) for online forecast.')
+
+        look_back = 30
+        scaler = MinMaxScaler()
+        scaler.fit(s.values.reshape(-1, 1))
+
+        last_date = df_hist['date'].max()
+        hist_tail = s.values[-look_back:].reshape(-1, 1)
+        current_seq = scaler.transform(hist_tail).flatten().tolist()
+
+        out_rows = []
+        for step in range(horizon):
+            pred_date = last_date + timedelta(days=step + 1)
+            model_input = []
+            for i in range(look_back):
+                feature_date = pred_date - timedelta(days=(look_back - i))
+                m_norm = (feature_date.month - 1) / 11.0
+                d_norm = feature_date.weekday() / 6.0
+                hol = float(mark_core_holiday(feature_date))
+                model_input.append([current_seq[i], m_norm, d_norm, hol])
+
+            x_in = np.array(model_input, dtype=float).reshape(1, look_back, 4)
+            y_norm = float(lstm_model.predict(x_in, verbose=0)[0][0])
+            y_val = float(scaler.inverse_transform(np.array([[y_norm]], dtype=float))[0][0])
+            out_rows.append({'date': pred_date, 'champion_pred': y_val})
+
+            # roll window
+            current_seq = current_seq[1:] + [y_norm]
+
+        return pd.DataFrame(out_rows)
+
+    # Online mode: append true future forecast to the end of timeline.
+    online_used = False
+    if mode == 'online':
+        try:
+            df_future = _online_future_forecast_from_lstm(df_master[['date', 'actual']].copy(), h)
+            if df_future is not None and not df_future.empty:
+                online_used = True
+                df_future['runner_pred'] = np.nan
+                # Add empty weather fields for future dates
+                for c in ['actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']:
+                    if c not in df_future.columns:
+                        df_future[c] = np.nan if c not in ['weather_code_en', 'wind_dir_en', 'aqi_level_en'] else None
+                df_future['actual'] = np.nan
+
+                # Keep the same column set and append
+                df_merge = pd.concat([
+                    df_merge,
+                    df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en', 'champion_pred', 'runner_pred']]
+                ], ignore_index=True)
+                df_merge = df_merge.sort_values('date')
+        except Exception as e:
+            warning = (warning + ' | ' if warning else '') + f'Online forecast failed; falling back to offline artifacts. ({e})'
+            online_used = False
 
     # Thresholds come from champion metrics by default
     threshold_crowd = float((champ_metrics.get('meta') or {}).get('peak_threshold', 18500.0))
@@ -721,16 +804,21 @@ def api_forecast():
 
     time_axis = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in df_merge['date'].tolist()]
 
-    # Forecast window policy (offline artifacts): treat the latest available
-    # predicted days as the "latest forecast" (backtest-style), anchored to the
-    # last predicted date.
-    pred_series = df_merge['champion_pred'].astype(float)
-    has_pred = ~(pred_series.isna())
-    if has_pred.any():
-        forecast_end_idx = int(np.where(has_pred.values)[0].max())
-    else:
+    if online_used:
+        # True future window: last h days are the forecast segment.
         forecast_end_idx = len(time_axis) - 1
-    forecast_start_idx = max(0, forecast_end_idx - h + 1)
+        forecast_start_idx = max(0, forecast_end_idx - h + 1)
+        forecast_mode = 'online_future'
+    else:
+        # Offline artifacts: treat latest predicted window as the forecast segment.
+        pred_series = df_merge['champion_pred'].astype(float)
+        has_pred = ~(pred_series.isna())
+        if has_pred.any():
+            forecast_end_idx = int(np.where(has_pred.values)[0].max())
+        else:
+            forecast_end_idx = len(time_axis) - 1
+        forecast_start_idx = max(0, forecast_end_idx - h + 1)
+        forecast_mode = 'offline_latest_window_backtest'
 
     def _to_num_list(col):
         out = []
@@ -754,7 +842,7 @@ def api_forecast():
                 'model_name': _pretty_model_name(run_key),
             } if runner_available else None)
             ,
-            'forecast_mode': 'offline_latest_window_backtest'
+            'forecast_mode': forecast_mode
         },
         'time_axis': time_axis,
         'forecast': {

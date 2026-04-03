@@ -7,6 +7,7 @@ const UIW = {
     h: 7,
     selectedDate: null,
     showBacktest: false,
+    onlineForecast: false,
     lang: 'zh',
     theme: 'light',
     seriesVisible: {
@@ -36,6 +37,7 @@ const I18N = {
     tgl_backtest: '回测段',
     tgl_theme: '日/夜',
     tgl_lang: '中/EN',
+    tgl_online: '在线预测',
     btn_refresh: '刷新',
     btn_reset: '一键重置',
     kpi_max_forecast: '预测峰值（视窗）',
@@ -106,6 +108,7 @@ const I18N = {
     tgl_backtest: 'Backtest',
     tgl_theme: 'Day/Night',
     tgl_lang: 'CN/EN',
+    tgl_online: 'Online forecast',
     btn_refresh: 'Refresh',
     btn_reset: 'Reset',
     kpi_max_forecast: 'Max forecast (view)',
@@ -920,7 +923,8 @@ async function refreshForecast() {
   setWarning(null);
   initCharts();
 
-  const payload = await apiGetJson(`/api/forecast?h=${encodeURIComponent(UIW.state.h)}&include_all=1`);
+  const mode = UIW.state.onlineForecast ? 'online' : 'offline';
+  const payload = await apiGetJson(`/api/forecast?h=${encodeURIComponent(UIW.state.h)}&include_all=1&mode=${encodeURIComponent(mode)}`);
   UIW.state.payload = payload;
 
   renderKpis(payload);
@@ -943,6 +947,7 @@ function resetControls() {
   UIW.state.h = 7;
   UIW.state.selectedDate = null;
   UIW.state.showBacktest = false;
+  UIW.state.onlineForecast = false;
   UIW.state.seriesVisible = { actual: true, champion: true, runner: true };
 
   setPrimaryModel('champion');
@@ -952,6 +957,7 @@ function resetControls() {
   $('tglChampion').checked = true;
   $('tglRunner').checked = true;
   $('tglBacktest').checked = false;
+  $('tglOnline').checked = false;
 
   applyCurveVisibility();
 
@@ -1025,6 +1031,14 @@ async function boot() {
       UIW.state.showBacktest = !!e.target.checked;
       // Only re-render visitor chart
       if (UIW.state.payload) renderVisitorChart(UIW.state.payload);
+    });
+
+    // Online forecast toggle (default OFF)
+    $('tglOnline')?.addEventListener('change', async (e) => {
+      UIW.state.onlineForecast = !!e.target.checked;
+      // Online forecast is a different timeline (appends future h days)
+      UIW.state.selectedDate = null;
+      await refreshForecast();
     });
 
     $('btnRefresh').addEventListener('click', refreshForecast);
