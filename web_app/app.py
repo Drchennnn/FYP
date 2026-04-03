@@ -387,19 +387,6 @@ def _load_master_history_from_processed():
     if not os.path.exists(processed_path):
         return None
 
-
-def _pretty_model_name(raw_key: str):
-    """Convert internal model key to a professional UI label."""
-    k = (raw_key or '').lower()
-    if 'seq2seq' in k and ('att' in k or 'attention' in k):
-        return 'Seq2Seq+Attention (8 features)'
-    if 'seq2seq' in k:
-        return 'Seq2Seq (8 features)'
-    if 'gru' in k:
-        return 'GRU (8 features)'
-    if 'lstm' in k:
-        return 'LSTM (8 features)'
-    return raw_key or 'Model'
     try:
         df = pd.read_csv(processed_path)
         if 'date' not in df.columns:
@@ -446,6 +433,20 @@ def _pretty_model_name(raw_key: str):
     except Exception as e:
         print(f"Failed to load master history from processed data: {e}")
         return None
+
+
+def _pretty_model_name(raw_key: str):
+    """Convert internal model key to a professional UI label."""
+    k = (raw_key or '').lower()
+    if 'seq2seq' in k and ('att' in k or 'attention' in k):
+        return 'Seq2Seq+Attention (8 features)'
+    if 'seq2seq' in k:
+        return 'Seq2Seq (8 features)'
+    if 'gru' in k:
+        return 'GRU (8 features)'
+    if 'lstm' in k:
+        return 'LSTM (8 features)'
+    return raw_key or 'Model'
 
 def mark_core_holiday(date_val):
     """Check if a date is a holiday based on config"""

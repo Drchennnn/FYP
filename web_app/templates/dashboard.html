@@ -177,12 +177,16 @@
     </aside>
   </div>
 
-  <section class="uiw-panel">
-    <div class="uiw-panel-title" data-i18n="panel_risk_timeline">风险时间线</div>
+  <!-- Collapsible timeline to reduce density while keeping the feature. -->
+  <details class="uiw-panel uiw-collapsible" id="riskTimelineBox">
+    <summary class="uiw-collapsible__summary">
+      <span class="uiw-panel-title" data-i18n="panel_risk_timeline">风险时间线</span>
+      <span class="uiw-muted uiw-collapsible__hint">点击展开 / Expand</span>
+    </summary>
     <div id="riskTimeline" class="uiw-timeline" aria-label="risk timeline">
       <div class="uiw-muted" data-i18n="loading">加载中…</div>
     </div>
-  </section>
+  </details>
 
   <div class="uiw-warning" id="uiwWarning" style="display:none;"></div>
 </div>

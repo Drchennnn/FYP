@@ -885,9 +885,11 @@ function syncThermo(payload, date) {
     : Math.round(Math.max(0, Math.min(1, (lv / 3) * 0.65 + score * 0.35)) * 100);
 
   safeText($('thermoTitle'), date);
+  const meta = getPrimaryModelMeta(payload);
+  const modelLabel = meta?.model_name || UIW.state.primaryModelId;
   safeText($('thermoSubtitle'), UIW.state.lang === 'zh'
-    ? `主模型：${UIW.state.primaryModelId}`
-    : `Primary model: ${UIW.state.primaryModelId}`);
+    ? `主模型：${modelLabel}`
+    : `Primary model: ${modelLabel}`);
   safeText($('thermoScore'), `${pct}/100`);
   safeText($('thermoLevel'), lv >= 3 ? t('thermo_level_high') : (lv > 0 ? t('thermo_level_warn') : t('thermo_level_ok')));
   if (elFill) elFill.style.height = `${Math.max(6, Math.min(100, pct))}%`;

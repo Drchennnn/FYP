@@ -193,6 +193,20 @@ html[data-bs-theme="dark"], body.uiw-body{ color:var(--uiw-text); }
 }
 .uiw-panel-title{ color:var(--uiw-muted); font-size:1rem; font-weight:650; margin-bottom:8px; letter-spacing:-.01em; }
 
+/* Collapsible (used for risk timeline to reduce initial density) */
+.uiw-collapsible{ padding:10px 12px; }
+.uiw-collapsible__summary{
+  list-style:none;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+}
+.uiw-collapsible__summary::-webkit-details-marker{ display:none; }
+.uiw-collapsible__hint{ font-size:.86rem; }
+.uiw-collapsible[open] .uiw-collapsible__hint{ display:none; }
+
 .uiw-chart{ width:100%; height:320px; }
 .uiw-chart--lg{ height:420px; }
 .uiw-hint{ margin-top:8px; color:var(--uiw-muted); font-size:.88rem; }
