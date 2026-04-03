@@ -309,8 +309,9 @@ function initCharts() {
 function setMainPanel(panel) {
   UIW.state.activeMainPanel = panel === 'weather' ? 'weather' : 'visitors';
   const isV = UIW.state.activeMainPanel === 'visitors';
-  $('tabVisitors')?.classList.toggle('uiw-tab--active', isV);
-  $('tabWeather')?.classList.toggle('uiw-tab--active', !isV);
+  // Tabs reuse chip styles (STYLE_MAP)
+  $('tabVisitors')?.classList.toggle('uiw-chip--active', isV);
+  $('tabWeather')?.classList.toggle('uiw-chip--active', !isV);
   $('tabVisitors')?.setAttribute('aria-selected', isV ? 'true' : 'false');
   $('tabWeather')?.setAttribute('aria-selected', !isV ? 'true' : 'false');
   $('visitorChartWrap')?.classList.toggle('uiw-panel-body--active', isV);

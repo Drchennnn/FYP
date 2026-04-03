@@ -77,19 +77,8 @@ html[data-bs-theme="dark"], body.uiw-body{ color:var(--uiw-text); }
 .uiw-controls{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .uiw-sep{ width:1px; height:26px; background:rgba(17,24,39,.10); }
 
-/* Panel head + tabs (simple density control) */
+/* Panel head (simple density control; tabs reuse uiw-chip styles) */
 .uiw-panel-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
-.uiw-tabs{ display:flex; gap:8px; }
-.uiw-tab{
-  border:1px solid rgba(17,24,39,.12);
-  background:rgba(255,255,255,.72);
-  color:var(--uiw-muted);
-  border-radius:999px;
-  padding:7px 11px;
-  font-size:.90rem;
-}
-.uiw-tab:hover{ border-color:rgba(10,132,255,.28); background:#fff; color:var(--uiw-text); }
-.uiw-tab--active{ background:rgba(10,132,255,.12); border-color:rgba(10,132,255,.35); color:var(--uiw-text); }
 
 .uiw-panel-body{ display:none; }
 .uiw-panel-body--active{ display:block; }

@@ -112,9 +112,10 @@
     <section class="uiw-panel uiw-panel--chart">
       <div class="uiw-panel-head">
         <div class="uiw-panel-title" id="mainPanelTitle" data-i18n="panel_visitors">客流预测</div>
-        <div class="uiw-tabs" role="tablist" aria-label="panel switcher">
-          <button class="uiw-tab uiw-tab--active" id="tabVisitors" type="button" role="tab" aria-selected="true" data-panel="visitors" data-i18n="panel_visitors">客流预测</button>
-          <button class="uiw-tab" id="tabWeather" type="button" role="tab" aria-selected="false" data-panel="weather" data-i18n="panel_weather_series">天气时间序列（参考）</button>
+        <!-- Reuse STYLE_MAP chip components for tabs -->
+        <div class="uiw-chip-group" role="tablist" aria-label="panel switcher">
+          <button class="uiw-chip uiw-chip--active" id="tabVisitors" type="button" role="tab" aria-selected="true" data-panel="visitors" data-i18n="panel_visitors">客流预测</button>
+          <button class="uiw-chip" id="tabWeather" type="button" role="tab" aria-selected="false" data-panel="weather" data-i18n="panel_weather_series">天气时间序列（参考）</button>
         </div>
       </div>
 
