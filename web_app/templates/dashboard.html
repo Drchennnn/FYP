@@ -17,22 +17,22 @@
 <div class="uiw-page">
   <header class="uiw-page-header">
     <div class="uiw-header-left">
-      <div class="uiw-page-title">Dashboard</div>
-      <div class="uiw-page-subtitle" id="uiwMetaLine">Offline artifact mode</div>
+      <div class="uiw-page-title" data-i18n="page_title">九寨沟客流预测看板</div>
+      <div class="uiw-page-subtitle" id="uiwMetaLine" data-i18n="meta_default">离线产物模式</div>
     </div>
 
     <div class="uiw-controls" aria-label="dashboard controls">
       <div class="uiw-chip-group" role="group" aria-label="quick forecast view">
-        <button class="uiw-chip" id="btnView1" type="button" data-h="1">Latest 1D</button>
-        <button class="uiw-chip" id="btnView3" type="button" data-h="3">Latest 3D</button>
-        <button class="uiw-chip uiw-chip--active" id="btnView7" type="button" data-h="7">Latest 7D</button>
+        <button class="uiw-chip" id="btnView1" type="button" data-h="1" data-i18n="btn_latest_1">最近1天</button>
+        <button class="uiw-chip" id="btnView3" type="button" data-h="3" data-i18n="btn_latest_3">最近3天</button>
+        <button class="uiw-chip uiw-chip--active" id="btnView7" type="button" data-h="7" data-i18n="btn_latest_7">最近7天</button>
       </div>
 
       <div class="uiw-sep" aria-hidden="true"></div>
 
       <div class="uiw-model-toggle" role="group" aria-label="primary model">
-        <button class="uiw-btn" id="btnChampion" type="button">Champion</button>
-        <button class="uiw-btn" id="btnRunner" type="button">Runner-up</button>
+        <button class="uiw-btn" id="btnChampion" type="button" data-i18n="btn_champion">冠军模型</button>
+        <button class="uiw-btn" id="btnRunner" type="button" data-i18n="btn_runner">亚军模型</button>
       </div>
 
       <div class="uiw-sep" aria-hidden="true"></div>
@@ -41,50 +41,62 @@
         <label class="uiw-curve-toggle" title="Show/Hide Actual">
           <input id="tglActual" type="checkbox" checked />
           <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
-          <span class="uiw-curve-toggle__label">Actual</span>
+          <span class="uiw-curve-toggle__label" data-i18n="tgl_actual">真实</span>
         </label>
         <label class="uiw-curve-toggle" title="Show/Hide Champion prediction">
           <input id="tglChampion" type="checkbox" checked />
           <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
-          <span class="uiw-curve-toggle__label">Champion</span>
+          <span class="uiw-curve-toggle__label" data-i18n="tgl_champion">冠军预测</span>
         </label>
         <label class="uiw-curve-toggle" title="Show/Hide Runner-up prediction">
           <input id="tglRunner" type="checkbox" checked />
           <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
-          <span class="uiw-curve-toggle__label">Runner-up</span>
+          <span class="uiw-curve-toggle__label" data-i18n="tgl_runner">亚军预测</span>
         </label>
         <label class="uiw-curve-toggle" title="Also show backtest segment for prediction curves">
           <input id="tglBacktest" type="checkbox" />
           <span class="uiw-curve-toggle__ui" aria-hidden="true"></span>
-          <span class="uiw-curve-toggle__label">Backtest</span>
+          <span class="uiw-curve-toggle__label" data-i18n="tgl_backtest">回测段</span>
         </label>
       </div>
 
       <div class="uiw-sep" aria-hidden="true"></div>
 
-      <button class="uiw-btn" id="btnRefresh" type="button">Refresh</button>
-      <button class="uiw-btn-primary" id="btnReset" type="button">Reset</button>
+      <label class="uiw-mini-toggle" title="Theme" aria-label="theme toggle">
+        <input id="tglTheme" type="checkbox" />
+        <span class="uiw-mini-toggle__ui" aria-hidden="true"></span>
+        <span class="uiw-mini-toggle__label" data-i18n="tgl_theme">日/夜</span>
+      </label>
+
+      <label class="uiw-mini-toggle" title="Language" aria-label="language toggle">
+        <input id="tglLang" type="checkbox" />
+        <span class="uiw-mini-toggle__ui" aria-hidden="true"></span>
+        <span class="uiw-mini-toggle__label" data-i18n="tgl_lang">中/EN</span>
+      </label>
+
+      <button class="uiw-btn" id="btnRefresh" type="button" data-i18n="btn_refresh">刷新</button>
+      <button class="uiw-btn-primary" id="btnReset" type="button" data-i18n="btn_reset">一键重置</button>
     </div>
   </header>
 
   <section class="uiw-kpi-grid" aria-label="key metrics">
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">Max forecast visitors (view)</div>
+      <div class="uiw-kpi-label" data-i18n="kpi_max_forecast">预测峰值（视窗）</div>
       <div class="uiw-kpi-value" id="kpiMaxVisitor">--</div>
       <div class="uiw-kpi-foot" id="kpiMaxVisitorDate">--</div>
     </div>
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">Warn days (risk &gt; 0)</div>
+      <div class="uiw-kpi-label" data-i18n="kpi_warn_days">预警天数（风险&gt;0）</div>
       <div class="uiw-kpi-value" id="kpiWarnDays">--</div>
-      <div class="uiw-kpi-foot">Crowd + Weather</div>
+      <div class="uiw-kpi-foot" data-i18n="kpi_warn_foot">客流 + 天气</div>
     </div>
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">Max risk level</div>
+      <div class="uiw-kpi-label" data-i18n="kpi_max_risk">最高风险等级</div>
       <div class="uiw-kpi-value" id="kpiMaxRisk">--</div>
       <div class="uiw-kpi-foot" id="kpiMaxRiskDrivers">--</div>
     </div>
     <div class="uiw-kpi-card">
-      <div class="uiw-kpi-label">Primary model</div>
+      <div class="uiw-kpi-label" data-i18n="kpi_primary_model">主模型</div>
       <div class="uiw-kpi-value" id="kpiModel">--</div>
       <div class="uiw-kpi-foot" id="kpiRunDir" style="font-family: 'Roboto Mono', monospace;">--</div>
     </div>
@@ -92,38 +104,51 @@
 
   <div class="uiw-main-grid">
     <section class="uiw-panel uiw-panel--chart">
-      <div class="uiw-panel-title">Visitor forecast</div>
-      <div id="visitorChart" class="uiw-chart uiw-chart--lg" aria-label="visitor forecast chart"></div>
-      <div class="uiw-hint">Tip: hover for crosshair; click a date to sync Weather &amp; Risk cards.</div>
+      <div class="uiw-panel-head">
+        <div class="uiw-panel-title" id="mainPanelTitle" data-i18n="panel_visitors">客流预测</div>
+        <div class="uiw-tabs" role="tablist" aria-label="panel switcher">
+          <button class="uiw-tab uiw-tab--active" id="tabVisitors" type="button" role="tab" aria-selected="true" data-panel="visitors" data-i18n="panel_visitors">客流预测</button>
+          <button class="uiw-tab" id="tabWeather" type="button" role="tab" aria-selected="false" data-panel="weather" data-i18n="panel_weather_series">天气时间序列（参考）</button>
+        </div>
+      </div>
+
+      <div id="visitorChartWrap" class="uiw-panel-body uiw-panel-body--active" data-panel="visitors">
+        <div id="visitorChart" class="uiw-chart uiw-chart--lg" aria-label="visitor forecast chart"></div>
+        <div class="uiw-hint" data-i18n="hint_click">提示：鼠标悬停查看十字线；点击日期同步“天气/风险”。</div>
+      </div>
+      <div id="weatherChartWrap" class="uiw-panel-body" data-panel="weather">
+        <div id="weatherChart" class="uiw-chart uiw-chart--lg" aria-label="weather chart"></div>
+      </div>
     </section>
 
     <aside class="uiw-side">
       <section class="uiw-panel">
-        <div class="uiw-panel-title">Weather</div>
+        <div class="uiw-panel-title" data-i18n="panel_weather">天气</div>
         <div class="uiw-weather-card" id="weatherCard" aria-live="polite">
           <div class="uiw-weather-card__header">
             <div>
-              <div class="uiw-weather-card__place">Jiuzhaigou</div>
-              <div class="uiw-weather-card__date" id="weatherDate">No date selected</div>
+              <div class="uiw-weather-card__place" data-i18n="place_name">九寨沟</div>
+              <div class="uiw-weather-card__date" id="weatherDate" data-i18n="weather_no_date">未选择日期</div>
             </div>
             <div class="uiw-weather-card__temp" id="weatherTemp">--°C</div>
           </div>
-          <div class="uiw-weather-card__meta" id="weatherMeta">Click a point on the chart to view daily weather.</div>
+          <div class="uiw-weather-card__meta" id="weatherMeta" data-i18n="weather_click_tip">点击图表上的点查看当日天气与风险标记。</div>
+          <div class="uiw-weather-card__flags" id="weatherFlags" style="display:none;"></div>
           <div class="uiw-weather-card__grid">
-            <div class="uiw-weather-kv"><div class="uiw-weather-k">Precip</div><div class="uiw-weather-v" id="wPrecip">--</div></div>
-            <div class="uiw-weather-kv"><div class="uiw-weather-k">Temp (H/L)</div><div class="uiw-weather-v" id="wTempHL">--</div></div>
-            <div class="uiw-weather-kv"><div class="uiw-weather-k">Wind</div><div class="uiw-weather-v" id="wWind">--</div></div>
-            <div class="uiw-weather-kv"><div class="uiw-weather-k">AQI</div><div class="uiw-weather-v" id="wAqi">--</div></div>
+            <div class="uiw-weather-kv" id="rowPrecip"><div class="uiw-weather-k" data-i18n="weather_precip">降水</div><div class="uiw-weather-v" id="wPrecip">--</div></div>
+            <div class="uiw-weather-kv" id="rowTempHL"><div class="uiw-weather-k" data-i18n="weather_temp_hl">温度（高/低）</div><div class="uiw-weather-v" id="wTempHL">--</div></div>
+            <div class="uiw-weather-kv" id="rowWind"><div class="uiw-weather-k" data-i18n="weather_wind">风</div><div class="uiw-weather-v" id="wWind">--</div></div>
+            <div class="uiw-weather-kv" id="rowAqi"><div class="uiw-weather-k" data-i18n="weather_aqi">空气质量</div><div class="uiw-weather-v" id="wAqi">--</div></div>
           </div>
         </div>
       </section>
 
       <section class="uiw-panel">
-        <div class="uiw-panel-title">Thresholds &amp; risk</div>
+        <div class="uiw-panel-title" data-i18n="panel_thresholds">阈值 &amp; 风险</div>
         <div class="uiw-thermo" id="thermo" aria-label="risk thermometer">
           <div class="uiw-thermo__head">
-            <div class="uiw-thermo__title" id="thermoTitle">No date selected</div>
-            <div class="uiw-thermo__subtitle" id="thermoSubtitle">Showing default thresholds</div>
+            <div class="uiw-thermo__title" id="thermoTitle" data-i18n="thermo_no_date">未选择日期</div>
+            <div class="uiw-thermo__subtitle" id="thermoSubtitle" data-i18n="thermo_default">展示默认阈值</div>
           </div>
           <div class="uiw-thermo__body">
             <div class="uiw-thermo__tube" aria-hidden="true">
@@ -134,26 +159,21 @@
               <div class="uiw-thermo__level" id="thermoLevel">--</div>
             </div>
           </div>
-          <div class="uiw-thermo__foot" id="thermoFoot">Crowd threshold: <span id="thrCrowd">--</span> · Weather quantiles: <span id="thrWeather">--</span></div>
+          <div class="uiw-thermo__foot" id="thermoFoot"><span data-i18n="thermo_crowd_thr">客流阈值</span>: <span id="thrCrowd">--</span> · <span data-i18n="thermo_weather_q">天气分位阈值</span>: <span id="thrWeather">--</span></div>
         </div>
       </section>
 
       <section class="uiw-panel">
-        <div class="uiw-panel-title">Best travel window (view)</div>
-        <div class="uiw-reco" id="bestWindow">Waiting for forecast…</div>
+        <div class="uiw-panel-title" data-i18n="panel_best_window">最佳出行窗口（视窗）</div>
+        <div class="uiw-reco" id="bestWindow" data-i18n="best_wait">等待预测结果…</div>
       </section>
     </aside>
   </div>
 
   <section class="uiw-panel">
-    <div class="uiw-panel-title">Weather series (reference)</div>
-    <div id="weatherChart" class="uiw-chart" aria-label="weather chart"></div>
-  </section>
-
-  <section class="uiw-panel">
-    <div class="uiw-panel-title">Risk timeline</div>
+    <div class="uiw-panel-title" data-i18n="panel_risk_timeline">风险时间线</div>
     <div id="riskTimeline" class="uiw-timeline" aria-label="risk timeline">
-      <div class="uiw-muted">Loading…</div>
+      <div class="uiw-muted" data-i18n="loading">加载中…</div>
     </div>
   </section>
 

@@ -10,6 +10,16 @@
   --uiw-radius:16px;
 }
 
+/* Optional night mode (still minimal; default remains light) */
+html[data-uiw-theme="dark"]{
+  --uiw-bg:#0b1220;
+  --uiw-panel:rgba(18,24,38,.92);
+  --uiw-border:rgba(255,255,255,.10);
+  --uiw-text:#e5e7eb;
+  --uiw-muted:rgba(229,231,235,.68);
+  --uiw-shadow:0 10px 30px rgba(0,0,0,.35);
+}
+
 /* Force light theme on this page (base.html defaults to dark) */
 html[data-bs-theme="dark"], body.uiw-body{ color:var(--uiw-text); }
 
@@ -66,6 +76,50 @@ html[data-bs-theme="dark"], body.uiw-body{ color:var(--uiw-text); }
 
 .uiw-controls{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .uiw-sep{ width:1px; height:26px; background:rgba(17,24,39,.10); }
+
+/* Panel head + tabs (simple density control) */
+.uiw-panel-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:6px; flex-wrap:wrap; }
+.uiw-tabs{ display:flex; gap:8px; }
+.uiw-tab{
+  border:1px solid rgba(17,24,39,.12);
+  background:rgba(255,255,255,.72);
+  color:var(--uiw-muted);
+  border-radius:999px;
+  padding:7px 11px;
+  font-size:.90rem;
+}
+.uiw-tab:hover{ border-color:rgba(10,132,255,.28); background:#fff; color:var(--uiw-text); }
+.uiw-tab--active{ background:rgba(10,132,255,.12); border-color:rgba(10,132,255,.35); color:var(--uiw-text); }
+
+.uiw-panel-body{ display:none; }
+.uiw-panel-body--active{ display:block; }
+
+/* Mini toggles (styled like a toned-down day/night toggle) */
+.uiw-mini-toggle{ display:inline-flex; align-items:center; gap:8px; user-select:none; cursor:pointer; }
+.uiw-mini-toggle input{ position:absolute; opacity:0; width:1px; height:1px; }
+.uiw-mini-toggle__ui{
+  width:38px; height:22px; border-radius:999px;
+  background:rgba(17,24,39,.10);
+  border:1px solid rgba(17,24,39,.10);
+  position:relative;
+  transition:all .18s ease;
+}
+.uiw-mini-toggle__ui::after{
+  content:"";
+  width:18px; height:18px;
+  border-radius:999px;
+  background:#fff;
+  box-shadow:0 6px 14px rgba(17,24,39,.12);
+  position:absolute;
+  top:1px; left:1px;
+  transition:all .18s ease;
+}
+.uiw-mini-toggle input:checked + .uiw-mini-toggle__ui{
+  background:rgba(10,132,255,.18);
+  border-color:rgba(10,132,255,.28);
+}
+.uiw-mini-toggle input:checked + .uiw-mini-toggle__ui::after{ left:18px; }
+.uiw-mini-toggle__label{ color:var(--uiw-muted); font-size:.92rem; }
 
 /* Buttons (STYLE_MAP: Gradient Button – toned down) */
 .uiw-btn,
@@ -169,6 +223,22 @@ html[data-bs-theme="dark"], body.uiw-body{ color:var(--uiw-text); }
 .uiw-weather-card__date{ color:var(--uiw-muted); font-size:.92rem; margin-top:2px; }
 .uiw-weather-card__temp{ font-size:1.7rem; font-weight:800; letter-spacing:-.02em; }
 .uiw-weather-card__meta{ margin-top:8px; color:var(--uiw-muted); font-size:.9rem; }
+.uiw-weather-card__flags{ margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
+.uiw-flag{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:3px 10px;
+  border-radius:999px;
+  font-size:.82rem;
+  font-weight:650;
+  border:1px solid rgba(17,24,39,.10);
+  background:rgba(255,255,255,.78);
+  color:rgba(17,24,39,.72);
+}
+.uiw-flag--warn{ background:rgba(255,149,0,.12); border-color:rgba(255,149,0,.18); color:#7a4b00; }
+.uiw-flag--risk{ background:rgba(255,59,48,.10); border-color:rgba(255,59,48,.18); color:#8a1f18; }
+.uiw-flag--ok{ background:rgba(52,199,89,.14); border-color:rgba(52,199,89,.18); color:#1f7a3e; }
 .uiw-weather-card__grid{ margin-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .uiw-weather-kv{ padding:10px; border-radius:12px; border:1px solid rgba(17,24,39,.06); background:rgba(255,255,255,.74); }
 .uiw-weather-k{ color:var(--uiw-muted); font-size:.85rem; }

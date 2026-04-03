@@ -7,6 +7,8 @@ const UIW = {
     h: 7,
     selectedDate: null,
     showBacktest: false,
+    lang: 'zh',
+    theme: 'light',
     seriesVisible: {
       actual: true,
       champion: true,
@@ -15,8 +17,158 @@ const UIW = {
     payload: null,
     visitorChart: null,
     weatherChart: null,
+    activeMainPanel: 'visitors',
   }
 };
+
+const I18N = {
+  zh: {
+    page_title: '九寨沟客流预测看板',
+    meta_default: '离线产物模式',
+    btn_latest_1: '最近1天',
+    btn_latest_3: '最近3天',
+    btn_latest_7: '最近7天',
+    btn_champion: '冠军模型',
+    btn_runner: '亚军模型',
+    tgl_actual: '真实',
+    tgl_champion: '冠军预测',
+    tgl_runner: '亚军预测',
+    tgl_backtest: '回测段',
+    tgl_theme: '日/夜',
+    tgl_lang: '中/EN',
+    btn_refresh: '刷新',
+    btn_reset: '一键重置',
+    kpi_max_forecast: '预测峰值（视窗）',
+    kpi_warn_days: '预警天数（风险>0）',
+    kpi_warn_foot: '客流 + 天气',
+    kpi_max_risk: '最高风险等级',
+    kpi_primary_model: '主模型',
+    place_name: '九寨沟',
+    kpi_artifact_note: '离线产物（回测最新窗口）',
+    panel_visitors: '客流预测',
+    hint_click: '提示：鼠标悬停查看十字线；点击日期同步“天气/风险”。',
+    panel_weather: '天气',
+    weather_no_date: '未选择日期',
+    weather_click_tip: '点击图表上的点查看当日天气与风险标记。',
+    weather_precip: '降水',
+    weather_temp_hl: '温度（高/低）',
+    weather_wind: '风',
+    weather_aqi: '空气质量',
+    panel_thresholds: '阈值 & 风险',
+    thermo_no_date: '未选择日期',
+    thermo_default: '展示默认阈值',
+    thermo_crowd_thr: '客流阈值',
+    thermo_weather_q: '天气分位阈值',
+    panel_best_window: '最佳出行窗口（视窗）',
+    best_wait: '等待预测结果…',
+    panel_weather_series: '天气时间序列（参考）',
+    panel_risk_timeline: '风险时间线',
+    loading: '加载中…',
+
+    legend_actual: '真实',
+    legend_champion: '冠军预测',
+    legend_runner: '亚军预测',
+    legend_threshold: '阈值',
+    tooltip_threshold: '客流阈值',
+
+    best_title: '推荐窗口',
+    best_reason_low_risk: (lv) => `风险较低（平均 L${lv}）`,
+    best_reason_precip_low: '降水较少',
+    best_reason_precip_watch: '注意降水',
+    best_reason_crowd_below: '客流低于阈值',
+    best_reason_crowd_high: '客流可能偏高',
+    best_reason_holiday_avoid: (name) => `尽量避开节假日：${name}`,
+    best_reason_holiday_ok: '无明显节假日拥挤影响',
+
+    thermo_level_ok: '正常',
+    thermo_level_warn: '预警',
+    thermo_level_high: '高风险',
+    meta_line: (genAt, h, modelName) => `生成时间：${genAt || '--'} · 视窗：最近${h}天 · 主模型：${modelName}`,
+    kpi_date_prefix: '日期：',
+    kpi_drivers_prefix: '原因：',
+
+    drv_crowd_over_threshold: '客流预测超过阈值',
+    drv_precip_high: '降水偏强',
+    drv_temp_high: '高温',
+    drv_temp_low: '低温',
+  },
+  en: {
+    page_title: 'Jiuzhaigou Dashboard',
+    meta_default: 'Offline artifact mode',
+    btn_latest_1: 'Latest 1D',
+    btn_latest_3: 'Latest 3D',
+    btn_latest_7: 'Latest 7D',
+    btn_champion: 'Champion',
+    btn_runner: 'Runner-up',
+    tgl_actual: 'Actual',
+    tgl_champion: 'Champion',
+    tgl_runner: 'Runner-up',
+    tgl_backtest: 'Backtest',
+    tgl_theme: 'Day/Night',
+    tgl_lang: 'CN/EN',
+    btn_refresh: 'Refresh',
+    btn_reset: 'Reset',
+    kpi_max_forecast: 'Max forecast (view)',
+    kpi_warn_days: 'Warn days (risk>0)',
+    kpi_warn_foot: 'Crowd + Weather',
+    kpi_max_risk: 'Max risk level',
+    kpi_primary_model: 'Primary model',
+    place_name: 'Jiuzhaigou',
+    kpi_artifact_note: 'Offline artifacts (latest window backtest)',
+    panel_visitors: 'Visitor forecast',
+    hint_click: 'Tip: hover for crosshair; click a date to sync Weather & Risk.',
+    panel_weather: 'Weather',
+    weather_no_date: 'No date selected',
+    weather_click_tip: 'Click a point on the chart to view daily weather & risk flags.',
+    weather_precip: 'Precip',
+    weather_temp_hl: 'Temp (H/L)',
+    weather_wind: 'Wind',
+    weather_aqi: 'AQI',
+    panel_thresholds: 'Thresholds & risk',
+    thermo_no_date: 'No date selected',
+    thermo_default: 'Showing default thresholds',
+    thermo_crowd_thr: 'Crowd threshold',
+    thermo_weather_q: 'Weather quantiles',
+    panel_best_window: 'Best travel window (view)',
+    best_wait: 'Waiting for forecast…',
+    panel_weather_series: 'Weather series (reference)',
+    panel_risk_timeline: 'Risk timeline',
+    loading: 'Loading…',
+
+    legend_actual: 'Actual',
+    legend_champion: 'Champion',
+    legend_runner: 'Runner-up',
+    legend_threshold: 'Threshold',
+    tooltip_threshold: 'Threshold',
+
+    best_title: 'Recommended window',
+    best_reason_low_risk: (lv) => `Low risk (avg L${lv})`,
+    best_reason_precip_low: 'Low precipitation',
+    best_reason_precip_watch: 'Watch for precipitation',
+    best_reason_crowd_below: 'Crowd below threshold',
+    best_reason_crowd_high: 'Crowd may be high',
+    best_reason_holiday_avoid: (name) => `Avoid holiday peak: ${name}`,
+    best_reason_holiday_ok: 'No obvious holiday crowd impact',
+
+    thermo_level_ok: 'OK',
+    thermo_level_warn: 'Warning',
+    thermo_level_high: 'High risk',
+    meta_line: (genAt, h, modelName) => `Generated: ${genAt || '--'} · View: latest ${h}D · Primary: ${modelName}`,
+    kpi_date_prefix: 'Date: ',
+    kpi_drivers_prefix: 'Drivers: ',
+
+    drv_crowd_over_threshold: 'Crowd above threshold',
+    drv_precip_high: 'High precipitation',
+    drv_temp_high: 'High temperature',
+    drv_temp_low: 'Low temperature',
+  }
+};
+
+function t(key, ...args) {
+  const lang = UIW.state.lang;
+  const v = I18N?.[lang]?.[key] ?? I18N?.en?.[key] ?? '';
+  return (typeof v === 'function') ? v(...args) : v;
+}
 
 function $(id) { return document.getElementById(id); }
 
@@ -29,7 +181,7 @@ function fmtInt(x) {
   if (x === null || x === undefined) return '--';
   const n = Number(x);
   if (!Number.isFinite(n)) return '--';
-  return Math.round(n).toLocaleString('en-US');
+  return Math.round(n).toLocaleString(UIW.state.lang === 'zh' ? 'zh-CN' : 'en-US');
 }
 
 function fmt1(x, unit = '') {
@@ -81,8 +233,36 @@ function setQuickViewActive(h) {
 }
 
 function applyLightTheme() {
-  // base.html sets data-bs-theme="dark" globally; switch to light only for this page.
+  // base.html sets data-bs-theme="dark" globally; dashboard defaults to light.
   document.documentElement.setAttribute('data-bs-theme', 'light');
+  document.documentElement.setAttribute('data-uiw-theme', 'light');
+}
+
+function applyTheme(theme) {
+  UIW.state.theme = theme;
+  const isDark = theme === 'dark';
+  document.documentElement.setAttribute('data-bs-theme', isDark ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-uiw-theme', isDark ? 'dark' : 'light');
+}
+
+function applyLang(lang) {
+  UIW.state.lang = lang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (!key) return;
+    const val = t(key);
+    if (val) el.textContent = val;
+  });
+
+  // Re-render charts/UI text that is not in DOM attributes
+  if (UIW.state.payload) {
+    renderKpis(UIW.state.payload);
+    renderVisitorChart(UIW.state.payload);
+    renderWeatherChart(UIW.state.payload);
+    renderTimeline(UIW.state.payload);
+    updateBestWindow(UIW.state.payload);
+    syncSideCards();
+  }
 }
 
 async function loadModels() {
@@ -123,6 +303,22 @@ function initCharts() {
   });
 }
 
+function setMainPanel(panel) {
+  UIW.state.activeMainPanel = panel === 'weather' ? 'weather' : 'visitors';
+  const isV = UIW.state.activeMainPanel === 'visitors';
+  $('tabVisitors')?.classList.toggle('uiw-tab--active', isV);
+  $('tabWeather')?.classList.toggle('uiw-tab--active', !isV);
+  $('tabVisitors')?.setAttribute('aria-selected', isV ? 'true' : 'false');
+  $('tabWeather')?.setAttribute('aria-selected', !isV ? 'true' : 'false');
+  $('visitorChartWrap')?.classList.toggle('uiw-panel-body--active', isV);
+  $('weatherChartWrap')?.classList.toggle('uiw-panel-body--active', !isV);
+  // Resize chart after DOM visibility change
+  setTimeout(() => {
+    UIW.state.visitorChart?.resize();
+    UIW.state.weatherChart?.resize();
+  }, 30);
+}
+
 function buildHolidayMarkAreas(payload) {
   const x = payload.time_axis || [];
   const ranges = payload.holidays || [];
@@ -132,7 +328,7 @@ function buildHolidayMarkAreas(payload) {
   const end = x[x.length - 1];
 
   const colorFor = (h) => {
-    const name = (h.name || '').toLowerCase();
+    const name = ((h.name_zh || h.name_en || h.name || '') + '').toLowerCase();
     const type = (h.type || 'festival').toLowerCase();
     if (name.includes('春节') || name.includes('spring')) return 'rgba(255,59,48,.12)';
     if (name.includes('国庆') || name.includes('national')) return 'rgba(255,149,0,.12)';
@@ -142,6 +338,11 @@ function buildHolidayMarkAreas(payload) {
   };
 
   const within = (a, b, s, e) => !(b < s || a > e);
+
+  const pickName = (h) => {
+    if (UIW.state.lang === 'zh') return h.name_zh || h.name || 'Holiday';
+    return h.name_en || h.name || 'Holiday';
+  };
 
   return ranges
     .filter(h => within(h.start, h.end, start, end))
@@ -153,7 +354,7 @@ function buildHolidayMarkAreas(payload) {
           show: true,
           color: 'rgba(17,24,39,.65)',
           fontSize: 10,
-          formatter: h.name || 'Holiday'
+          formatter: pickName(h)
         }
       },
       { xAxis: h.end }
@@ -185,22 +386,28 @@ function renderVisitorChart(payload) {
 
   const holidayAreas = buildHolidayMarkAreas(payload);
 
+  const LEG_ACT = t('legend_actual');
+  const LEG_C = t('legend_champion');
+  const LEG_R = t('legend_runner');
+  const LEG_T = t('legend_threshold');
+
   UIW.state.visitorChart.setOption({
     animationDuration: 450,
+    // Use item tooltip to keep the hover line on series only.
+    // This avoids crosshair flicker when hovering the bottom dataZoom slider.
     tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'cross' },
+      trigger: 'item',
       valueFormatter: (v) => (v === null || v === undefined ? '--' : fmtInt(v))
     },
     legend: {
-      data: ['Actual', 'Champion', 'Runner-up', 'Threshold'],
+      data: [LEG_ACT, LEG_C, LEG_R, LEG_T],
       top: 6,
       textStyle: { color: 'rgba(17,24,39,.72)' },
       selected: {
-        'Actual': UIW.state.seriesVisible.actual,
-        'Champion': UIW.state.seriesVisible.champion,
-        'Runner-up': UIW.state.seriesVisible.runner,
-        'Threshold': true,
+        [LEG_ACT]: UIW.state.seriesVisible.actual,
+        [LEG_C]: UIW.state.seriesVisible.champion,
+        [LEG_R]: UIW.state.seriesVisible.runner,
+        [LEG_T]: true,
       }
     },
     grid: { left: 52, right: 18, top: 46, bottom: 58 },
@@ -210,7 +417,7 @@ function renderVisitorChart(payload) {
       boundaryGap: false,
       axisLabel: { color: 'rgba(17,24,39,.55)' },
       axisLine: { lineStyle: { color: 'rgba(17,24,39,.18)' } },
-      axisPointer: { label: { backgroundColor: 'rgba(17,24,39,.70)' } }
+      axisPointer: { show: false }
     },
     yAxis: {
       type: 'value',
@@ -236,7 +443,7 @@ function renderVisitorChart(payload) {
     ],
     series: [
       {
-        name: 'Actual',
+        name: LEG_ACT,
         type: 'line',
         data: actual,
         smooth: true,
@@ -247,7 +454,7 @@ function renderVisitorChart(payload) {
         markArea: holidayAreas.length ? { silent: true, data: holidayAreas } : undefined,
       },
       {
-        name: 'Champion',
+        name: LEG_C,
         type: 'line',
         data: champData,
         smooth: true,
@@ -258,7 +465,7 @@ function renderVisitorChart(payload) {
         connectNulls: false,
       },
       {
-        name: 'Runner-up',
+        name: LEG_R,
         type: 'line',
         data: runData,
         smooth: true,
@@ -269,7 +476,7 @@ function renderVisitorChart(payload) {
         connectNulls: false,
       },
       {
-        name: 'Threshold',
+        name: LEG_T,
         type: 'line',
         data: x.map(() => thrCrowd),
         symbol: 'none',
@@ -287,10 +494,14 @@ function renderWeatherChart(payload) {
   const tHi = w.temp_high_c || [];
   const tLo = w.temp_low_c || [];
 
+  const L1 = UIW.state.lang === 'zh' ? '降水 (mm)' : 'Precip (mm)';
+  const L2 = UIW.state.lang === 'zh' ? '最高温 (°C)' : 'Temp High (°C)';
+  const L3 = UIW.state.lang === 'zh' ? '最低温 (°C)' : 'Temp Low (°C)';
+
   UIW.state.weatherChart.setOption({
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    tooltip: { trigger: 'item' },
     legend: {
-      data: ['Precip (mm)', 'Temp High (°C)', 'Temp Low (°C)'],
+      data: [L1, L2, L3],
       top: 6,
       textStyle: { color: 'rgba(17,24,39,.72)' }
     },
@@ -317,9 +528,9 @@ function renderWeatherChart(payload) {
       }
     ],
     series: [
-      { name: 'Precip (mm)', type: 'bar', data: precip, yAxisIndex: 0, itemStyle: { color: 'rgba(10,132,255,.22)' } },
-      { name: 'Temp High (°C)', type: 'line', data: tHi, yAxisIndex: 1, smooth: true, lineStyle: { width: 2, color: 'rgba(255,149,0,.9)' } },
-      { name: 'Temp Low (°C)', type: 'line', data: tLo, yAxisIndex: 1, smooth: true, lineStyle: { width: 2, color: 'rgba(52,199,89,.85)' } },
+      { name: L1, type: 'bar', data: precip, yAxisIndex: 0, itemStyle: { color: 'rgba(10,132,255,.22)' } },
+      { name: L2, type: 'line', data: tHi, yAxisIndex: 1, smooth: true, lineStyle: { width: 2, color: 'rgba(255,149,0,.9)' } },
+      { name: L3, type: 'line', data: tLo, yAxisIndex: 1, smooth: true, lineStyle: { width: 2, color: 'rgba(52,199,89,.85)' } },
     ]
   }, { notMerge: true });
 }
@@ -336,6 +547,9 @@ function getPrimarySeries(payload) {
     risk_level: payload?.risk?.[p]?.risk_level || payload?.risk?.primary?.risk_level || [],
     drivers: payload?.risk?.[p]?.drivers || payload?.risk?.primary?.drivers || [],
     p_warn: payload?.risk?.[p]?.p_warn || payload?.risk?.primary?.p_warn || [],
+    crowd_alert: payload?.risk?.[p]?.crowd_alert || [],
+    weather_hazard: payload?.risk?.[p]?.weather_hazard || [],
+    risk_score: payload?.risk?.[p]?.risk_score || [],
   };
 }
 
@@ -359,19 +573,29 @@ function renderKpis(payload) {
   const maxRiskIdx = maxRiskIdxView >= 0 ? (startIdx + maxRiskIdxView) : -1;
 
   safeText($('kpiMaxVisitor'), maxIdx >= 0 ? fmtInt(maxV) : '--');
-  safeText($('kpiMaxVisitorDate'), maxIdx >= 0 ? `Date: ${x[maxIdx]}` : '--');
+  safeText($('kpiMaxVisitorDate'), maxIdx >= 0 ? `${t('kpi_date_prefix')}${x[maxIdx]}` : '--');
   safeText($('kpiWarnDays'), warnDays.toString());
   safeText($('kpiMaxRisk'), String(maxRisk));
 
   const d = (maxRiskIdx >= 0 ? (drivers[maxRiskIdx] || []) : []);
-  safeText($('kpiMaxRiskDrivers'), d.length ? `Drivers: ${d.join(' · ')}` : 'Drivers: --');
+  const dText = (d || [])
+    .map(code => {
+      if (!code) return null;
+      if (code === 'crowd_over_threshold') return t('drv_crowd_over_threshold');
+      if (code === 'precip_high') return t('drv_precip_high');
+      if (code === 'temp_high') return t('drv_temp_high');
+      if (code === 'temp_low') return t('drv_temp_low');
+      return String(code);
+    })
+    .filter(Boolean);
+  safeText($('kpiMaxRiskDrivers'), dText.length ? `${t('kpi_drivers_prefix')}${dText.join(' · ')}` : `${t('kpi_drivers_prefix')}--`);
 
   const meta = getPrimaryModelMeta(payload);
   safeText($('kpiModel'), meta?.model_name || UIW.state.primaryModelId);
-  safeText($('kpiRunDir'), meta?.run_dir || '--');
+  // Do not display run_dir paths in UI; show a stable offline mode note.
+  safeText($('kpiRunDir'), t('kpi_artifact_note'));
 
-  const metaLine = `Generated: ${payload.meta?.generated_at || '--'} · View: latest ${UIW.state.h}D · Primary: ${meta?.model_name || UIW.state.primaryModelId}`;
-  safeText($('uiwMetaLine'), metaLine);
+  safeText($('uiwMetaLine'), t('meta_line', payload.meta?.generated_at || '--', UIW.state.h, meta?.model_name || UIW.state.primaryModelId));
 }
 
 function renderTimeline(payload) {
@@ -386,12 +610,20 @@ function renderTimeline(payload) {
     day.className = 'uiw-day';
 
     const badgeClass = lv === 0 ? 'uiw-badge-ok' : (lv >= 3 ? 'uiw-badge-risk' : 'uiw-badge-warn');
-    const badgeText = lv === 0 ? 'OK' : (lv >= 3 ? 'High' : 'Warn');
+    const badgeText = UIW.state.lang === 'zh'
+      ? (lv === 0 ? '正常' : (lv >= 3 ? '高风险' : '预警'))
+      : (lv === 0 ? 'OK' : (lv >= 3 ? 'High' : 'Warn'));
 
     day.innerHTML = `
       <div class="uiw-day-title">${x[i]}</div>
       <div class="uiw-badge ${badgeClass}">${badgeText} (L${lv})</div>
-      <div class="uiw-muted" style="margin-top:6px; font-size:.86rem;">${(drivers[i]||[]).slice(0,3).join(' / ') || '—'}</div>
+      <div class="uiw-muted" style="margin-top:6px; font-size:.86rem;">${((drivers[i]||[]).slice(0,3).map(code => {
+        if (code === 'crowd_over_threshold') return t('drv_crowd_over_threshold');
+        if (code === 'precip_high') return t('drv_precip_high');
+        if (code === 'temp_high') return t('drv_temp_high');
+        if (code === 'temp_low') return t('drv_temp_low');
+        return String(code || '');
+      }).filter(Boolean).join(' / ')) || '—'}</div>
     `;
 
     day.addEventListener('click', () => {
@@ -416,9 +648,19 @@ function pickBestWindow(payload) {
   const startIdx = Math.max(0, x.length - h);
   const endIdx = x.length - 1;
 
+  const holidayOf = (dateStr) => {
+    const ranges = payload.holidays || [];
+    for (const h of ranges) {
+      if (!h?.start || !h?.end) continue;
+      if (dateStr >= h.start && dateStr <= h.end) return h;
+    }
+    return null;
+  };
+
   // Simple heuristic scoring (lower is better)
   // - risk_level dominates
-  // - precip and extreme temp are secondary
+  // - weather is secondary
+  // - holiday adds penalty
   let bestIdx = startIdx;
   let bestScore = Infinity;
   for (let i = startIdx; i <= endIdx; i++) {
@@ -430,7 +672,10 @@ function pickBestWindow(payload) {
     const crowdPenalty = pred[i] ? Math.min(1.0, Number(pred[i]) / (payload.thresholds?.crowd || 18500)) : 0.5;
     const conf = Number(p_warn[i] ?? 0.2);
 
-    const score = (lv * 3.0) + (pr * 0.15) + (tempPenalty * 1.0) + (crowdPenalty * 1.2) + (conf * 0.6);
+     const hh = holidayOf(x[i]);
+     const holidayPenalty = hh ? (String(hh.type || '').toLowerCase() === 'festival' ? 2.0 : 1.0) : 0.0;
+
+    const score = (lv * 3.0) + (pr * 0.15) + (tempPenalty * 1.0) + (crowdPenalty * 1.2) + (conf * 0.6) + (holidayPenalty * 1.2);
     if (score < bestScore) {
       bestScore = score;
       bestIdx = i;
@@ -458,18 +703,30 @@ function pickBestWindow(payload) {
     ? (Number(risk_level[bestStart] || 0) + Number(risk_level[bestStart + 1] || 0)) / 2
     : Number(risk_level[bestIdx] || 0);
 
-  reasons.push(`Risk level is low (avg L${avgRisk.toFixed(1)})`);
+  reasons.push(t('best_reason_low_risk', avgRisk.toFixed(1)));
 
   const pr0 = Number(precip[bestStart] ?? 0);
-  if (pr0 <= 2) reasons.push('Low precipitation');
-  else reasons.push('Watch for precipitation');
+  if (pr0 <= 2) reasons.push(t('best_reason_precip_low'));
+  else reasons.push(t('best_reason_precip_watch'));
 
   const thr = payload.thresholds?.crowd || 18500;
   const crowd0 = windowLen === 2
     ? Math.max(Number(pred[bestStart] || 0), Number(pred[bestStart + 1] || 0))
     : Number(pred[bestIdx] || 0);
-  if (crowd0 < thr) reasons.push('Crowd below threshold');
-  else reasons.push('Crowd may be high');
+  if (crowd0 < thr) reasons.push(t('best_reason_crowd_below'));
+  else reasons.push(t('best_reason_crowd_high'));
+
+  // Holiday reason
+  const h0 = holidayOf(days[0]);
+  const h1 = (days.length === 2) ? holidayOf(days[1]) : null;
+  const hh = h0 || h1;
+  if (hh) {
+    const nm = (UIW.state.lang === 'zh')
+      ? (hh.name_zh || hh.name || hh.type || '节假日')
+      : (hh.name_en || hh.name || hh.type || 'Holiday');
+    reasons.push(t('best_reason_holiday_avoid', nm));
+  }
+  else reasons.push(t('best_reason_holiday_ok'));
 
   return { days, reasons };
 }
@@ -491,15 +748,34 @@ function syncWeatherCardForDate(payload, date) {
   const x = payload.time_axis || [];
   const idx = x.indexOf(date);
 
-  safeText($('weatherDate'), date ? date : 'No date selected');
+  safeText($('weatherDate'), date ? date : t('weather_no_date'));
+
+  const setRow = (rowId, show) => {
+    const row = $(rowId);
+    if (!row) return;
+    row.style.display = show ? '' : 'none';
+  };
+
+  const setFlags = (flags) => {
+    const box = $('weatherFlags');
+    if (!box) return;
+    if (!flags || !flags.length) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+    box.style.display = 'flex';
+    box.innerHTML = flags.map(f => `<span class="uiw-flag uiw-flag--${f.kind}">${f.text}</span>`).join('');
+  };
 
   if (idx < 0) {
     safeText($('weatherTemp'), '--°C');
-    safeText($('weatherMeta'), 'Click a point on the chart to view daily weather.');
-    safeText($('wPrecip'), '--');
-    safeText($('wTempHL'), '--');
-    safeText($('wWind'), '--');
-    safeText($('wAqi'), '--');
+    safeText($('weatherMeta'), t('weather_click_tip'));
+    setFlags([]);
+    setRow('rowPrecip', false);
+    setRow('rowTempHL', false);
+    setRow('rowWind', false);
+    setRow('rowAqi', false);
     return;
   }
 
@@ -518,22 +794,57 @@ function syncWeatherCardForDate(payload, date) {
     : (Number.isFinite(Number(tHi)) ? Number(tHi) : (Number.isFinite(Number(tLo)) ? Number(tLo) : null));
 
   safeText($('weatherTemp'), midTemp === null ? '--°C' : `${Math.round(midTemp)}°C`);
-  safeText($('weatherMeta'), wc ? `Condition: ${wc}` : '');
+  safeText($('weatherMeta'), wc ? (UIW.state.lang === 'zh' ? `天气：${wc}` : `Condition: ${wc}`) : '');
 
-  safeText($('wPrecip'), pr === null || pr === undefined ? '--' : `${fmt1(pr, ' mm')}`);
-  safeText($('wTempHL'), `${fmt1(tHi, '°C')} / ${fmt1(tLo, '°C')}`);
+  // Hide missing rows (no placeholders)
+  const hasPrecip = Number.isFinite(Number(pr));
+  const hasTemp = Number.isFinite(Number(tHi)) || Number.isFinite(Number(tLo));
+  const hasWind = (wind !== null && wind !== undefined && wind !== 0) || Number.isFinite(Number(windMax));
+  const hasAqi = Number.isFinite(Number(aqi)) || !!aqiLv;
+
+  setRow('rowPrecip', hasPrecip);
+  setRow('rowTempHL', hasTemp);
+  setRow('rowWind', hasWind);
+  setRow('rowAqi', hasAqi);
+
+  safeText($('wPrecip'), hasPrecip ? `${fmt1(pr, ' mm')}` : '');
+  safeText($('wTempHL'), hasTemp ? `${fmt1(tHi, '°C')} / ${fmt1(tLo, '°C')}` : '');
 
   const windText = [
     wind ? `L${wind}` : null,
     Number.isFinite(Number(windMax)) ? `${fmt1(windMax, ' m/s')}` : null,
   ].filter(Boolean).join(' · ');
-  safeText($('wWind'), windText || '--');
+  safeText($('wWind'), windText || '');
 
   const aqiText = [
     Number.isFinite(Number(aqi)) ? `${Math.round(Number(aqi))}` : null,
     aqiLv ? `${aqiLv}` : null,
   ].filter(Boolean).join(' · ');
-  safeText($('wAqi'), aqiText || '--');
+  safeText($('wAqi'), aqiText || '');
+
+  // Hazard flags (crowd / weather / drivers)
+  const { crowd_alert, weather_hazard, drivers } = getPrimarySeries(payload);
+  const flags = [];
+  const ca = !!crowd_alert?.[idx];
+  const whz = !!weather_hazard?.[idx];
+  const dd = (drivers?.[idx] || []);
+
+  if (!ca && !whz && dd.length === 0) {
+    flags.push({ kind: 'ok', text: UIW.state.lang === 'zh' ? '无明显风险' : 'No obvious risk' });
+  } else {
+    if (ca) flags.push({ kind: 'risk', text: UIW.state.lang === 'zh' ? '客流偏高' : 'Crowd high' });
+    if (whz) flags.push({ kind: 'warn', text: UIW.state.lang === 'zh' ? '天气风险' : 'Weather hazard' });
+    for (const d of dd.slice(0, 3)) {
+      const txt = (d === 'crowd_over_threshold') ? t('drv_crowd_over_threshold')
+        : (d === 'precip_high') ? t('drv_precip_high')
+        : (d === 'temp_high') ? t('drv_temp_high')
+        : (d === 'temp_low') ? t('drv_temp_low')
+        : String(d || '');
+      const kind = (d === 'crowd_over_threshold') ? 'risk' : 'warn';
+      if (txt) flags.push({ kind, text: txt });
+    }
+  }
+  setFlags(flags);
 }
 
 function syncThermo(payload, date) {
@@ -548,10 +859,12 @@ function syncThermo(payload, date) {
   const elFill = $('thermoFill');
 
   if (!date) {
-    safeText($('thermoTitle'), 'No date selected');
-    safeText($('thermoSubtitle'), 'Showing default thresholds');
-    safeText($('thermoScore'), `Crowd ≥ ${fmtInt(thrCrowd)}`);
-    safeText($('thermoLevel'), `Precip ≥ ${fmt1(thrW.precip_high, 'mm')} · TH ≥ ${fmt1(thrW.temp_high, '°C')} · TL ≤ ${fmt1(thrW.temp_low, '°C')}`);
+    safeText($('thermoTitle'), t('thermo_no_date'));
+    safeText($('thermoSubtitle'), t('thermo_default'));
+    safeText($('thermoScore'), UIW.state.lang === 'zh' ? `客流 ≥ ${fmtInt(thrCrowd)}` : `Crowd ≥ ${fmtInt(thrCrowd)}`);
+    safeText($('thermoLevel'), UIW.state.lang === 'zh'
+      ? `降水 ≥ ${fmt1(thrW.precip_high, 'mm')} · 高温 ≥ ${fmt1(thrW.temp_high, '°C')} · 低温 ≤ ${fmt1(thrW.temp_low, '°C')}`
+      : `Precip ≥ ${fmt1(thrW.precip_high, 'mm')} · TH ≥ ${fmt1(thrW.temp_high, '°C')} · TL ≤ ${fmt1(thrW.temp_low, '°C')}`);
     if (elFill) elFill.style.height = '12%';
     return;
   }
@@ -560,18 +873,19 @@ function syncThermo(payload, date) {
   const idx = x.indexOf(date);
   if (idx < 0) return;
 
-  const { risk_level, p_warn } = getPrimarySeries(payload);
+  const { risk_level, p_warn, risk_score } = getPrimarySeries(payload);
   const lv = Number(risk_level[idx] || 0);
   const score = Number(p_warn[idx] ?? 0.15);
-
-  // Map to 0..100 for thermometer
-  const v = Math.max(0, Math.min(1, (lv / 3) * 0.65 + score * 0.35));
-  const pct = Math.round(v * 100);
+  const pct = Number.isFinite(Number(risk_score?.[idx]))
+    ? Math.round(Number(risk_score[idx]))
+    : Math.round(Math.max(0, Math.min(1, (lv / 3) * 0.65 + score * 0.35)) * 100);
 
   safeText($('thermoTitle'), date);
-  safeText($('thermoSubtitle'), `Primary model: ${UIW.state.primaryModelId}`);
+  safeText($('thermoSubtitle'), UIW.state.lang === 'zh'
+    ? `主模型：${UIW.state.primaryModelId}`
+    : `Primary model: ${UIW.state.primaryModelId}`);
   safeText($('thermoScore'), `${pct}/100`);
-  safeText($('thermoLevel'), lv >= 3 ? 'High risk' : (lv > 0 ? 'Warning' : 'OK'));
+  safeText($('thermoLevel'), lv >= 3 ? t('thermo_level_high') : (lv > 0 ? t('thermo_level_warn') : t('thermo_level_ok')));
   if (elFill) elFill.style.height = `${Math.max(6, Math.min(100, pct))}%`;
 }
 
@@ -586,13 +900,17 @@ function syncSideCards() {
 function applyCurveVisibility() {
   const chart = UIW.state.visitorChart;
   if (!chart) return;
+  const LEG_ACT = t('legend_actual');
+  const LEG_C = t('legend_champion');
+  const LEG_R = t('legend_runner');
+  const LEG_T = t('legend_threshold');
   chart.setOption({
     legend: {
       selected: {
-        'Actual': UIW.state.seriesVisible.actual,
-        'Champion': UIW.state.seriesVisible.champion,
-        'Runner-up': UIW.state.seriesVisible.runner,
-        'Threshold': true,
+        [LEG_ACT]: UIW.state.seriesVisible.actual,
+        [LEG_C]: UIW.state.seriesVisible.champion,
+        [LEG_R]: UIW.state.seriesVisible.runner,
+        [LEG_T]: true,
       }
     }
   });
@@ -636,6 +954,11 @@ function resetControls() {
   $('tglBacktest').checked = false;
 
   applyCurveVisibility();
+
+  // Reset chart zoom to span all available dates
+  try {
+    UIW.state.visitorChart?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+  } catch (_) {}
 }
 
 async function boot() {
@@ -643,7 +966,16 @@ async function boot() {
     applyLightTheme();
     initCharts();
 
+    // Defaults
+    applyTheme('light');
+    applyLang('zh');
+
     await loadModels();
+
+    // Main panel tabs (Visitor / Weather)
+    $('tabVisitors')?.addEventListener('click', () => setMainPanel('visitors'));
+    $('tabWeather')?.addEventListener('click', () => setMainPanel('weather'));
+    setMainPanel('visitors');
 
     // Defaults
     setPrimaryModel('champion');
@@ -696,6 +1028,21 @@ async function boot() {
     });
 
     $('btnRefresh').addEventListener('click', refreshForecast);
+
+    // Theme toggle (Day/Night)
+    $('tglTheme')?.addEventListener('change', (e) => {
+      applyTheme(e.target.checked ? 'dark' : 'light');
+      // Re-render charts to match tooltip/axis colors if needed
+      if (UIW.state.payload) {
+        renderVisitorChart(UIW.state.payload);
+        renderWeatherChart(UIW.state.payload);
+      }
+    });
+
+    // Language toggle (CN/EN)
+    $('tglLang')?.addEventListener('change', (e) => {
+      applyLang(e.target.checked ? 'en' : 'zh');
+    });
     $('btnReset').addEventListener('click', async () => {
       resetControls();
       await refreshForecast();

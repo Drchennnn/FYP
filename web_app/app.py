@@ -350,6 +350,103 @@ def load_holidays_config():
 
 HOLIDAYS_CONFIG = load_holidays_config()
 
+
+def _holiday_i18n_name(name_zh: str):
+    """Return (zh, en) for a known holiday name.
+
+    holidays.json may only include Chinese names. We keep a lightweight mapping
+    here to support the dashboard language toggle without any external API.
+    """
+    if not name_zh:
+        return None, None
+    m = {
+        '元旦': "New Year's Day",
+        '春节': 'Spring Festival',
+        '元宵节': 'Lantern Festival',
+        '清明节': 'Qingming Festival',
+        '劳动节': 'Labour Day',
+        '端午节': 'Dragon Boat Festival',
+        '中秋节': 'Mid-Autumn Festival',
+        '国庆节': 'National Day Holiday',
+        '暑假': 'Summer Vacation',
+        '寒假': 'Winter Vacation',
+    }
+    return name_zh, m.get(name_zh, name_zh)
+
+
+def _load_master_history_from_processed():
+    """Load full historical timeline (2024-2026) from processed dataset.
+
+    Returns DataFrame with columns:
+      - date (python date)
+      - actual (float)
+      - precip_mm, temp_high_c, temp_low_c, weather_code_en, wind_level,
+        wind_dir_en, wind_max, aqi_value, aqi_level_en
+    """
+    processed_path = os.path.join(base_dir, 'data', 'processed', 'jiuzhaigou_8features_latest.csv')
+    if not os.path.exists(processed_path):
+        return None
+
+
+def _pretty_model_name(raw_key: str):
+    """Convert internal model key to a professional UI label."""
+    k = (raw_key or '').lower()
+    if 'seq2seq' in k and ('att' in k or 'attention' in k):
+        return 'Seq2Seq+Attention (8 features)'
+    if 'seq2seq' in k:
+        return 'Seq2Seq (8 features)'
+    if 'gru' in k:
+        return 'GRU (8 features)'
+    if 'lstm' in k:
+        return 'LSTM (8 features)'
+    return raw_key or 'Model'
+    try:
+        df = pd.read_csv(processed_path)
+        if 'date' not in df.columns:
+            return None
+        df['date'] = pd.to_datetime(df['date']).dt.date
+
+        # Actual visitors
+        if 'tourism_num' in df.columns:
+            df['actual'] = pd.to_numeric(df['tourism_num'], errors='coerce')
+        elif 'actual_visitor' in df.columns:
+            df['actual'] = pd.to_numeric(df['actual_visitor'], errors='coerce')
+        else:
+            df['actual'] = np.nan
+
+        # Weather fields
+        out = pd.DataFrame({
+            'date': df['date'],
+            'actual': df['actual'],
+            'precip_mm': pd.to_numeric(df['meteo_precip_sum'], errors='coerce') if 'meteo_precip_sum' in df.columns else np.nan,
+            'temp_high_c': pd.to_numeric(df['temp_high_c'], errors='coerce') if 'temp_high_c' in df.columns else (pd.to_numeric(df['meteo_temp_max'], errors='coerce') if 'meteo_temp_max' in df.columns else np.nan),
+            'temp_low_c': pd.to_numeric(df['temp_low_c'], errors='coerce') if 'temp_low_c' in df.columns else (pd.to_numeric(df['meteo_temp_min'], errors='coerce') if 'meteo_temp_min' in df.columns else np.nan),
+            'weather_code_en': df['weather_code_en'] if 'weather_code_en' in df.columns else None,
+            'wind_level': pd.to_numeric(df['wind_level'], errors='coerce') if 'wind_level' in df.columns else np.nan,
+            'wind_dir_en': df['wind_dir_en'] if 'wind_dir_en' in df.columns else None,
+            'wind_max': pd.to_numeric(df['meteo_wind_max'], errors='coerce') if 'meteo_wind_max' in df.columns else np.nan,
+            'aqi_value': pd.to_numeric(df['aqi_value'], errors='coerce') if 'aqi_value' in df.columns else np.nan,
+            'aqi_level_en': df['aqi_level_en'] if 'aqi_level_en' in df.columns else None,
+        })
+
+        out = out.sort_values('date')
+        out = out.groupby('date', as_index=False).agg({
+            'actual': 'mean',
+            'precip_mm': 'mean',
+            'temp_high_c': 'mean',
+            'temp_low_c': 'mean',
+            'weather_code_en': 'first',
+            'wind_level': 'mean',
+            'wind_dir_en': 'first',
+            'wind_max': 'mean',
+            'aqi_value': 'mean',
+            'aqi_level_en': 'first',
+        })
+        return out
+    except Exception as e:
+        print(f"Failed to load master history from processed data: {e}")
+        return None
+
 def mark_core_holiday(date_val):
     """Check if a date is a holiday based on config"""
     date_str = date_val.strftime('%Y-%m-%d')
@@ -414,7 +511,7 @@ def api_models():
     models = [
         {
             'model_id': 'champion',
-            'display_name': f"Champion: {champ.get('model')}",
+            'display_name': _pretty_model_name(champ.get('model')),
             'model_key': champ.get('model'),
             'run_dir': champ_run,
         }
@@ -422,7 +519,7 @@ def api_models():
     if runner and runner_run:
         models.append({
             'model_id': 'runner_up',
-            'display_name': f"Runner-up: {runner.get('model')}",
+            'display_name': _pretty_model_name(runner.get('model')),
             'model_key': runner.get('model'),
             'run_dir': runner_run,
         })
@@ -494,41 +591,38 @@ def api_forecast():
         if df_r is None or df_r.empty:
             runner_available = False
 
-    # Unified time axis (union by date)
-    df_base = df_c.copy()
-    df_base = df_base.rename(columns={'y_pred': 'champion_pred', 'y_true': 'actual'})
+    # Master time axis: prefer full processed history (expected 2024-2026)
+    warning = None
+    df_master = _load_master_history_from_processed()
+    if df_master is None or df_master.empty:
+        warning = 'Processed history not available; falling back to artifact date axis.'
+        df_master = df_c[['date']].copy()
+        df_master['actual'] = np.nan
+        df_master['precip_mm'] = np.nan
+        df_master['temp_high_c'] = np.nan
+        df_master['temp_low_c'] = np.nan
+        df_master['weather_code_en'] = None
+        df_master['wind_level'] = np.nan
+        df_master['wind_dir_en'] = None
+        df_master['wind_max'] = np.nan
+        df_master['aqi_value'] = np.nan
+        df_master['aqi_level_en'] = None
+
+    # Merge predictions into the master axis (null where absent)
+    df_base = df_master[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']].copy()
+    df_base = pd.merge(df_base, df_c[['date', 'y_pred']], on='date', how='left')
+    df_base = df_base.rename(columns={'y_pred': 'champion_pred'})
 
     if runner_available:
-        df_rr = df_r.copy().rename(columns={'y_pred': 'runner_pred', 'y_true': 'actual_r'})
-        df_base = pd.merge(df_base, df_rr[['date', 'runner_pred', 'actual_r']], on='date', how='outer')
-        # Prefer champion actual; fall back to runner actual if champion missing
-        df_base['actual'] = df_base['actual'].combine_first(df_base.get('actual_r'))
-        if 'actual_r' in df_base.columns:
-            df_base = df_base.drop(columns=['actual_r'])
+        df_base = pd.merge(df_base, df_r[['date', 'y_pred']], on='date', how='left', suffixes=('', '_runner'))
+        if 'y_pred_runner' in df_base.columns:
+            df_base = df_base.rename(columns={'y_pred_runner': 'runner_pred'})
+        else:
+            df_base['runner_pred'] = np.nan
     else:
         df_base['runner_pred'] = np.nan
 
-    df_base = df_base.sort_values('date')
-
-    dates_all = df_base['date'].tolist()
-    warning = None
-    dfw = _load_weather_by_date(dates_all)
-    if dfw is None or dfw.empty:
-        warning = 'Weather data not available; returning nulls for weather fields.'
-        dfw = pd.DataFrame({
-            'date': dates_all,
-            'precip_mm': [np.nan] * len(dates_all),
-            'temp_high_c': [np.nan] * len(dates_all),
-            'temp_low_c': [np.nan] * len(dates_all),
-            'weather_code_en': [None] * len(dates_all),
-            'wind_level': [np.nan] * len(dates_all),
-            'wind_dir_en': [None] * len(dates_all),
-            'wind_max': [np.nan] * len(dates_all),
-            'aqi_value': [np.nan] * len(dates_all),
-            'aqi_level_en': [None] * len(dates_all),
-        })
-
-    df_merge = pd.merge(df_base, dfw, on='date', how='left')
+    df_merge = df_base.sort_values('date')
 
     # Thresholds come from champion metrics by default
     threshold_crowd = float((champ_metrics.get('meta') or {}).get('peak_threshold', 18500.0))
@@ -540,6 +634,18 @@ def api_forecast():
     quantiles = (wh_thr.get('quantiles') or {})
 
     def _compute_risk(pred_col: str):
+        """Compute per-day risk fields required by dashboard.
+
+        Returns lists aligned to df_merge rows:
+          - crowd_alert: bool
+          - weather_hazard: bool
+          - suitability_warning_bin: int(0/1)
+          - risk_level: int (0..3)
+          - p_warn: float (0..1)
+          - drivers: list[str]
+          - risk_score: float (0..100)
+        """
+
         y_pred = df_merge[pred_col].astype(float)
         crowd_alert = (y_pred >= threshold_crowd)
         weather_hazard = (
@@ -549,54 +655,82 @@ def api_forecast():
         )
         suitability = (crowd_alert | weather_hazard)
 
+        crowd_alert_list = [bool(x) if not (x is None or (isinstance(x, float) and np.isnan(x))) else False for x in crowd_alert.tolist()]
+        weather_hazard_list = [bool(x) if not (x is None or (isinstance(x, float) and np.isnan(x))) else False for x in weather_hazard.tolist()]
+        suitability_bin = [1 if bool(x) else 0 for x in suitability.tolist()]
+
         risk_level = []
         drivers = []
+        # Drivers are returned as stable codes; UI translates by language.
         for ca, whz, pr, th, tl in zip(
-            crowd_alert.tolist(),
-            weather_hazard.tolist(),
+            crowd_alert_list,
+            weather_hazard_list,
             df_merge['precip_mm'].tolist(),
             df_merge['temp_high_c'].tolist(),
             df_merge['temp_low_c'].tolist()
         ):
             lv = 0
             d = []
-            if bool(ca) and not (isinstance(ca, float) and np.isnan(ca)):
+            if ca:
                 lv += 2
-                d.append('Crowd forecast exceeds threshold')
-            if bool(whz) and not (isinstance(whz, float) and np.isnan(whz)):
+                d.append('crowd_over_threshold')
+            if whz:
                 lv += 1
                 if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) and pr >= precip_high:
-                    d.append('High precipitation')
+                    d.append('precip_high')
                 if th is not None and not (isinstance(th, float) and np.isnan(th)) and th >= temp_high:
-                    d.append('High temperature')
+                    d.append('temp_high')
                 if tl is not None and not (isinstance(tl, float) and np.isnan(tl)) and tl <= temp_low:
-                    d.append('Low temperature')
+                    d.append('temp_low')
             risk_level.append(int(lv))
             drivers.append(d)
 
+        # A lightweight calibrated probability proxy for UI (offline artifact mode)
         p_warn = [0.85 if s else 0.15 for s in suitability.tolist()]
 
+        # Risk score (0..100) used by Thermometer UI
+        risk_score = []
+        for lv, pw in zip(risk_level, p_warn):
+            v = max(0.0, min(1.0, (lv / 3.0) * 0.65 + float(pw) * 0.35))
+            risk_score.append(round(v * 100.0, 1))
+
         return {
+            'crowd_alert': crowd_alert_list,
+            'weather_hazard': weather_hazard_list,
+            'suitability_warning_bin': suitability_bin,
             'risk_level': risk_level,
-            'drivers': drivers,
             'p_warn': p_warn,
+            'drivers': drivers,
+            'risk_score': risk_score,
         }
 
     risk_champ = _compute_risk('champion_pred')
     risk_runner = _compute_risk('runner_pred') if runner_available else None
 
-    # Holiday intervals (for markArea)
+    # Holiday intervals (for markArea), with CN/EN names
     holiday_ranges = []
     for hh in HOLIDAYS_CONFIG:
+        name_zh, name_en = _holiday_i18n_name(hh.get('name'))
         holiday_ranges.append({
             'start': hh['start'],
             'end': hh['end'],
-            'name': hh.get('name', 'Holiday'),
+            'name_zh': name_zh or hh.get('name', 'Holiday'),
+            'name_en': name_en or 'Holiday',
             'type': hh.get('type', 'festival')
         })
 
     time_axis = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in df_merge['date'].tolist()]
-    forecast_start_idx = max(0, len(time_axis) - h)
+
+    # Forecast window policy (offline artifacts): treat the latest available
+    # predicted days as the "latest forecast" (backtest-style), anchored to the
+    # last predicted date.
+    pred_series = df_merge['champion_pred'].astype(float)
+    has_pred = ~(pred_series.isna())
+    if has_pred.any():
+        forecast_end_idx = int(np.where(has_pred.values)[0].max())
+    else:
+        forecast_end_idx = len(time_axis) - 1
+    forecast_start_idx = max(0, forecast_end_idx - h + 1)
 
     def _to_num_list(col):
         out = []
@@ -614,18 +748,19 @@ def api_forecast():
         'meta': {
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'champion': {
-                'model_name': champ_key,
-                'run_dir': champ_run,
+                'model_name': _pretty_model_name(champ_key),
             },
             'runner_up': ({
-                'model_name': run_key,
-                'run_dir': run_run,
+                'model_name': _pretty_model_name(run_key),
             } if runner_available else None)
+            ,
+            'forecast_mode': 'offline_latest_window_backtest'
         },
         'time_axis': time_axis,
         'forecast': {
             'h': h,
-            'start_index': forecast_start_idx
+            'start_index': forecast_start_idx,
+            'end_index': forecast_end_idx
         },
         'series': {
             'actual': _to_num_list('actual'),
