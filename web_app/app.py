@@ -66,6 +66,18 @@ from web_app.config import Config
 from web_app.models import db, TrafficRecord
 from scripts.sync_to_cloud import sync_data
 
+# --- Optional: chinese_calendar for holiday detection ---
+try:
+    import chinese_calendar as _cncal
+    def _is_holiday(d) -> bool:
+        try:
+            return bool(_cncal.is_holiday(d))
+        except Exception:
+            return False
+except ImportError:
+    def _is_holiday(d) -> bool:
+        return d.weekday() >= 5
+
 # --- Flask App Initialization ---
 # Explicitly set template and static folders to avoid path issues
 template_dir = os.path.join(current_dir, 'templates')
@@ -708,73 +720,285 @@ def api_forecast():
 
     df_merge = df_base.sort_values('date')
 
-    def _online_future_forecast_from_lstm(df_hist: pd.DataFrame, horizon: int):
-        """Generate true future forecast for `horizon` days using loaded LSTM.
+    def _fetch_weather_forecast(horizon: int) -> pd.DataFrame:
+        """从 Open-Meteo 获取未来 horizon 天天气预报。
 
-        Uses only the historical actual series for scaling and a minimal
-        feature set (value_norm, month_norm, weekday_norm, holiday_flag),
-        matching the existing /api/predict implementation.
-
-        Returns DataFrame columns: date, champion_pred
+        返回 DataFrame，列：date(str), temp_high, temp_low, precip_sum
+        失败时返回全 NaN 的占位 DataFrame。
         """
-        if lstm_model is None:
-            raise RuntimeError('Online forecast requested but LSTM model is not loaded.')
+        try:
+            import requests as _req
+            url = 'https://api.open-meteo.com/v1/forecast'
+            params = {
+                'latitude': 33.2, 'longitude': 103.9,
+                'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum',
+                'timezone': 'Asia/Shanghai',
+                'forecast_days': horizon,
+            }
+            r = _req.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            d = r.json()['daily']
+            return pd.DataFrame({
+                'date': d['time'],
+                'temp_high': d['temperature_2m_max'],
+                'temp_low': d['temperature_2m_min'],
+                'precip_sum': d['precipitation_sum'],
+            })
+        except Exception as e:
+            print(f"Weather forecast fetch failed: {e}")
+            last_date = df_master['date'].max()
+            rows = []
+            for i in range(horizon):
+                rows.append({
+                    'date': str(last_date + timedelta(days=i + 1)),
+                    'temp_high': float('nan'), 'temp_low': float('nan'), 'precip_sum': float('nan'),
+                })
+            return pd.DataFrame(rows)
+
+    def _online_future_forecast_all_models(df_hist: pd.DataFrame, horizon: int):
+        """三模型在线预测：用8特征 + Open-Meteo 天气预报生成未来 horizon 天预测。
+
+        策略：
+        - 从 df_hist 的历史客流拟合 MinMaxScaler（仅用历史数据，无泄露）
+        - 从 Open-Meteo 获取未来 horizon 天天气预报
+        - 对每个模型（champion / runner_up / third）独立滚动预测
+        - 返回 DataFrame，列：date, champion_pred, runner_pred, third_pred,
+                              precip_mm, temp_high_c, temp_low_c
+
+        对于 Seq2Seq（多步模型）：一次性预测 decoder_steps 天，取前 horizon 天。
+        对于 LSTM/GRU（单步模型）：滚动预测 horizon 步。
+        """
         if df_hist is None or df_hist.empty:
             raise RuntimeError('History not available for online forecast.')
 
-        s = pd.to_numeric(df_hist['actual'], errors='coerce')
-        s = s.dropna()
-        if s.shape[0] < 30:
-            raise RuntimeError('Not enough history (need >= 30 days) for online forecast.')
+        # ── 1. 准备历史客流序列 ──
+        s = pd.to_numeric(df_hist['actual'], errors='coerce').dropna()
+        if len(s) < 30:
+            raise RuntimeError('Not enough history (need >= 30 days).')
 
         look_back = 30
-        scaler = MinMaxScaler()
-        scaler.fit(s.values.reshape(-1, 1))
+        visitor_scaler = MinMaxScaler()
+        visitor_scaler.fit(s.values.reshape(-1, 1))
 
+        # ── 2. 获取天气预报 ──
+        weather_df = _fetch_weather_forecast(horizon)
+        weather_df['date'] = pd.to_datetime(weather_df['date']).dt.date
+
+        # ── 3. 从处理好的历史数据中获取天气 scaler 参数 ──
+        # 用历史数据的 min/max 对天气特征归一化（与训练时一致）
+        processed_path = os.path.join(base_dir, 'data', 'processed',
+                                       'jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv')
+        precip_min, precip_max = 0.0, 50.0
+        temp_high_min, temp_high_max = -10.0, 40.0
+        temp_low_min, temp_low_max = -20.0, 30.0
+        lag7_vals = None
+        if os.path.exists(processed_path):
+            try:
+                _hist_df = pd.read_csv(processed_path, usecols=[
+                    'meteo_precip_sum', 'temp_high_c', 'temp_low_c',
+                    'tourism_num', 'tourism_num_lag_7_scaled', 'date'
+                ])
+                precip_min = float(_hist_df['meteo_precip_sum'].min())
+                precip_max = float(_hist_df['meteo_precip_sum'].max()) or 50.0
+                temp_high_min = float(_hist_df['temp_high_c'].min())
+                temp_high_max = float(_hist_df['temp_high_c'].max())
+                temp_low_min = float(_hist_df['temp_low_c'].min())
+                temp_low_max = float(_hist_df['temp_low_c'].max())
+                # 最近 look_back+7 天的 lag7 scaled 值（用于初始化滚动窗口）
+                lag7_vals = _hist_df['tourism_num_lag_7_scaled'].values[-(look_back + 7):]
+            except Exception:
+                pass
+
+        def _scale_precip(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return 0.0
+            return float(np.clip((v - precip_min) / max(precip_max - precip_min, 1e-6), 0, 1))
+
+        def _scale_temp_high(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return 0.5
+            return float(np.clip((v - temp_high_min) / max(temp_high_max - temp_high_min, 1e-6), 0, 1))
+
+        def _scale_temp_low(v):
+            if v is None or (isinstance(v, float) and np.isnan(v)):
+                return 0.5
+            return float(np.clip((v - temp_low_min) / max(temp_low_max - temp_low_min, 1e-6), 0, 1))
+
+        # ── 4. 构建初始 look_back 窗口（8特征） ──
         last_date = df_hist['date'].max()
-        hist_tail = s.values[-look_back:].reshape(-1, 1)
-        current_seq = scaler.transform(hist_tail).flatten().tolist()
+        hist_vals = s.values[-look_back:]
+        hist_scaled = visitor_scaler.transform(hist_vals.reshape(-1, 1)).flatten()
 
+        # lag_7 scaled：用历史数据中最近的值初始化
+        if lag7_vals is not None and len(lag7_vals) >= look_back:
+            lag7_window = list(lag7_vals[-look_back:].astype(float))
+        else:
+            lag7_window = list(hist_scaled)  # 降级：用 visitor_scaled 近似
+
+        def _build_window_8feat(visitor_window, lag7_window, dates):
+            """构建 (look_back, 8) 特征矩阵"""
+            rows = []
+            for i, d in enumerate(dates):
+                m_norm = (d.month - 1) / 11.0
+                dow_norm = d.weekday() / 6.0
+                hol = float(_is_holiday(d))
+                rows.append([
+                    visitor_window[i],   # visitor_count_scaled
+                    m_norm,              # month_norm
+                    dow_norm,            # day_of_week_norm
+                    hol,                 # is_holiday
+                    lag7_window[i],      # tourism_num_lag_7_scaled
+                    0.0,                 # meteo_precip_sum_scaled (历史窗口用0，无未来天气)
+                    0.5,                 # temp_high_scaled
+                    0.5,                 # temp_low_scaled
+                ])
+            return np.array(rows, dtype=np.float32)
+
+        # 历史窗口的日期
+        hist_dates = [last_date - timedelta(days=look_back - 1 - i) for i in range(look_back)]
+
+        def _predict_single_step_model(model, visitor_window, lag7_window, hist_dates):
+            """单步模型（LSTM/GRU）滚动预测 horizon 步"""
+            preds = []
+            v_win = list(visitor_window)
+            l7_win = list(lag7_window)
+            cur_dates = list(hist_dates)
+
+            for step in range(horizon):
+                pred_date = last_date + timedelta(days=step + 1)
+                # 获取该日天气预报
+                wrow = weather_df[weather_df['date'] == pred_date]
+                p_s = _scale_precip(float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'))
+                th_s = _scale_temp_high(float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'))
+                tl_s = _scale_temp_low(float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'))
+
+                X = _build_window_8feat(v_win, l7_win, cur_dates)
+                # 覆盖最后一行的天气（最近一天用预报天气）
+                X[-1, 5] = p_s
+                X[-1, 6] = th_s
+                X[-1, 7] = tl_s
+
+                x_in = X.reshape(1, look_back, 8)
+                y_s = float(model.predict(x_in, verbose=0)[0][0])
+                y_val = float(visitor_scaler.inverse_transform([[y_s]])[0][0])
+                preds.append(y_val)
+
+                # 滚动窗口
+                v_win = v_win[1:] + [y_s]
+                lag7_s = v_win[-7] if len(v_win) >= 7 else y_s
+                l7_win = l7_win[1:] + [lag7_s]
+                cur_dates = cur_dates[1:] + [pred_date]
+
+            return preds
+
+        # ── 5. 加载三个模型并预测 ──
+        backup_dir = _get_latest_backup_dir()
+        df_cmp = _load_compare_metrics(backup_dir)
+        champ_info, runner_info, third_info = _pick_champion_and_runner_up(df_cmp)
+
+        def _load_model_from_info(info):
+            if not info:
+                return None, None
+            run_dir = _resolve_backup_run_dir(backup_dir, info.get('run_dir'))
+            if not run_dir:
+                return None, None
+            # 找权重文件
+            for pattern in ['weights/*.keras', 'weights/*.h5']:
+                matches = glob.glob(os.path.join(run_dir, pattern))
+                if matches:
+                    path = matches[0]
+                    try:
+                        m = tf.keras.models.load_model(
+                            path,
+                            custom_objects=_seq2seq_custom_objects or None,
+                            compile=False
+                        ) if tf else None
+                        return m, info.get('model', '')
+                    except Exception as e:
+                        print(f"Online model load failed ({path}): {e}")
+            return None, None
+
+        results = {}
+        for label, info in [('champion', champ_info), ('runner_up', runner_info), ('third', third_info)]:
+            if not info:
+                results[label] = None
+                continue
+            model_obj, model_key = _load_model_from_info(info)
+            if model_obj is None:
+                results[label] = None
+                continue
+            try:
+                model_key_lower = (model_key or '').lower()
+                if 'seq2seq' in model_key_lower:
+                    # Seq2Seq：构建 encoder+decoder 输入，一次性预测
+                    enc_input = _build_window_8feat(
+                        list(hist_scaled), list(lag7_window), hist_dates
+                    ).reshape(1, look_back, 8)
+                    # decoder 输入：未来 7 天的 7 个外部特征（不含 visitor_count）
+                    dec_steps = min(horizon, 7)
+                    dec_rows = []
+                    for step in range(dec_steps):
+                        pred_date = last_date + timedelta(days=step + 1)
+                        wrow = weather_df[weather_df['date'] == pred_date]
+                        p_s = _scale_precip(float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'))
+                        th_s = _scale_temp_high(float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'))
+                        tl_s = _scale_temp_low(float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'))
+                        m_norm = (pred_date.month - 1) / 11.0
+                        dow_norm = pred_date.weekday() / 6.0
+                        hol = float(_is_holiday(pred_date))
+                        lag7_s = lag7_window[-1] if lag7_window else 0.5
+                        dec_rows.append([m_norm, dow_norm, hol, lag7_s, p_s, th_s, tl_s])
+                    dec_input = np.array(dec_rows, dtype=np.float32).reshape(1, dec_steps, 7)
+                    y_scaled = model_obj.predict([enc_input, dec_input], verbose=0)
+                    preds = visitor_scaler.inverse_transform(
+                        y_scaled[0, :dec_steps, 0].reshape(-1, 1)
+                    ).flatten().tolist()
+                    # 如果 horizon > dec_steps，用最后一个值填充
+                    while len(preds) < horizon:
+                        preds.append(preds[-1])
+                else:
+                    preds = _predict_single_step_model(
+                        model_obj, list(hist_scaled), list(lag7_window), list(hist_dates)
+                    )
+                results[label] = preds
+            except Exception as e:
+                print(f"Online prediction failed for {label} ({model_key}): {e}")
+                results[label] = None
+
+        # ── 6. 组装结果 DataFrame ──
         out_rows = []
         for step in range(horizon):
             pred_date = last_date + timedelta(days=step + 1)
-            model_input = []
-            for i in range(look_back):
-                feature_date = pred_date - timedelta(days=(look_back - i))
-                m_norm = (feature_date.month - 1) / 11.0
-                d_norm = feature_date.weekday() / 6.0
-                hol = float(mark_core_holiday(feature_date))
-                model_input.append([current_seq[i], m_norm, d_norm, hol])
-
-            x_in = np.array(model_input, dtype=float).reshape(1, look_back, 4)
-            y_norm = float(lstm_model.predict(x_in, verbose=0)[0][0])
-            y_val = float(scaler.inverse_transform(np.array([[y_norm]], dtype=float))[0][0])
-            out_rows.append({'date': pred_date, 'champion_pred': y_val})
-
-            # roll window
-            current_seq = current_seq[1:] + [y_norm]
-
+            wrow = weather_df[weather_df['date'] == pred_date]
+            out_rows.append({
+                'date': pred_date,
+                'champion_pred': results['champion'][step] if results.get('champion') else float('nan'),
+                'runner_pred': results['runner_up'][step] if results.get('runner_up') else float('nan'),
+                'third_pred': results['third'][step] if results.get('third') else float('nan'),
+                'precip_mm': float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'),
+                'temp_high_c': float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'),
+                'temp_low_c': float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'),
+            })
         return pd.DataFrame(out_rows)
 
     # Online mode: append true future forecast to the end of timeline.
     online_used = False
     if mode == 'online':
         try:
-            df_future = _online_future_forecast_from_lstm(df_master[['date', 'actual']].copy(), h)
+            df_future = _online_future_forecast_all_models(df_master[['date', 'actual']].copy(), h)
             if df_future is not None and not df_future.empty:
                 online_used = True
-                df_future['runner_pred'] = np.nan
-                df_future['third_pred'] = np.nan
-                # Add empty weather fields for future dates
-                for c in ['actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']:
+                df_future['actual'] = np.nan
+                # Fill missing columns
+                for c in ['weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']:
                     if c not in df_future.columns:
                         df_future[c] = np.nan if c not in ['weather_code_en', 'wind_dir_en', 'aqi_level_en'] else None
-                df_future['actual'] = np.nan
 
-                # Keep the same column set and append
                 df_merge = pd.concat([
                     df_merge,
-                    df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en', 'champion_pred', 'runner_pred', 'third_pred']]
+                    df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c',
+                                'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max',
+                                'aqi_value', 'aqi_level_en', 'champion_pred', 'runner_pred', 'third_pred']]
                 ], ignore_index=True)
                 df_merge = df_merge.sort_values('date')
         except Exception as e:
@@ -1120,16 +1344,20 @@ def predict():
 
 # --- Scheduler Setup ---
 def _start_scheduler():
-    """Start APScheduler background scheduler for daily auto-crawl at 09:00."""
+    """Start APScheduler background scheduler for daily auto-crawl and monthly retrain."""
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
         from realtime.daily_update import daily_update
+        from scripts.append_and_retrain import start_data_pipeline_scheduler
 
         scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
+        # 每日 09:00 爬取客流
         scheduler.add_job(daily_update, 'cron', hour=9, minute=0, id='daily_crawl',
                           replace_existing=True)
+        # 每日 08:30 追加数据到训练 CSV + 每月1日 02:00 重训
+        start_data_pipeline_scheduler(scheduler)
         scheduler.start()
-        print("Scheduler started: daily crawl job registered at 09:00 Asia/Shanghai.")
+        print("Scheduler started: daily crawl (09:00), daily append (08:30), monthly retrain (1st 02:00).")
         return scheduler
     except ImportError:
         print("WARNING: APScheduler not installed. Run: pip install APScheduler==3.10.4")

@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+数据追加与月度重训管道
+
+功能：
+1. append_new_data()：将爬取的新客流数据 + Open-Meteo 天气追加到10年训练 CSV
+2. monthly_retrain()：触发三个模型的重训练（通过 run_pipeline.py）
+3. APScheduler 集成：每日追加，每月1日重训
+
+用法（手动）：
+  python scripts/append_and_retrain.py --append          # 仅追加今日数据
+  python scripts/append_and_retrain.py --retrain         # 仅重训三个模型
+  python scripts/append_and_retrain.py --append --retrain  # 追加+重训
+
+APScheduler 集成（在 web_app/app.py 中调用 start_data_pipeline_scheduler()）
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from datetime import datetime, timedelta, date
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import requests
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+# 10年训练数据文件（追加目标）
+TRAIN_CSV = PROJECT_ROOT / 'data' / 'processed' / 'jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv'
+# 追加日志
+APPEND_LOG = PROJECT_ROOT / 'data' / 'append_log.json'
+
+# Open-Meteo 九寨沟坐标
+LAT, LON = 33.2, 103.9
+
+
+# ─────────────────────────────────────────────
+# 天气获取（历史存档）
+# ─────────────────────────────────────────────
+
+def _fetch_meteo_for_date(target_date: date) -> dict:
+    """从 Open-Meteo 历史存档获取指定日期的天气数据。"""
+    date_str = target_date.isoformat()
+    try:
+        url = 'https://archive-api.open-meteo.com/v1/archive'
+        params = {
+            'latitude': LAT, 'longitude': LON,
+            'start_date': date_str, 'end_date': date_str,
+            'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,'
+                     'weathercode,windspeed_10m_max',
+            'timezone': 'Asia/Shanghai',
+        }
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        d = r.json().get('daily', {})
+        return {
+            'meteo_weather_code': int(d.get('weathercode', [None])[0] or 0),
+            'meteo_temp_max': float(d.get('temperature_2m_max', [None])[0] or float('nan')),
+            'meteo_temp_min': float(d.get('temperature_2m_min', [None])[0] or float('nan')),
+            'meteo_wind_max': float(d.get('windspeed_10m_max', [None])[0] or float('nan')),
+            'meteo_precip_sum': float(d.get('precipitation_sum', [None])[0] or 0.0),
+        }
+    except Exception as e:
+        print(f"  Open-Meteo 获取失败 ({date_str}): {e}")
+        return {
+            'meteo_weather_code': 0,
+            'meteo_temp_max': float('nan'),
+            'meteo_temp_min': float('nan'),
+            'meteo_wind_max': float('nan'),
+            'meteo_precip_sum': 0.0,
+        }
+
+
+# ─────────────────────────────────────────────
+# 特征工程（与训练脚本保持一致）
+# ─────────────────────────────────────────────
+
+def _engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+    """对新追加的行补充特征工程列（与训练数据格式对齐）。"""
+    try:
+        import chinese_calendar as cncal
+        def _is_holiday(d):
+            try:
+                return int(cncal.is_holiday(d))
+            except Exception:
+                return int(d.weekday() >= 5)
+    except ImportError:
+        def _is_holiday(d):
+            return int(d.weekday() >= 5)
+
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+
+    # 时间特征
+    df['day_of_week'] = df['date'].dt.weekday
+    df['month'] = df['date'].dt.month
+    df['day_of_month'] = df['date'].dt.day
+    df['day_of_year'] = df['date'].dt.dayofyear
+    df['week_of_year'] = df['date'].dt.isocalendar().week.astype(int)
+    df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
+    df['is_holiday'] = df['date'].apply(lambda x: _is_holiday(x.date()))
+    df['is_workday'] = ((df['is_weekend'] == 0) & (df['is_holiday'] == 0)).astype(int)
+
+    # 周期编码
+    df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12)
+    df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12)
+    df['dow_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
+    df['dow_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
+    df['month_norm'] = (df['month'] - 1) / 11.0
+    df['day_of_week_norm'] = df['day_of_week'] / 6.0
+
+    df['date'] = df['date'].dt.strftime('%Y-%m-%d')
+    return df
+
+
+def _compute_scaled_features(df_full: pd.DataFrame) -> pd.DataFrame:
+    """用全量数据重新计算 scaled 特征（MinMax，基于全量数据）。"""
+    from sklearn.preprocessing import MinMaxScaler
+
+    df = df_full.copy()
+
+    # visitor_count_scaled
+    if 'tourism_num' in df.columns:
+        vc = pd.to_numeric(df['tourism_num'], errors='coerce').fillna(0)
+        scaler = MinMaxScaler()
+        df['visitor_count_scaled'] = scaler.fit_transform(vc.values.reshape(-1, 1)).flatten()
+
+    # lag_7 scaled
+    if 'tourism_num' in df.columns:
+        lag7 = pd.to_numeric(df['tourism_num'], errors='coerce').shift(7)
+        scaler7 = MinMaxScaler()
+        valid = lag7.dropna()
+        if len(valid) > 0:
+            scaler7.fit(valid.values.reshape(-1, 1))
+            df['tourism_num_lag_7_scaled'] = scaler7.transform(
+                lag7.fillna(lag7.mean()).values.reshape(-1, 1)
+            ).flatten()
+        df['tourism_num_lag_1'] = pd.to_numeric(df['tourism_num'], errors='coerce').shift(1)
+        df['tourism_num_lag_7'] = lag7
+        df['tourism_num_lag_14'] = pd.to_numeric(df['tourism_num'], errors='coerce').shift(14)
+        df['tourism_num_lag_28'] = pd.to_numeric(df['tourism_num'], errors='coerce').shift(28)
+        df['tourism_num_rolling_mean_7'] = pd.to_numeric(df['tourism_num'], errors='coerce').rolling(7).mean()
+        df['tourism_num_rolling_std_7'] = pd.to_numeric(df['tourism_num'], errors='coerce').rolling(7).std()
+        df['tourism_num_rolling_mean_14'] = pd.to_numeric(df['tourism_num'], errors='coerce').rolling(14).mean()
+
+    # 天气 scaled
+    for col, new_col in [
+        ('meteo_precip_sum', 'meteo_precip_sum_scaled'),
+        ('meteo_temp_max', 'temp_high_scaled'),
+        ('meteo_temp_min', 'temp_low_scaled'),
+    ]:
+        if col in df.columns:
+            vals = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            sc = MinMaxScaler()
+            df[new_col] = sc.fit_transform(vals.values.reshape(-1, 1)).flatten()
+
+    # temp_high_c / temp_low_c 别名
+    if 'meteo_temp_max' in df.columns and 'temp_high_c' not in df.columns:
+        df['temp_high_c'] = df['meteo_temp_max']
+    if 'meteo_temp_min' in df.columns and 'temp_low_c' not in df.columns:
+        df['temp_low_c'] = df['meteo_temp_min']
+
+    return df
+
+
+# ─────────────────────────────────────────────
+# 核心：追加新数据
+# ─────────────────────────────────────────────
+
+def append_new_data(target_date: Optional[date] = None, dry_run: bool = False) -> bool:
+    """将指定日期（默认昨天）的客流+天气追加到训练 CSV。
+
+    Args:
+        target_date: 要追加的日期，默认为昨天
+        dry_run: 若 True，只打印不写入
+
+    Returns:
+        True 表示成功追加，False 表示跳过（已存在或数据不可用）
+    """
+    if target_date is None:
+        target_date = date.today() - timedelta(days=1)
+
+    date_str = target_date.isoformat()
+    print(f"\n{'='*60}")
+    print(f"数据追加任务: {date_str}")
+    print(f"{'='*60}")
+
+    # 1. 检查训练 CSV 是否存在
+    if not TRAIN_CSV.exists():
+        print(f"错误：训练 CSV 不存在: {TRAIN_CSV}")
+        return False
+
+    df_train = pd.read_csv(TRAIN_CSV, encoding='utf-8-sig')
+    df_train['date'] = pd.to_datetime(df_train['date']).dt.strftime('%Y-%m-%d')
+
+    # 2. 检查是否已存在
+    if date_str in df_train['date'].values:
+        print(f"  跳过：{date_str} 已存在于训练数据中")
+        return False
+
+    # 3. 从爬虫获取客流数据
+    visitor_count = None
+    try:
+        from realtime.jiuzhaigou_crawler import JiuzhaigouCrawler
+        crawler = JiuzhaigouCrawler()
+        data = crawler.fetch_latest_visitor_count()
+        if data and str(data.get('date', '')) == date_str:
+            visitor_count = int(data['visitor_count'])
+            print(f"  爬虫获取客流: {visitor_count:,} 人")
+        else:
+            # 尝试从数据库获取
+            db_data = crawler.get_latest_from_database()
+            if db_data and str(db_data.get('date', '')) == date_str:
+                visitor_count = int(db_data['visitor_count'])
+                print(f"  数据库获取客流: {visitor_count:,} 人")
+    except Exception as e:
+        print(f"  爬虫获取失败: {e}")
+
+    if visitor_count is None:
+        print(f"  警告：无法获取 {date_str} 的客流数据，跳过追加")
+        return False
+
+    # 4. 获取天气数据
+    print(f"  获取 Open-Meteo 天气数据...")
+    weather = _fetch_meteo_for_date(target_date)
+    print(f"  天气: 最高{weather['meteo_temp_max']:.1f}°C, "
+          f"最低{weather['meteo_temp_min']:.1f}°C, "
+          f"降水{weather['meteo_precip_sum']:.1f}mm")
+
+    # 5. 构建新行
+    new_row = {
+        'date': date_str,
+        'tourism_num': visitor_count,
+        'temp_high_c': weather['meteo_temp_max'],
+        'temp_low_c': weather['meteo_temp_min'],
+        'meteo_weather_code': weather['meteo_weather_code'],
+        'meteo_temp_max': weather['meteo_temp_max'],
+        'meteo_temp_min': weather['meteo_temp_min'],
+        'meteo_wind_max': weather['meteo_wind_max'],
+        'meteo_precip_sum': weather['meteo_precip_sum'],
+        'meteo_rain_sum': 0.0,
+        'meteo_snowfall_sum': 0.0,
+        'meteo_precip_hours': 0.0,
+        'weather_source': 'open-meteo',
+    }
+
+    # 6. 追加并重新计算特征
+    df_new_row = pd.DataFrame([new_row])
+    df_new_row = _engineer_features(df_new_row)
+
+    # 合并到全量数据
+    df_combined = pd.concat([df_train, df_new_row], ignore_index=True)
+    df_combined = df_combined.sort_values('date').reset_index(drop=True)
+
+    # 重新计算 scaled 特征（需要全量数据）
+    df_combined = _compute_scaled_features(df_combined)
+
+    if dry_run:
+        print(f"  [DRY RUN] 将追加 {date_str}，visitor_count={visitor_count}")
+        return True
+
+    # 7. 写回 CSV
+    df_combined.to_csv(TRAIN_CSV, index=False, encoding='utf-8-sig')
+    print(f"  ✅ 已追加 {date_str} 到训练数据（共 {len(df_combined)} 行）")
+
+    # 8. 更新追加日志
+    _update_append_log(date_str, visitor_count, weather)
+
+    return True
+
+
+def _update_append_log(date_str: str, visitor_count: int, weather: dict):
+    """记录追加历史。"""
+    log = []
+    if APPEND_LOG.exists():
+        try:
+            with open(APPEND_LOG, 'r', encoding='utf-8') as f:
+                log = json.load(f)
+        except Exception:
+            log = []
+    log.append({
+        'date': date_str,
+        'visitor_count': visitor_count,
+        'weather': weather,
+        'appended_at': datetime.now().isoformat(),
+    })
+    # 只保留最近 365 条
+    log = log[-365:]
+    with open(APPEND_LOG, 'w', encoding='utf-8') as f:
+        json.dump(log, f, ensure_ascii=False, indent=2)
+
+
+# ─────────────────────────────────────────────
+# 核心：月度重训
+# ─────────────────────────────────────────────
+
+def monthly_retrain(epochs: int = 120) -> bool:
+    """触发三个模型的重训练。
+
+    通过调用 run_pipeline.py 依次训练 GRU、LSTM、Seq2Seq。
+    训练完成后，新的模型权重会自动进入 output/runs/，
+    下次 Dashboard 加载时会使用最新的 backup 目录。
+
+    Returns:
+        True 表示全部成功，False 表示至少一个失败
+    """
+    print(f"\n{'='*60}")
+    print(f"月度重训任务: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
+
+    models = ['gru', 'lstm', 'seq2seq_attention']
+    success_all = True
+
+    for model in models:
+        print(f"\n  训练 {model.upper()}...")
+        cmd = [
+            sys.executable,
+            str(PROJECT_ROOT / 'run_pipeline.py'),
+            '--model', model,
+            '--features', '8',
+            '--epochs', str(epochs),
+        ]
+        try:
+            result = subprocess.run(
+                cmd, cwd=str(PROJECT_ROOT),
+                capture_output=True, text=True, timeout=3600
+            )
+            if result.returncode == 0:
+                print(f"  ✅ {model.upper()} 训练完成")
+            else:
+                print(f"  ❌ {model.upper()} 训练失败:\n{result.stderr[-500:]}")
+                success_all = False
+        except subprocess.TimeoutExpired:
+            print(f"  ❌ {model.upper()} 训练超时（1小时）")
+            success_all = False
+        except Exception as e:
+            print(f"  ❌ {model.upper()} 训练异常: {e}")
+            success_all = False
+
+    if success_all:
+        print(f"\n✅ 月度重训完成，所有模型已更新")
+    else:
+        print(f"\n⚠️  月度重训部分失败，请检查日志")
+
+    return success_all
+
+
+# ─────────────────────────────────────────────
+# APScheduler 集成入口
+# ─────────────────────────────────────────────
+
+def start_data_pipeline_scheduler(scheduler):
+    """向已有的 APScheduler 实例注册数据管道任务。
+
+    在 web_app/app.py 的 _start_scheduler() 中调用：
+        from scripts.append_and_retrain import start_data_pipeline_scheduler
+        start_data_pipeline_scheduler(scheduler)
+    """
+    # 每日 08:30 追加昨日数据（比爬虫任务早30分钟，确保数据已更新）
+    scheduler.add_job(
+        append_new_data, 'cron', hour=8, minute=30,
+        id='daily_append', replace_existing=True,
+        kwargs={'target_date': None}
+    )
+    print("数据管道调度器：每日08:30追加数据任务已注册")
+
+    # 每月1日 02:00 重训（避开白天高峰）
+    scheduler.add_job(
+        monthly_retrain, 'cron', day=1, hour=2, minute=0,
+        id='monthly_retrain', replace_existing=True,
+        kwargs={'epochs': 120}
+    )
+    print("数据管道调度器：每月1日02:00重训任务已注册")
+
+
+# ─────────────────────────────────────────────
+# CLI 入口
+# ─────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description='数据追加与月度重训管道')
+    parser.add_argument('--append', action='store_true', help='追加昨日数据')
+    parser.add_argument('--retrain', action='store_true', help='重训三个模型')
+    parser.add_argument('--date', default=None, help='指定追加日期 (YYYY-MM-DD)，默认昨天')
+    parser.add_argument('--epochs', type=int, default=120, help='重训轮次（默认120）')
+    parser.add_argument('--dry-run', action='store_true', help='仅打印，不写入')
+    args = parser.parse_args()
+
+    if not args.append and not args.retrain:
+        parser.print_help()
+        return
+
+    if args.append:
+        target = date.fromisoformat(args.date) if args.date else None
+        append_new_data(target_date=target, dry_run=args.dry_run)
+
+    if args.retrain:
+        monthly_retrain(epochs=args.epochs)
+
+
+if __name__ == '__main__':
+    main()

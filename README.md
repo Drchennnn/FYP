@@ -373,61 +373,99 @@ SQLite（`jiuzhaigou_fyp.db`），表名 `traffic_records`：
 
 **位置**：`scripts/walk_forward_eval.py`
 
-**方法**：Expanding Window 策略，模拟真实部署场景：
-- 每个 fold 的训练集从数据起点扩展到切割点
-- 测试集为切割点后的固定窗口（默认 90 天）
-- 每个 fold 独立训练，记录回归指标与预警指标
-- 汇总跨 fold 的均值与标准差
-
-**与固定切分的区别**：固定切分只在最后 10% 测试，无法反映模型在不同季节的稳定性。Walk-forward 覆盖多个时间段（包括春节、五一、国庆等高峰期），评估结果更贴近真实部署。
+Expanding Window 策略，每个 fold 独立训练，覆盖不同季节，输出跨折均值/标准差与趋势图。
 
 ```bash
 python scripts/walk_forward_eval.py --model gru --folds 4 --test-window 90
 ```
 
-输出：`output/walk_forward/<model>_<timestamp>/`
-- `walk_forward_folds.csv`：每折详细指标
-- `walk_forward_summary.json`：跨折均值与标准差
-- `walk_forward_metrics.png`：指标趋势图
+输出：`output/walk_forward/<model>_<timestamp>/`（`walk_forward_folds.csv`、`walk_forward_summary.json`、`walk_forward_metrics.png`）
 
 ### Attention 权重可视化（已实现）
 
 **位置**：`models/lstm/train_seq2seq_attention_8features.py`，`_save_attention_heatmap()`
 
-每次 Seq2Seq 训练完成后自动生成：
-- **均值热力图**（`attention_heatmap_mean.png`）：所有测试样本的平均注意力分布，反映模型整体上"最关注"哪些历史时间位置
-- **样本热力图**（`attention_heatmap_sample.png`）：最新预测窗口的注意力分布
-- **原始权重**（`attention_weights_mean.npy`）：供后续分析
-
-热力图 X 轴为 Encoder 历史天（-30 ~ -1），Y 轴为 Decoder 预测步（Day+1 ~ Day+7），颜色越深表示该历史天对该预测步影响越大。
+Seq2Seq 训练后自动生成均值热力图（`attention_heatmap_mean.png`）和样本热力图（`attention_heatmap_sample.png`）。X 轴为历史天（-30~-1），Y 轴为预测步（Day+1~Day+7），颜色越深表示影响越大。
 
 ### 动态峰值阈值（已实现）
 
 **位置**：`models/common/core_evaluation.py`，`compute_dynamic_peak_threshold()`
 
-峰值阈值从训练集 75 分位数动态计算，替代原来的硬编码常量 18500：
-- 仅使用训练集数据，避免测试集泄露
-- 每次重训练自动更新，反映数据分布变化
-- 合理性约束：限制在 [5000, 80000] 范围内
+从训练集 75 分位数动态计算，替代硬编码 18500，每次重训自动更新。
 
-### 三模型对比 Dashboard（已实现）
+### 三模型在线预测（已实现）
 
-前端支持 Champion / Runner-up / Third 三模型独立切换与全量对比，后端 `/api/forecast` 同时返回三条预测序列及各自的风险评估。
+**位置**：`web_app/app.py`，`_online_future_forecast_all_models()`
 
-### Seq2Seq 模型加载修复（已实现）
+Dashboard 切换到 `mode=online` 时，三个模型（GRU/LSTM/Seq2Seq）均使用 **8特征 + Open-Meteo 未来天气预报**生成真正的未来预测：
+- 天气特征来自 Open-Meteo API（未来7天预报），而非历史数据
+- LSTM/GRU 采用滚动预测（每步更新 lag_7 特征）
+- Seq2Seq 一次性预测 decoder_steps 天
+- 预测失败时自动降级到离线 artifact 模式
 
-`web_app/app.py` 在加载 `.keras` 格式时注册 `AttentionLayer`、`Seq2SeqWithAttention`、`create_custom_asymmetric_loss` 自定义类，解决 `ValueError: Unknown layer` 错误。
+### 数据自动追加 + 月度重训（已实现）
 
-### 待实现
+**位置**：`scripts/append_and_retrain.py`
 
-- **增量学习**：目前为离线训练，新数据仅用于评估。计划实现每月滑动窗口重训练（用最近 2 年数据重训，自动触发 `run_pipeline.py`）
-- **SHAP 可解释性**：集成 SHAP 工具，对 GRU/LSTM 生成特征重要性图
-- **Ablation Study（系统性）**：逐特征消融（去掉天气特征、去掉 lag_7 等），量化各特征对预警 F1 的贡献
+**每日追加**（08:30 自动触发）：
+1. 从爬虫获取昨日客流数据
+2. 从 Open-Meteo 历史存档获取对应天气
+3. 追加到 `data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv`
+4. 重新计算 scaled 特征（MinMax，基于全量数据）
+
+**月度重训**（每月1日 02:00 自动触发）：
+- 依次调用 `run_pipeline.py` 重训 GRU、LSTM、Seq2Seq
+- 新模型自动进入 `output/runs/`，Dashboard 下次加载时使用最新版本
+
+```bash
+# 手动触发
+python scripts/append_and_retrain.py --append          # 追加昨日数据
+python scripts/append_and_retrain.py --retrain         # 重训三个模型
+python scripts/append_and_retrain.py --append --retrain  # 追加+重训
+```
+
+### Ablation Study（已实现）
+
+**位置**：`scripts/ablation_study.py`
+
+6个特征消融方案，在 GRU 上训练对比：
+
+| 方案 | 特征 |
+|------|------|
+| 4特征基线 | visitor, month, dow, holiday |
+| 去掉天气特征 | 去掉 precip, temp_high, temp_low |
+| 去掉 Lag-7 | 去掉 tourism_num_lag_7_scaled |
+| 去掉节假日 | 去掉 is_holiday |
+| 去掉天气+Lag-7 | 仅时间特征 |
+| 完整8特征 | 全部特征（对照组） |
+
+输出：`output/ablation/<timestamp>/`（`ablation_results.csv`、`ablation_study.png`）
+
+```bash
+python scripts/ablation_study.py --epochs 80
+```
+
+### SHAP 可解释性（已实现）
+
+**位置**：`scripts/shap_analysis.py`
+
+使用 `shap.GradientExplainer` 对 GRU/LSTM 计算特征重要性：
+- 全局特征重要性柱状图（`shap_summary_bar_<model>.png`）
+- 原始 SHAP 值矩阵（`shap_values_<model>.npy`）
+
+```bash
+pip install shap
+python scripts/shap_analysis.py --model gru
+python scripts/shap_analysis.py --model all
+```
+
+输出：`output/shap/<timestamp>/`
 
 ---
 
 ## 13. 项目维护信息
 
-**技术栈**：Python 3.10+, TensorFlow 2.15, Flask 3.0, ECharts, SQLite, APScheduler  
+**技术栈**：Python 3.10+, TensorFlow 2.15, Flask 3.0, ECharts, SQLite, APScheduler, SHAP  
 **项目状态**：持续开发中  
-**最后更新**：2026年4月3日
+**最后更新**：2026年4月4日
+
