@@ -93,37 +93,163 @@ db.init_app(app)
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_RUNS_DIR = os.path.join(base_dir, 'model', 'runs')
 OFFLINE_BACKUPS_DIR = os.path.join(base_dir, 'output', 'backups')
+OUTPUT_RUNS_DIR = os.path.join(base_dir, 'output', 'runs')
 lstm_model = None
 
 
 def _get_latest_backup_dir():
-    """Return absolute path to the latest backup directory under output/backups."""
-    if not os.path.isdir(OFFLINE_BACKUPS_DIR):
-        return None
-    cands = glob.glob(os.path.join(OFFLINE_BACKUPS_DIR, 'backup_*'))
-    cands = [p for p in cands if os.path.isdir(p)]
-    if not cands:
-        return None
-    return max(cands, key=os.path.getmtime)
+    """Return the best available artifact directory.
+
+    Priority:
+      1. output/backups/backup_* (legacy, kept for compatibility)
+      2. output/runs/ itself (new default — models live here directly)
+    """
+    if os.path.isdir(OFFLINE_BACKUPS_DIR):
+        cands = glob.glob(os.path.join(OFFLINE_BACKUPS_DIR, 'backup_*'))
+        cands = [p for p in cands if os.path.isdir(p)]
+        if cands:
+            return max(cands, key=os.path.getmtime)
+    # Fall back to output/runs/ directly
+    if os.path.isdir(OUTPUT_RUNS_DIR):
+        return OUTPUT_RUNS_DIR
+    return None
 
 
 def _load_compare_metrics(backup_dir: str):
-    """Load compare_metrics.csv from latest backup (if exists)."""
-    if not backup_dir:
+    """Load compare_metrics.csv.
+
+    Searches in order:
+      1. run_compare_* subdirectories inside backup_dir
+      2. run_compare_* subdirectories inside output/runs/ directly
+      3. Synthesise from individual metrics.json files in output/runs/
+    """
+    def _try_load_csv(path):
+        if os.path.exists(path):
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                pass
         return None
-    compare_dirs = glob.glob(os.path.join(backup_dir, 'run_compare_*'))
-    compare_dirs = [p for p in compare_dirs if os.path.isdir(p)]
-    if not compare_dirs:
+
+    # 1. Legacy backup compare dirs
+    if backup_dir and os.path.isdir(backup_dir):
+        compare_dirs = glob.glob(os.path.join(backup_dir, 'run_compare_*'))
+        compare_dirs = [p for p in compare_dirs if os.path.isdir(p)]
+        if compare_dirs:
+            latest = max(compare_dirs, key=os.path.getmtime)
+            df = _try_load_csv(os.path.join(latest, 'compare_metrics.csv'))
+            if df is not None:
+                return df
+
+    # 2. run_compare_* directly in output/runs/
+    if os.path.isdir(OUTPUT_RUNS_DIR):
+        compare_dirs = glob.glob(os.path.join(OUTPUT_RUNS_DIR, 'run_compare_*'))
+        compare_dirs = [p for p in compare_dirs if os.path.isdir(p)]
+        if compare_dirs:
+            latest = max(compare_dirs, key=os.path.getmtime)
+            df = _try_load_csv(os.path.join(latest, 'compare_metrics.csv'))
+            if df is not None:
+                return df
+
+    # 3. Synthesise from individual metrics.json files
+    return _synthesise_compare_metrics()
+
+
+def _synthesise_compare_metrics():
+    """Build a compare_metrics DataFrame on-the-fly from the latest run of each model type.
+
+    Scans output/runs/ for the most recent run per model (gru_8features, lstm_8features,
+    seq2seq_attention_8features) and reads their metrics.json.
+    Returns a DataFrame compatible with _pick_champion_and_runner_up, or None.
+    """
+    if not os.path.isdir(OUTPUT_RUNS_DIR):
         return None
-    latest_compare = max(compare_dirs, key=os.path.getmtime)
-    csv_path = os.path.join(latest_compare, 'compare_metrics.csv')
-    if not os.path.exists(csv_path):
+
+    model_patterns = {
+        'gru_8features': 'gru_8features_*',
+        'lstm_8features': 'lstm_8features_*',
+        'seq2seq_attention_8features': 'seq2seq_attention_8features_*',
+    }
+
+    rows = []
+    for model_key, pattern in model_patterns.items():
+        top_dirs = sorted(
+            glob.glob(os.path.join(OUTPUT_RUNS_DIR, pattern)),
+            key=os.path.getmtime, reverse=True
+        )
+        for top_dir in top_dirs:
+            # Each top_dir may contain a runs/ subdirectory with the actual run
+            run_subdirs = glob.glob(os.path.join(top_dir, 'runs', 'run_*'))
+            if not run_subdirs:
+                run_subdirs = [top_dir]
+            run_dir = max(run_subdirs, key=os.path.getmtime)
+            metrics_path = os.path.join(run_dir, 'metrics.json')
+            if not os.path.exists(metrics_path):
+                continue
+            try:
+                with open(metrics_path, 'r', encoding='utf-8') as f:
+                    m = json.load(f)
+            except Exception:
+                continue
+
+            sw = m.get('suitability_warning') or {}
+            sw_w = m.get('suitability_warning_weighted') or sw  # single-step models have no weighted
+
+            rows.append({
+                'model': model_key,
+                'run_dir': run_dir,
+                'suitability_warning_recall_weighted': sw_w.get('recall_weighted', sw.get('recall', 0.0)),
+                'suitability_warning_f1_weighted': sw_w.get('f1_weighted', sw.get('f1', 0.0)),
+                'suitability_warning_brier_weighted': sw_w.get('brier_weighted', sw.get('brier', 1.0)),
+                'suitability_warning_ece_weighted': sw_w.get('ece_weighted', sw.get('ece', 1.0)),
+                'mae': (m.get('regression') or {}).get('mae', float('inf')),
+                'smape': (m.get('regression') or {}).get('smape', float('inf')),
+            })
+            break  # only latest run per model type
+
+    if not rows:
         return None
-    try:
-        return pd.read_csv(csv_path)
-    except Exception as e:
-        print(f"Failed to read compare_metrics.csv: {e}")
+    return pd.DataFrame(rows)
+
+
+def _resolve_backup_run_dir(backup_dir: str, run_dir_in_report):
+    """Resolve a run_dir reference to an absolute path.
+
+    Handles three cases:
+      1. run_dir_in_report is already an absolute path that exists → return as-is
+      2. Basename lookup inside backup_dir
+      3. Basename lookup inside output/runs/ (new default)
+    """
+    if not run_dir_in_report:
         return None
+    rdir = str(run_dir_in_report).rstrip('\\/')
+
+    # Case 1: already absolute and exists
+    if os.path.isdir(rdir):
+        return rdir
+
+    base = os.path.basename(rdir)
+
+    # Case 2: inside backup_dir
+    if backup_dir and os.path.isdir(backup_dir):
+        cand = os.path.join(backup_dir, base)
+        if os.path.isdir(cand):
+            return cand
+        matches = [p for p in glob.glob(os.path.join(backup_dir, f'{base}*')) if os.path.isdir(p)]
+        if matches:
+            return matches[0]
+
+    # Case 3: inside output/runs/ (direct or nested)
+    if os.path.isdir(OUTPUT_RUNS_DIR):
+        cand = os.path.join(OUTPUT_RUNS_DIR, base)
+        if os.path.isdir(cand):
+            return cand
+        # nested: output/runs/<model_timestamp>/runs/<run_name>
+        for nested in glob.glob(os.path.join(OUTPUT_RUNS_DIR, '*', 'runs', base)):
+            if os.path.isdir(nested):
+                return nested
+
+    return None
 
 
 def _pick_champion_and_runner_up(df_cmp: pd.DataFrame):
@@ -161,19 +287,6 @@ def _pick_champion_and_runner_up(df_cmp: pd.DataFrame):
     runner = top[1] if len(top) > 1 else None
     third = top[2] if len(top) > 2 else None
     return champ, runner, third
-
-
-def _resolve_backup_run_dir(backup_dir: str, run_dir_in_report: str):
-    """Resolve run_dir reference (like output\\runs\\run_xxx) to the backup copy folder."""
-    if not backup_dir or not run_dir_in_report:
-        return None
-    base = os.path.basename(str(run_dir_in_report).rstrip('\\/'))
-    cand = os.path.join(backup_dir, base)
-    if os.path.isdir(cand):
-        return cand
-    matches = glob.glob(os.path.join(backup_dir, f"{base}*"))
-    matches = [p for p in matches if os.path.isdir(p)]
-    return matches[0] if matches else None
 
 
 def _safe_read_json(path: str):
@@ -405,7 +518,7 @@ def _holiday_i18n_name(name_zh: str):
 
 
 def _load_master_history_from_processed():
-    """Load full historical timeline (2024-2026) from processed dataset.
+    """Load full historical timeline (2016-2026) from processed dataset.
 
     Returns DataFrame with columns:
       - date (python date)
@@ -413,8 +526,13 @@ def _load_master_history_from_processed():
       - precip_mm, temp_high_c, temp_low_c, weather_code_en, wind_level,
         wind_dir_en, wind_max, aqi_value, aqi_level_en
     """
-    processed_path = os.path.join(base_dir, 'data', 'processed', 'jiuzhaigou_8features_latest.csv')
-    if not os.path.exists(processed_path):
+    # 优先使用10年数据文件，回退到旧文件
+    candidates = [
+        os.path.join(base_dir, 'data', 'processed', 'jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv'),
+        os.path.join(base_dir, 'data', 'processed', 'jiuzhaigou_8features_latest.csv'),
+    ]
+    processed_path = next((p for p in candidates if os.path.exists(p)), None)
+    if processed_path is None:
         return None
 
     try:

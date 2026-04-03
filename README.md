@@ -18,7 +18,8 @@
 10. [可解释性分析](#10-可解释性分析)
 11. [Web 应用架构](#11-web-应用架构)
 12. [MLOps 工程规范](#12-mlops-工程规范)
-13. [项目维护信息](#13-项目维护信息)
+13. [待完成事项](#13-待完成事项)
+14. [项目维护信息](#14-项目维护信息)
 
 ---
 
@@ -525,7 +526,46 @@ output/runs/<run_name>/
 
 ---
 
-## 13. 项目维护信息
+## 13. 待完成事项
+
+以下内容已有代码框架，但需要实际运行或进一步完善后才能作为最终结果使用。
+
+### 13.1 Ablation Study 实验结果
+
+`scripts/ablation_study.py` 已实现，但尚未实际运行获取图表。需要执行：
+
+```bash
+python scripts/ablation_study.py --epochs 80
+```
+
+运行后将在 `output/ablation/<timestamp>/` 生成 `ablation_study.png` 和 `ablation_results.csv`，可直接用于论文图表。
+
+### 13.2 SHAP 特征重要性结果
+
+`scripts/shap_analysis.py` 已实现，但尚未实际运行。需要执行：
+
+```bash
+pip install shap
+python scripts/shap_analysis.py --model all
+```
+
+运行后将在 `output/shap/<timestamp>/` 生成特征重要性柱状图。
+
+### 13.3 校准问题（论文说明）
+
+当前预警概率通过 logistic 变换（temperature=1000）从点预测转换而来，本质上是**确定性分类器的概率近似**，而非真正的概率输出。Reliability diagram 呈现双峰分布（大量样本集中在 0 和 1 附近）是这一设计的直接结果。
+
+**论文中需要明确说明**：
+- Brier Score 和 ECE 用于衡量这一近似的质量，不应与真正概率模型（如 MC Dropout、Conformal Prediction）的校准指标直接比较
+- 如需真正的概率输出，可考虑 Platt Scaling 或 Isotonic Regression 后校准（`scripts/calibrate_model.py` 有框架）
+
+### 13.4 前端重设计
+
+Dashboard v2 的数据流依赖 `output/backups/` 目录（已修复为直接读取 `output/runs/`），但前端页面本身需要根据新的 API 结构重新设计，以完整展示三模型在线预测、天气预报集成和风险评估功能。
+
+---
+
+## 14. 项目维护信息
 
 **技术栈**：Python 3.10+, TensorFlow 2.15, Flask 3.0, ECharts, SQLite, APScheduler, SHAP
 
