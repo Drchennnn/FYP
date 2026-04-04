@@ -8,6 +8,12 @@ from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, render_template, redirect, url_for
 from sklearn.preprocessing import MinMaxScaler
 
+# --- Path Setup (must come before project-relative imports) ---
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 # --- Import Keras/TensorFlow (Compatibility Layer) ---
 # 移除 TF_USE_LEGACY_KERAS 环境变量设置，因为我们使用的是 Keras 2.15.0，它应该原生工作
 # 或者需要安装 tf_keras 包
@@ -57,12 +63,6 @@ try:
     print("Seq2Seq custom objects registered successfully.")
 except Exception as _e:
     print(f"WARNING: Could not import Seq2Seq custom objects: {_e}")
-
-# --- Path Setup ---
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
 
 # --- App Imports ---
 from web_app.config import Config
@@ -451,13 +451,12 @@ def get_latest_model_path():
     return keras_path if os.path.exists(keras_path) else None
 
 def load_model():
-    """Load the LSTM model using available libraries"""
+    """Legacy single-model loader — kept for /api/predict endpoint compatibility.
+    Dashboard v3 uses _load_model_by_key() instead."""
     global lstm_model
     path = get_latest_model_path()
-    
     if not path:
-        print("WARNING: No available model file found.")
-        return
+        return  # 静默跳过，dashboard 不依赖此函数
 
     print(f"Loading model from: {path}")
     try:
