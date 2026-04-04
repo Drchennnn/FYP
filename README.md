@@ -6,6 +6,27 @@
 
 ---
 
+## 每日数据更新
+
+每天运行一次以下命令，将昨日官网客流数据追加到训练集并刷新预测：
+
+```bash
+python scripts/append_and_retrain.py --append
+```
+
+执行后效果：
+- **单步模型**（GRU/LSTM）：backfill 向后延伸一天，历史回测段右端 +1
+- **多步模型**（MIMO/Seq2Seq）：下次页面加载时自动以最新 30 天为输入重新推理，预测窗口自动后移
+- **天气数据**：由 Open-Meteo 自动拉取，无需手动操作
+
+如需重训模型权重（建议每月一次）：
+
+```bash
+python scripts/append_and_retrain.py --retrain
+```
+
+---
+
 ## 📚 目录
 
 1. [项目整体架构](#1-项目整体架构)
