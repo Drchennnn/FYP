@@ -1051,14 +1051,16 @@ def api_forecast():
         # 历史窗口的日期
         hist_dates = [last_date - timedelta(days=look_back - 1 - i) for i in range(look_back)]
 
-        def _predict_single_step_model(model, visitor_window, lag7_window, hist_dates):
-            """单步模型（LSTM/GRU）滚动预测 horizon 步"""
+        def _predict_single_step_model(model, visitor_window, lag7_window, hist_dates, steps=None):
+            """单步模型（LSTM/GRU）滚动预测，默认 horizon 步，可指定 steps 扩展推理。"""
+            if steps is None:
+                steps = horizon
             preds = []
             v_win = list(visitor_window)
             l7_win = list(lag7_window)
             cur_dates = list(hist_dates)
 
-            for step in range(horizon):
+            for step in range(steps):
                 pred_date = last_date + timedelta(days=step + 1)
                 # 获取该日天气预报
                 wrow = weather_df[weather_df['date'] == pred_date]
@@ -1170,9 +1172,35 @@ def api_forecast():
                 results[col_name] = None
 
         # ── 6. 组装结果 DataFrame ──
+        # 展示窗口：today ~ today+6（共 horizon 天）
+        # MIMO/Seq2Seq：推理结果直接映射到 today 起的 horizon 天
+        #   （encoder 输入仍是 last_date 前30天真实数据，中间空缺段不影响输入）
+        # 单步：从 last_date+1 开始滚动推理到 today+horizon-1，
+        #   today 之前的中间步骤结果不展示（设为 NaN）
+        from datetime import date as _date_cls
+        today = _date_cls.today()
+        # 单步需要从 last_date+1 推理到 today+horizon-1，步数可能 > horizon
+        gap_days = max(0, (today - last_date).days - 1)  # last_date+1 到 today 之间的天数
+        single_total_steps = gap_days + horizon
+
+        # 单步推理（始终执行，步数覆盖 last_date+1 ~ today+horizon-1）
+        single_results = {}
+        for mk_single, col_single in [('gru_8features', 'gru_single_pred'),
+                                       ('lstm_8features', 'lstm_single_pred')]:
+            m_single = _load_model_by_key(mk_single)
+            if m_single is not None:
+                try:
+                    single_results[col_single] = _predict_single_step_model(
+                        m_single, list(hist_scaled), list(lag7_window),
+                        list(hist_dates), steps=single_total_steps
+                    )
+                except Exception as e:
+                    print(f"Single-step extended inference failed ({col_single}): {e}")
+                    single_results[col_single] = None
+
         out_rows = []
         for step in range(horizon):
-            pred_date = last_date + timedelta(days=step + 1)
+            pred_date = today + timedelta(days=step)
             wrow = weather_df[weather_df['date'] == pred_date]
             _precip = float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan')
             _temp_h = float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan')
@@ -1188,25 +1216,28 @@ def api_forecast():
                 'wind_level': _windspeed_to_level(_wspd),
                 'wind_max': _wspd if not (isinstance(_wspd, float) and np.isnan(_wspd)) else None,
             }
-            for col_name in ['gru_single_pred', 'gru_mimo_pred', 'lstm_single_pred', 'lstm_mimo_pred', 'seq2seq_pred']:
+            # MIMO/Seq2Seq：推理结果直接对应 today+step（第0步=today）
+            for col_name in ['gru_mimo_pred', 'lstm_mimo_pred', 'seq2seq_pred']:
                 preds = results.get(col_name)
                 row[col_name] = preds[step] if preds and step < len(preds) else float('nan')
+            # 单步：从 last_date+1 开始滚动，gap_days 步后才到 today
+            single_step_idx = gap_days + step
+            for col_name in ['gru_single_pred', 'lstm_single_pred']:
+                preds = single_results.get(col_name)
+                row[col_name] = preds[single_step_idx] if preds and single_step_idx < len(preds) else float('nan')
             out_rows.append(row)
         return pd.DataFrame(out_rows)
 
     # ── MIMO + Seq2Seq 始终触发在线推理，单步只读 CSV ──
     # 设计说明：
-    #   单步（GRU/LSTM）：CSV 历史回测到测试集截止日，之后留白（数据滞后所致，正常现象）
-    #   MIMO/Seq2Seq：实时推理 last_real_date+1 ~ last_real_date+7，覆盖数据空缺段
+    #   单步（GRU/LSTM）：从 last_date+1 滚动推理到 today+horizon-1，只展示 today 起的部分
+    #   MIMO/Seq2Seq：encoder 用 last_date 前30天真实数据，输出直接映射到 today~today+6
     online_used = False
     try:
         df_future = _online_future_forecast_all_models(df_master[['date', 'actual']].copy(), h)
         if df_future is not None and not df_future.empty:
             online_used = True
             df_future['actual'] = np.nan
-            # 单步列在 df_future 中始终为 NaN（不做在线推理）
-            for _c in ['gru_single_pred', 'lstm_single_pred']:
-                df_future[_c] = np.nan
             # 补齐其他可能缺失的列
             for _c in ['wind_dir_en', 'aqi_value', 'aqi_level_en']:
                 if _c not in df_future.columns:
@@ -1302,33 +1333,19 @@ def api_forecast():
 
     time_axis = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in df_merge['date'].tolist()]
 
-    # forecast window：以 MIMO/Seq2Seq 在线预测的最后日期为右端
-    # 单步 CSV 可能有 backfill，但展示窗口始终对齐到多步预测的右端
-    _online_pred_cols = ['gru_mimo_pred', 'lstm_mimo_pred', 'seq2seq_pred']
-    _all_pred_cols = list(col_map.values())
-    forecast_end_idx = 0
-    # 优先用在线推理列的末端
-    for col in _online_pred_cols:
-        if col in df_merge.columns:
-            col_s = df_merge[col].astype(float)
-            valid = ~col_s.isna()
-            if valid.any():
-                col_end = int(np.where(valid.values)[0].max())
-                if col_end > forecast_end_idx:
-                    forecast_end_idx = col_end
-    # fallback：用所有预测列的末端
-    if forecast_end_idx == 0:
-        for col in _all_pred_cols:
-            if col in df_merge.columns:
-                col_s = df_merge[col].astype(float)
-                valid = ~col_s.isna()
-                if valid.any():
-                    col_end = int(np.where(valid.values)[0].max())
-                    if col_end > forecast_end_idx:
-                        forecast_end_idx = col_end
-    if forecast_end_idx == 0:
-        forecast_end_idx = len(time_axis) - 1
-    forecast_start_idx = max(0, forecast_end_idx - h + 1)
+    # forecast window：以今天为起点，今天+h-1 为终点
+    # 与 _online_future_forecast_all_models 的输出日期对齐
+    from datetime import date as _fc_date_cls
+    _today_str = _fc_date_cls.today().isoformat()
+    _today_end_str = (_fc_date_cls.today() + timedelta(days=h - 1)).isoformat()
+    forecast_start_idx = 0
+    forecast_end_idx = len(time_axis) - 1
+    if _today_str in time_axis:
+        forecast_start_idx = time_axis.index(_today_str)
+    if _today_end_str in time_axis:
+        forecast_end_idx = time_axis.index(_today_end_str)
+    elif forecast_start_idx > 0:
+        forecast_end_idx = min(forecast_start_idx + h - 1, len(time_axis) - 1)
     forecast_mode = 'online_mimo_seq2seq' if online_used else 'offline_backtest'
 
     def _to_num_list(col):
