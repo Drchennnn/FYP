@@ -348,19 +348,20 @@ def _load_predictions(run_dir: str):
         if 'y_true' not in df.columns:
             df['y_true'] = np.nan
 
-        # Seq2Seq CSVs store all 7 decoder steps per window (one row per step).
-        # For offline display we only want the first-step prediction (which aligns
-        # with the ground-truth date) for dates that have real y_true values.
-        # Strategy: keep rows where y_true is not NaN first; for any remaining
-        # duplicates take the first occurrence (= earliest decoder step).
-        if 'y_true' in df.columns:
+        # Seq2Seq CSVs store 7 rows per date (one per decoder step).
+        # De-duplicate: prefer rows with real y_true; among ties take first occurrence.
+        if df.duplicated(subset='date').any():
+            # There are duplicate dates → likely Seq2Seq multi-step output.
+            # Split: rows with y_true (test-set) and rows without (backfill future).
             has_true = df['y_true'].notna()
-            df_with_true = df[has_true]
-            if not df_with_true.empty:
-                df = df_with_true
-        # De-duplicate: if multiple rows share the same date take the first.
-        df = df.drop_duplicates(subset='date', keep='first')
-        df_agg = df[['date', 'y_true', 'y_pred']].sort_values('date')
+            df_real = df[has_true].drop_duplicates(subset='date', keep='first')
+            df_future = df[~has_true].drop_duplicates(subset='date', keep='first')
+            # Exclude future dates already covered by real rows
+            df_future = df_future[~df_future['date'].isin(set(df_real['date']))]
+            df = pd.concat([df_real, df_future], ignore_index=True)
+        # For non-duplicated CSVs (GRU/LSTM single-step + backfill): keep all rows,
+        # including y_true=NaN backfill rows (they carry valid y_pred values).
+        df_agg = df[['date', 'y_true', 'y_pred']].drop_duplicates(subset='date', keep='first').sort_values('date')
         return df_agg
     except Exception as e:
         print(f"Failed to load predictions from {pred_path}: {e}")
@@ -982,13 +983,15 @@ def api_forecast():
                     'meteo_precip_sum', 'temp_high_c', 'temp_low_c',
                     'tourism_num', 'tourism_num_lag_7_scaled', 'date'
                 ])
+                # 只用有真实访客数据的行（过滤 append_future_weather 追加的 NaN 行）
+                _hist_df = _hist_df[_hist_df['tourism_num'].notna()].reset_index(drop=True)
                 precip_min = float(_hist_df['meteo_precip_sum'].min())
                 precip_max = float(_hist_df['meteo_precip_sum'].max()) or 50.0
                 temp_high_min = float(_hist_df['temp_high_c'].min())
                 temp_high_max = float(_hist_df['temp_high_c'].max())
                 temp_low_min = float(_hist_df['temp_low_c'].min())
                 temp_low_max = float(_hist_df['temp_low_c'].max())
-                # 最近 look_back+7 天的 lag7 scaled 值（用于初始化滚动窗口）
+                # 最近 look_back+7 天的 lag7 scaled 值（用于初始化滚动窗口，全为真实值）
                 lag7_vals = _hist_df['tourism_num_lag_7_scaled'].values[-(look_back + 7):]
             except Exception:
                 pass
