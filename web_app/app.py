@@ -362,6 +362,12 @@ def _load_predictions(run_dir: str):
         # For non-duplicated CSVs (GRU/LSTM single-step + backfill): keep all rows,
         # including y_true=NaN backfill rows (they carry valid y_pred values).
         df_agg = df[['date', 'y_true', 'y_pred']].drop_duplicates(subset='date', keep='first').sort_values('date')
+
+        # 截断：today 及以后的行由在线推理填充，CSV 里的不展示
+        from datetime import date as _today_cls
+        _today = _today_cls.today()
+        df_agg = df_agg[df_agg['date'] < _today]
+
         return df_agg
     except Exception as e:
         print(f"Failed to load predictions from {pred_path}: {e}")

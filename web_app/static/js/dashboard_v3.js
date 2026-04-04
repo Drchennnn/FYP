@@ -351,7 +351,13 @@
       // Re-render weather UI with fresh data if we have a payload
       if (state.payload) {
         renderWxStrip(state.payload);
+        renderForecastStrip(state.payload);  // 7天卡片天气图标也刷新
         if (state.selectedIdx !== null) renderWeatherCard(state.selectedIdx);
+        else {
+          // 默认选中预测窗口最后一天
+          const defaultIdx = state.payload.forecast.endIndex;
+          updateSelection(defaultIdx);
+        }
       }
     } catch (e) {
       console.warn('fetchWeatherDirect failed:', e);
@@ -381,7 +387,7 @@
     setStatus('', t('status_loading'));
 
     // 缓存 key：固定 online 模式，30分钟 TTL
-    const cacheKey = `v3_forecast_v5_h${state.h}`;
+    const cacheKey = `v3_forecast_v6_h${state.h}`;
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
