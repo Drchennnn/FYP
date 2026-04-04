@@ -119,7 +119,9 @@
     modelsLoaded: false,
     curveVisible: { actual: true, champion: true, runner: true, third: true },
     // 前端直接从 Open-Meteo 获取的天气数据：date string → weather object
-    wxData: {}
+    wxData: {},
+    // 后端 payload 历史天气（2016~今天）：date string → weather object
+    histWxData: {}
   };
 
   // ─────────────────────────────────────────────
@@ -289,6 +291,26 @@
     return out;
   }
 
+  // 将 payload.weather 数组转为 date→weather map，存入 state.histWxData
+  // 供 getWxForDate() 查询历史天气（2016~今天）
+  function buildHistWxData(payload) {
+    const { timeAxis, weather } = payload;
+    const map = {};
+    for (let i = 0; i < timeAxis.length; i++) {
+      const date = timeAxis[i];
+      if (!date) continue;
+      const th = safeNum(weather.tempHighC[i]);
+      const tl = safeNum(weather.tempLowC[i]);
+      const precip = safeNum(weather.precipMm[i]);
+      const code = weather.weatherCodeEn[i] || null;
+      const windMax = safeNum(weather.windMax[i]);
+      if (th !== null || tl !== null || precip !== null) {
+        map[date] = { th, tl, precip, code, windMax };
+      }
+    }
+    state.histWxData = map;
+  }
+
   // ─────────────────────────────────────────────
   // API fetch
   // ─────────────────────────────────────────────
@@ -362,11 +384,15 @@
     }
   }
 
-  // 根据 date string 从 wxData 查找天气，支持 ±3 天 fallback
+  // 根据 date string 查找天气：优先 state.wxData（近期/未来），fallback payload 历史天气
+  // state.histWxData: { "YYYY-MM-DD": {th,tl,precip,code,windMax} } 由 buildHistWxData() 填充
   function getWxForDate(dateStr) {
     if (!dateStr) return null;
+    // 1. 优先 Open-Meteo 直连数据（近14天+未来14天）
     if (state.wxData[dateStr]) return state.wxData[dateStr];
-    // fallback: search ±3 days
+    // 2. fallback: 后端 payload 历史天气
+    if (state.histWxData && state.histWxData[dateStr]) return state.histWxData[dateStr];
+    // 3. ±3 天 fallback（两个数据源都找不到时）
     const base = new Date(dateStr + 'T00:00:00');
     for (let delta = 1; delta <= 3; delta++) {
       for (const sign of [1, -1]) {
@@ -374,6 +400,7 @@
         d.setDate(d.getDate() + sign * delta);
         const key = d.toISOString().slice(0, 10);
         if (state.wxData[key]) return state.wxData[key];
+        if (state.histWxData && state.histWxData[key]) return state.histWxData[key];
       }
     }
     return null;
@@ -1092,6 +1119,7 @@
   // Render all forecast page components
   // ─────────────────────────────────────────────
   function renderAll(payload) {
+    buildHistWxData(payload);  // 先把后端历史天气建成 date map，供 getWxForDate 使用
     renderWxStrip(payload);
     renderChartSub(payload);
     renderChart(payload);
@@ -1487,7 +1515,8 @@
       refreshBtn.addEventListener('click', () => {
         state.analysisLoaded = false;
         state.modelsLoaded = false;
-        state.wxData = {};  // 清空天气缓存，强制重新拉取
+        state.wxData = {};
+        state.histWxData = {};  // 清空历史天气缓存
         loadForecast();
       });
     }
