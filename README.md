@@ -87,19 +87,16 @@ FYP/
 │   ├── ablation/               # Ablation Study 结果
 │   └── shap/                   # SHAP 特征重要性结果
 ├── scripts/
+│   ├── append_and_retrain.py   # 数据追加 + 月度重训管道
+│   ├── backfill_predictions.py # 历史预测回填（补全测试集空缺）
 │   ├── walk_forward_eval.py    # Walk-forward 滚动窗口评估
 │   ├── ablation_study.py       # 特征消融实验
 │   ├── shap_analysis.py        # SHAP 特征重要性分析
-│   ├── append_and_retrain.py   # 数据追加 + 月度重训管道
-│   ├── backfill_predictions.py # 历史预测回填（补全测试集空缺）
-│   ├── online_predict.py       # Seq2Seq 在线推断脚本
 │   ├── calibrate_model.py      # 概率校准工具（Platt/Isotonic）
-│   ├── analyze_data_split.py   # 数据切分分析
+│   ├── gen_holidays.py         # 生成节假日配置（web_app/holidays.json）
 │   └── sync_to_cloud.py        # CSV → SQLite 同步
 ├── realtime/
-│   ├── jiuzhaigou_crawler.py   # 实时爬虫
-│   ├── data_fetcher.py         # Open-Meteo 天气获取
-│   └── daily_update.py         # 每日更新脚本
+│   └── jiuzhaigou_crawler.py   # 实时爬虫
 ├── web_app/
 │   ├── app.py                  # Flask 后端（含在线预测+APScheduler）
 │   ├── static/
@@ -400,7 +397,7 @@ peak_threshold = Quantile(train_visitor_counts, q=0.75)
 
 **位置**：`scripts/append_and_retrain.py`，`append_new_data()`
 
-**自动触发**：每日 08:30（APScheduler，Asia/Shanghai）
+**自动触发**：每日 08:30（APScheduler，Asia/Shanghai）；包含爬取客流 + 拉取天气 + 写入 CSV 完整流程
 
 **流程**：
 1. 从爬虫获取昨日客流数据
@@ -429,15 +426,6 @@ python scripts/append_and_retrain.py --append --retrain
 
 # 预览（不写入）
 python scripts/append_and_retrain.py --append --dry-run
-```
-
-### 9.4 每日爬取（独立任务）
-
-**自动触发**：每日 09:00（APScheduler）
-
-```bash
-# 手动触发
-python realtime/daily_update.py
 ```
 
 ---
