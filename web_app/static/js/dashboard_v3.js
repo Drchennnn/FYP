@@ -348,15 +348,13 @@
         };
       });
       state.wxData = newWx;
-      // Re-render weather UI with fresh data if we have a payload
+      // wxData 就绪后重新触发 updateSelection，刷新侧边天气卡片和7天条
       if (state.payload) {
         renderWxStrip(state.payload);
-        renderForecastStrip(state.payload);  // 7天卡片天气图标也刷新
-        if (state.selectedIdx !== null) renderWeatherCard(state.selectedIdx);
-        else {
-          // 默认选中预测窗口最后一天
-          const defaultIdx = state.payload.forecast.endIndex;
-          updateSelection(defaultIdx);
+        renderForecastStrip(state.payload);
+        // 用当前选中的 idx 重新渲染天气卡片（联动不变）
+        if (state.selectedIdx !== null) {
+          updateSelection(state.selectedIdx);
         }
       }
     } catch (e) {
@@ -1094,19 +1092,18 @@
   // Render all forecast page components
   // ─────────────────────────────────────────────
   function renderAll(payload) {
-    renderWxStrip(payload);   // 先用已有 wxData 渲染（可能为空，会显示"加载中"）
+    renderWxStrip(payload);
     renderChartSub(payload);
     renderChart(payload);
     renderWeatherChart(payload);
     renderForecastStrip(payload);
     renderReco(payload);
     updateCurveToggleLabels(payload);
-    // Default selection: latest index with any prediction
-    const { series } = payload;
-    const defaultIdx = latestPredIdx(series) >= 0 ? latestPredIdx(series) : payload.forecast.endIndex;
+    // 默认选中今天（forecast.startIndex），等 wxData 拉到后会自动刷新
+    const defaultIdx = payload.forecast.startIndex;
     updateSelection(defaultIdx);
 
-    // 异步拉取天气（前端直连 Open-Meteo），完成后 fetchWeatherDirect 内部会自动刷新天气卡片和顶部条
+    // 异步拉取天气（前端直连 Open-Meteo），完成后重新触发 updateSelection 刷新侧边天气卡片
     fetchWeatherDirect();
   }
 
