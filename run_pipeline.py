@@ -16,7 +16,7 @@ from pathlib import Path
 import tensorflow as tf
 
 # ==================== 常量配置 ====================
-SUPPORTED_MODELS = ["lstm", "gru", "seq2seq_attention"]
+SUPPORTED_MODELS = ["lstm", "gru", "seq2seq_attention", "gru_mimo", "lstm_mimo"]
 SUPPORTED_FEATURES = [4, 8]
 BASE_OUTPUT_DIR = Path("E:/openclaw/my_project/workspace/FYP/output/runs")
 ROOT_DIR = Path(__file__).resolve().parent
@@ -51,9 +51,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 支持的模型白名单:
-  - lstm: LSTM模型（支持4特征和8特征）
-  - gru: GRU模型（支持4特征和8特征）  
-  - seq2seq_attention: Seq2Seq+Attention模型（仅支持8特征）
+  - lstm: LSTM模型（单步，支持4/8特征）
+  - gru: GRU模型（单步，支持4/8特征）
+  - seq2seq_attention: Seq2Seq+Attention模型（多步，仅8特征）
+  - gru_mimo: GRU MIMO模型（多步直接输出，仅8特征）
+  - lstm_mimo: LSTM MIMO模型（多步直接输出，仅8特征）
   
 示例用法:
   python run_pipeline.py --model lstm --features 8
@@ -165,6 +167,56 @@ def run_gru(
     
     subprocess.run(cmd, check=True)
 
+def run_gru_mimo(
+    epochs: int,
+    look_back: int,
+    output_dir: Path,
+    figures_dir: Path,
+    weights_dir: Path,
+    save_plots: bool
+) -> None:
+    """运行GRU MIMO多步输出模型"""
+    print("Running GRU MIMO model...")
+    import subprocess
+    cmd = [
+        sys.executable,
+        "models/gru/train_gru_mimo_8features.py",
+        "--input-csv", "data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
+        "--epochs", str(epochs),
+        "--look-back", str(look_back),
+        "--save-plots" if save_plots else "--no-save-plots",
+        "--output-dir", str(output_dir),
+        "--model-dir", str(ROOT_DIR / "model"),
+        "--run-name", f"run_{get_timestamp()}_lb{look_back}_ep{epochs}_gru_mimo_8features"
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def run_lstm_mimo(
+    epochs: int,
+    look_back: int,
+    output_dir: Path,
+    figures_dir: Path,
+    weights_dir: Path,
+    save_plots: bool
+) -> None:
+    """运行LSTM MIMO多步输出模型"""
+    print("Running LSTM MIMO model...")
+    import subprocess
+    cmd = [
+        sys.executable,
+        "models/lstm/train_lstm_mimo_8features.py",
+        "--input-csv", "data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
+        "--epochs", str(epochs),
+        "--look-back", str(look_back),
+        "--save-plots" if save_plots else "--no-save-plots",
+        "--output-dir", str(output_dir),
+        "--model-dir", str(ROOT_DIR / "model"),
+        "--run-name", f"run_{get_timestamp()}_lb{look_back}_ep{epochs}_lstm_mimo_8features"
+    ]
+    subprocess.run(cmd, check=True)
+
+
 def run_seq2seq_attention(
     epochs: int,
     look_back: int,
@@ -201,8 +253,8 @@ def main():
     args = parse_args()
     
     # 验证参数
-    if args.model == "seq2seq_attention" and args.features != 8:
-        print("Warning: Seq2Seq+Attention model only supports 8 features, automatically set to 8")
+    if args.model in ("seq2seq_attention", "gru_mimo", "lstm_mimo") and args.features != 8:
+        print(f"Warning: {args.model} only supports 8 features, automatically set to 8")
         args.features = 8
     
     # 创建输出目录
@@ -235,12 +287,15 @@ def main():
             )
         elif args.model == "seq2seq_attention":
             run_seq2seq_attention(
-                args.epochs,
-                args.look_back,
-                output_dir,
-                figures_dir,
-                weights_dir,
-                args.save_plots
+                args.epochs, args.look_back, output_dir, figures_dir, weights_dir, args.save_plots
+            )
+        elif args.model == "gru_mimo":
+            run_gru_mimo(
+                args.epochs, args.look_back, output_dir, figures_dir, weights_dir, args.save_plots
+            )
+        elif args.model == "lstm_mimo":
+            run_lstm_mimo(
+                args.epochs, args.look_back, output_dir, figures_dir, weights_dir, args.save_plots
             )
             
         print("\nTraining completed!")

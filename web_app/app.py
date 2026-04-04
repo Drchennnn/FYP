@@ -46,10 +46,13 @@ try:
         Seq2SeqWithAttention,
         create_custom_asymmetric_loss,
     )
+    _loss_fn = create_custom_asymmetric_loss()
     _seq2seq_custom_objects = {
         'AttentionLayer': AttentionLayer,
         'Seq2SeqWithAttention': Seq2SeqWithAttention,
-        'custom_asymmetric_loss': create_custom_asymmetric_loss(),
+        'custom_asymmetric_loss': _loss_fn,
+        'custom_loss': _loss_fn,
+        'CustomAsymmetricLoss': _loss_fn,
     }
     print("Seq2Seq custom objects registered successfully.")
 except Exception as _e:
@@ -166,6 +169,8 @@ def _synthesise_compare_metrics():
         return None
 
     model_patterns = {
+        'gru_mimo_8features': 'gru_mimo_8features_*',
+        'lstm_mimo_8features': 'lstm_mimo_8features_*',
         'gru_8features': 'gru_8features_*',
         'lstm_8features': 'lstm_8features_*',
         'seq2seq_attention_8features': 'seq2seq_attention_8features_*',
@@ -343,8 +348,19 @@ def _load_predictions(run_dir: str):
         if 'y_true' not in df.columns:
             df['y_true'] = np.nan
 
-        df_agg = df.groupby('date', as_index=False).agg({'y_true': 'mean', 'y_pred': 'mean'})
-        df_agg = df_agg.sort_values('date')
+        # Seq2Seq CSVs store all 7 decoder steps per window (one row per step).
+        # For offline display we only want the first-step prediction (which aligns
+        # with the ground-truth date) for dates that have real y_true values.
+        # Strategy: keep rows where y_true is not NaN first; for any remaining
+        # duplicates take the first occurrence (= earliest decoder step).
+        if 'y_true' in df.columns:
+            has_true = df['y_true'].notna()
+            df_with_true = df[has_true]
+            if not df_with_true.empty:
+                df = df_with_true
+        # De-duplicate: if multiple rows share the same date take the first.
+        df = df.drop_duplicates(subset='date', keep='first')
+        df_agg = df[['date', 'y_true', 'y_pred']].sort_values('date')
         return df_agg
     except Exception as e:
         print(f"Failed to load predictions from {pred_path}: {e}")
@@ -564,6 +580,10 @@ def _load_master_history_from_processed():
             'aqi_level_en': df['aqi_level_en'] if 'aqi_level_en' in df.columns else None,
         })
 
+        # 过滤掉 append_future_weather 追加的未来天气行（actual=NaN 的行）
+        # 只保留有真实 visitor 数据的历史行
+        out = out[out['actual'].notna()]
+
         out = out.sort_values('date')
         out = out.groupby('date', as_index=False).agg({
             'actual': 'mean',
@@ -590,6 +610,10 @@ def _pretty_model_name(raw_key: str):
         return 'Seq2Seq+Attention (8 features)'
     if 'seq2seq' in k:
         return 'Seq2Seq (8 features)'
+    if 'gru_mimo' in k or ('gru' in k and 'mimo' in k):
+        return 'GRU-MIMO (8 features)'
+    if 'lstm_mimo' in k or ('lstm' in k and 'mimo' in k):
+        return 'LSTM-MIMO (8 features)'
     if 'gru' in k:
         return 'GRU (8 features)'
     if 'lstm' in k:
@@ -743,104 +767,105 @@ def api_metrics():
 
 @app.route('/api/forecast', methods=['GET'])
 def api_forecast():
-    """Offline artifact forecast API.
+    """Forecast API — 固定返回5条模型曲线。
 
-    Dashboard uses this endpoint for the full time span, and only visualizes the
-    latest *h* days as the forecast segment.
+    设计逻辑：
+      - GRU单步 / LSTM单步：只读离线 backfill CSV（历史回测段，到测试集结束日）
+        测试集结束日到当天的空白段由官网数据滞后造成，属正常现象。
+      - GRU多步(MIMO) / LSTM多步(MIMO) / Seq2Seq：始终触发在线实时推理，
+        输入为最近30天真实历史数据，输出 last_real_date+1 ~ last_real_date+7。
+        因不依赖滚动反馈，可连续覆盖数据空缺段，无误差累积。
 
     Query:
-      - h: int, [1, 14], window length
-      - include_all: 1/0, if 1 returns champion + runner-up (if available)
-      - mode: offline|online
-
-    Modes:
-      - offline (default): uses offline artifacts; "latest forecast" is the
-        latest predicted window in artifacts (backtest-style) anchored to last
-        predicted date.
-      - online: generate a true future forecast (h days) via the loaded LSTM
-        model and append to the end of the processed history timeline.
+      - h: int, [1, 14], 预测窗口长度（影响图表 zoom 范围，不影响模型推理步数）
     """
-
     h = int(request.args.get('h', 7))
     h = max(1, min(h, 14))
-    include_all = str(request.args.get('include_all', '0')).lower() in ['1', 'true', 'yes']
-    mode = str(request.args.get('mode', 'offline')).strip().lower()
-    if mode not in ['offline', 'online']:
-        mode = 'offline'
+    # mode 参数保留兼容性，但不再区分 online/offline 逻辑
+    mode = str(request.args.get('mode', 'online')).strip().lower()
 
-    models_resp = api_models().get_json() or {}
-    models = {m['model_id']: m for m in (models_resp.get('models') or [])}
-    if 'champion' not in models:
-        return jsonify({'error': 'Champion model not found in offline artifacts'}), 404
+    # ── 固定5个模型 key，直接从 output/runs 加载 ──
+    MODEL_KEYS = [
+        'gru_8features',
+        'gru_mimo_8features',
+        'lstm_8features',
+        'lstm_mimo_8features',
+        'seq2seq_attention_8features',
+    ]
 
-    def _load_one(mid: str):
-        run_dir = models.get(mid, {}).get('run_dir')
-        model_key = models.get(mid, {}).get('model_key')
-        metrics_path = os.path.join(run_dir, 'metrics.json') if run_dir else None
-        metrics = _safe_read_json(metrics_path) or {}
-        df = _load_predictions(run_dir)
-        return run_dir, model_key, metrics, df
+    def _find_latest_run_dir(model_key: str):
+        """找到 output/runs 下最新的该模型 run_dir。"""
+        pattern = model_key.replace('_8features', '_8features_*').replace('_attention_', '_attention_')
+        # 直接用 model_key 作为前缀匹配
+        top_dirs = sorted(
+            glob.glob(os.path.join(OUTPUT_RUNS_DIR, f'{model_key}_*')),
+            key=os.path.getmtime, reverse=True
+        )
+        for top_dir in top_dirs:
+            run_subdirs = glob.glob(os.path.join(top_dir, 'runs', 'run_*'))
+            if not run_subdirs:
+                run_subdirs = [top_dir]
+            run_dir = max(run_subdirs, key=os.path.getmtime)
+            if os.path.exists(os.path.join(run_dir, 'metrics.json')):
+                return run_dir
+        return None
 
-    champ_run, champ_key, champ_metrics, df_c = _load_one('champion')
-    if df_c is None or df_c.empty:
-        return jsonify({'error': 'No prediction artifacts found', 'run_dir': champ_run}), 404
+    # 加载各模型数据
+    model_data = {}  # key -> {run_dir, df, metrics}
+    for mk in MODEL_KEYS:
+        run_dir = _find_latest_run_dir(mk)
+        df = _load_predictions(run_dir) if run_dir else None
+        metrics = _safe_read_json(os.path.join(run_dir, 'metrics.json')) if run_dir else {}
+        model_data[mk] = {'run_dir': run_dir, 'df': df, 'metrics': metrics or {}}
 
-    runner_available = include_all and ('runner_up' in models)
-    run_run, run_key, run_metrics, df_r = (None, None, {}, None)
-    if runner_available:
-        run_run, run_key, run_metrics, df_r = _load_one('runner_up')
-        if df_r is None or df_r.empty:
-            runner_available = False
+    # 至少需要一个模型有数据
+    if all(v['df'] is None or v['df'].empty for v in model_data.values()):
+        return jsonify({'error': 'No prediction artifacts found'}), 404
 
-    third_available = include_all and ('third' in models)
-    third_run, third_key, third_metrics, df_t = (None, None, {}, None)
-    if third_available:
-        third_run, third_key, third_metrics, df_t = _load_one('third')
-        if df_t is None or df_t.empty:
-            third_available = False
-
-    # Master time axis: prefer full processed history (expected 2024-2026)
+    # Master time axis
     warning = None
     df_master = _load_master_history_from_processed()
     if df_master is None or df_master.empty:
-        warning = 'Processed history not available; falling back to artifact date axis.'
-        df_master = df_c[['date']].copy()
-        df_master['actual'] = np.nan
-        df_master['precip_mm'] = np.nan
-        df_master['temp_high_c'] = np.nan
-        df_master['temp_low_c'] = np.nan
-        df_master['weather_code_en'] = None
-        df_master['wind_level'] = np.nan
-        df_master['wind_dir_en'] = None
-        df_master['wind_max'] = np.nan
-        df_master['aqi_value'] = np.nan
-        df_master['aqi_level_en'] = None
+        warning = 'Processed history not available.'
+        # fallback: 用第一个有数据的模型的日期轴
+        for mk in MODEL_KEYS:
+            if model_data[mk]['df'] is not None and not model_data[mk]['df'].empty:
+                df_master = model_data[mk]['df'][['date']].copy()
+                df_master['actual'] = np.nan
+                for col in ['precip_mm','temp_high_c','temp_low_c','weather_code_en',
+                            'wind_level','wind_dir_en','wind_max','aqi_value','aqi_level_en']:
+                    df_master[col] = np.nan
+                break
 
-    # Merge predictions into the master axis (null where absent).
-    # Rename y_pred before each merge to avoid column name collisions.
-    df_base = df_master[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c', 'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']].copy()
+    df_base = df_master[['date','actual','precip_mm','temp_high_c','temp_low_c',
+                          'weather_code_en','wind_level','wind_dir_en','wind_max',
+                          'aqi_value','aqi_level_en']].copy()
 
-    df_c_renamed = df_c[['date', 'y_pred']].rename(columns={'y_pred': 'champion_pred'})
-    df_base = pd.merge(df_base, df_c_renamed, on='date', how='left')
+    # 合并各模型预测
+    col_map = {
+        'gru_8features':              'gru_single_pred',
+        'gru_mimo_8features':         'gru_mimo_pred',
+        'lstm_8features':             'lstm_single_pred',
+        'lstm_mimo_8features':        'lstm_mimo_pred',
+        'seq2seq_attention_8features':'seq2seq_pred',
+    }
+    for mk, col_name in col_map.items():
+        df_m = model_data[mk]['df']
+        if df_m is not None and not df_m.empty:
+            df_renamed = df_m[['date','y_pred']].rename(columns={'y_pred': col_name})
+            # outer join：让预测CSV里超出历史范围的 backfill 日期也出现在时间轴上
+            df_base = pd.merge(df_base, df_renamed, on='date', how='outer')
+        else:
+            df_base[col_name] = np.nan
 
-    if runner_available:
-        df_r_renamed = df_r[['date', 'y_pred']].rename(columns={'y_pred': 'runner_pred'})
-        df_base = pd.merge(df_base, df_r_renamed, on='date', how='left')
-    else:
-        df_base['runner_pred'] = np.nan
-
-    if third_available:
-        df_t_renamed = df_t[['date', 'y_pred']].rename(columns={'y_pred': 'third_pred'})
-        df_base = pd.merge(df_base, df_t_renamed, on='date', how='left')
-    else:
-        df_base['third_pred'] = np.nan
-
-    df_merge = df_base.sort_values('date')
+    # 按日期排序，对 actual/weather 列中因 outer join 产生的新行填 NaN（已是默认行为）
+    df_merge = df_base.sort_values('date').reset_index(drop=True)
 
     def _fetch_weather_forecast(horizon: int) -> pd.DataFrame:
         """从 Open-Meteo 获取未来 horizon 天天气预报。
 
-        返回 DataFrame，列：date(str), temp_high, temp_low, precip_sum
+        返回 DataFrame，列：date(str), temp_high, temp_low, precip_sum,
+                           weathercode, windspeed_max
         失败时返回全 NaN 的占位 DataFrame。
         """
         try:
@@ -848,7 +873,7 @@ def api_forecast():
             url = 'https://api.open-meteo.com/v1/forecast'
             params = {
                 'latitude': 33.2, 'longitude': 103.9,
-                'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum',
+                'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max',
                 'timezone': 'Asia/Shanghai',
                 'forecast_days': horizon,
             }
@@ -860,30 +885,29 @@ def api_forecast():
                 'temp_high': d['temperature_2m_max'],
                 'temp_low': d['temperature_2m_min'],
                 'precip_sum': d['precipitation_sum'],
+                'weathercode': d.get('weathercode', [None] * len(d['time'])),
+                'windspeed_max': d.get('windspeed_10m_max', [None] * len(d['time'])),
             })
         except Exception as e:
             print(f"Weather forecast fetch failed: {e}")
-            last_date = df_master['date'].max()
+            # Use last date with actual visitor data (not future-appended weather rows)
+            _actual_s = pd.to_numeric(df_master['actual'], errors='coerce')
+            last_date = df_master.loc[_actual_s.notna(), 'date'].max()
             rows = []
             for i in range(horizon):
                 rows.append({
                     'date': str(last_date + timedelta(days=i + 1)),
                     'temp_high': float('nan'), 'temp_low': float('nan'), 'precip_sum': float('nan'),
+                    'weathercode': None, 'windspeed_max': float('nan'),
                 })
             return pd.DataFrame(rows)
 
     def _online_future_forecast_all_models(df_hist: pd.DataFrame, horizon: int):
-        """三模型在线预测：用8特征 + Open-Meteo 天气预报生成未来 horizon 天预测。
+        """五模型在线预测：用8特征 + Open-Meteo 天气预报生成未来 horizon 天预测。
 
-        策略：
-        - 从 df_hist 的历史客流拟合 MinMaxScaler（仅用历史数据，无泄露）
-        - 从 Open-Meteo 获取未来 horizon 天天气预报
-        - 对每个模型（champion / runner_up / third）独立滚动预测
-        - 返回 DataFrame，列：date, champion_pred, runner_pred, third_pred,
+        返回 DataFrame，列：date, gru_single_pred, gru_mimo_pred,
+                              lstm_single_pred, lstm_mimo_pred, seq2seq_pred,
                               precip_mm, temp_high_c, temp_low_c
-
-        对于 Seq2Seq（多步模型）：一次性预测 decoder_steps 天，取前 horizon 天。
-        对于 LSTM/GRU（单步模型）：滚动预测 horizon 步。
         """
         if df_hist is None or df_hist.empty:
             raise RuntimeError('History not available for online forecast.')
@@ -897,9 +921,52 @@ def api_forecast():
         visitor_scaler = MinMaxScaler()
         visitor_scaler.fit(s.values.reshape(-1, 1))
 
-        # ── 2. 获取天气预报 ──
-        weather_df = _fetch_weather_forecast(horizon)
+        # ── 2. 获取天气预报（多取2天以覆盖今天/昨天可能不在预报窗口的情况）──
+        weather_df = _fetch_weather_forecast(horizon + 2)
         weather_df['date'] = pd.to_datetime(weather_df['date']).dt.date
+
+        def _wmo_to_code_en(wmo):
+            """Map WMO weathercode integer to weather_code_en string used by the dashboard."""
+            if wmo is None:
+                return None
+            try:
+                wmo = int(wmo)
+            except Exception:
+                return None
+            if wmo == 0:
+                return 'SUNNY'
+            elif wmo in (1, 2):
+                return 'PARTLY_CLOUDY'
+            elif wmo == 3:
+                return 'CLOUDY'
+            elif wmo in (45, 48):
+                return 'FOGGY'
+            elif wmo in (51, 53, 55, 56, 57):
+                return 'DRIZZLE'
+            elif wmo in (61, 63, 65, 66, 67, 80, 81, 82):
+                return 'RAINY'
+            elif wmo in (71, 73, 75, 77, 85, 86):
+                return 'SNOWY'
+            elif wmo in (95, 96, 99):
+                return 'THUNDERSTORM'
+            elif wmo in (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19):
+                return 'OVERCAST'
+            else:
+                return 'CLOUDY'
+
+        def _windspeed_to_level(kmh):
+            """Convert km/h wind speed to wind level (Beaufort approximate)."""
+            if kmh is None or (isinstance(kmh, float) and np.isnan(kmh)):
+                return None
+            kmh = float(kmh)
+            if kmh < 1:   return 0
+            elif kmh < 6:  return 1
+            elif kmh < 12: return 2
+            elif kmh < 20: return 3
+            elif kmh < 29: return 4
+            elif kmh < 39: return 5
+            elif kmh < 50: return 6
+            else:          return 7
 
         # ── 3. 从处理好的历史数据中获取天气 scaler 参数 ──
         # 用历史数据的 min/max 对天气特征归一化（与训练时一致）
@@ -942,7 +1009,11 @@ def api_forecast():
             return float(np.clip((v - temp_low_min) / max(temp_low_max - temp_low_min, 1e-6), 0, 1))
 
         # ── 4. 构建初始 look_back 窗口（8特征） ──
-        last_date = df_hist['date'].max()
+        # last_date = 最后一条有真实 actual 的日期（过滤掉 append_future_weather 追加的 NaN 行）
+        _hist_with_actual = df_hist[pd.to_numeric(df_hist['actual'], errors='coerce').notna()]
+        if _hist_with_actual.empty:
+            raise RuntimeError('No actual visitor data found in history.')
+        last_date = _hist_with_actual['date'].max()
         hist_vals = s.values[-look_back:]
         hist_scaled = visitor_scaler.transform(hist_vals.reshape(-1, 1)).flatten()
 
@@ -1008,50 +1079,48 @@ def api_forecast():
 
             return preds
 
-        # ── 5. 加载三个模型并预测 ──
-        backup_dir = _get_latest_backup_dir()
-        df_cmp = _load_compare_metrics(backup_dir)
-        champ_info, runner_info, third_info = _pick_champion_and_runner_up(df_cmp)
+        # ── 5. 在线推理：仅 MIMO 和 Seq2Seq ──
+        # 单步 GRU/LSTM 不做在线推理，只读离线 backfill CSV。
+        ONLINE_MODELS = [
+            ('gru_mimo_8features',          'gru_mimo_pred',    'mimo'),
+            ('lstm_mimo_8features',         'lstm_mimo_pred',   'mimo'),
+            ('seq2seq_attention_8features', 'seq2seq_pred',     'seq2seq'),
+        ]
 
-        def _load_model_from_info(info):
-            if not info:
-                return None, None
-            run_dir = _resolve_backup_run_dir(backup_dir, info.get('run_dir'))
-            if not run_dir:
-                return None, None
-            # 找权重文件
-            for pattern in ['weights/*.keras', 'weights/*.h5']:
-                matches = glob.glob(os.path.join(run_dir, pattern))
-                if matches:
-                    path = matches[0]
-                    try:
-                        m = tf.keras.models.load_model(
-                            path,
-                            custom_objects=_seq2seq_custom_objects or None,
-                            compile=False
-                        ) if tf else None
-                        return m, info.get('model', '')
-                    except Exception as e:
-                        print(f"Online model load failed ({path}): {e}")
-            return None, None
+        def _load_model_by_key(model_key: str):
+            """从 output/runs 找最新 run_dir 并加载模型。"""
+            top_dirs = sorted(
+                glob.glob(os.path.join(OUTPUT_RUNS_DIR, f'{model_key}_*')),
+                key=os.path.getmtime, reverse=True
+            )
+            for top_dir in top_dirs:
+                run_subdirs = glob.glob(os.path.join(top_dir, 'runs', 'run_*'))
+                run_dir = max(run_subdirs, key=os.path.getmtime) if run_subdirs else top_dir
+                for pattern in ['weights/*.keras', 'weights/*.h5']:
+                    matches = glob.glob(os.path.join(run_dir, pattern))
+                    if matches:
+                        try:
+                            m = tf.keras.models.load_model(
+                                matches[0],
+                                custom_objects=_seq2seq_custom_objects or None,
+                                compile=False
+                            ) if tf else None
+                            return m
+                        except Exception as e:
+                            print(f"Online load failed ({matches[0]}): {e}")
+            return None
 
-        results = {}
-        for label, info in [('champion', champ_info), ('runner_up', runner_info), ('third', third_info)]:
-            if not info:
-                results[label] = None
-                continue
-            model_obj, model_key = _load_model_from_info(info)
+        results = {}  # col_name -> list of preds
+        for mk, col_name, infer_type in ONLINE_MODELS:
+            model_obj = _load_model_by_key(mk)
             if model_obj is None:
-                results[label] = None
+                results[col_name] = None
                 continue
             try:
-                model_key_lower = (model_key or '').lower()
-                if 'seq2seq' in model_key_lower:
-                    # Seq2Seq：构建 encoder+decoder 输入，一次性预测
+                if infer_type == 'seq2seq':
                     enc_input = _build_window_8feat(
                         list(hist_scaled), list(lag7_window), hist_dates
                     ).reshape(1, look_back, 8)
-                    # decoder 输入：未来 7 天的 7 个外部特征（不含 visitor_count）
                     dec_steps = min(horizon, 7)
                     dec_rows = []
                     for step in range(dec_steps):
@@ -1070,61 +1139,104 @@ def api_forecast():
                     preds = visitor_scaler.inverse_transform(
                         y_scaled[0, :dec_steps, 0].reshape(-1, 1)
                     ).flatten().tolist()
-                    # 如果 horizon > dec_steps，用最后一个值填充
                     while len(preds) < horizon:
                         preds.append(preds[-1])
-                else:
+
+                elif infer_type == 'mimo':
+                    enc_input = _build_window_8feat(
+                        list(hist_scaled), list(lag7_window), hist_dates
+                    ).reshape(1, look_back, 8)
+                    y_scaled = model_obj.predict(enc_input, verbose=0)  # (1, 7)
+                    preds = visitor_scaler.inverse_transform(
+                        y_scaled[0].reshape(-1, 1)
+                    ).flatten().tolist()[:horizon]
+                    while len(preds) < horizon:
+                        preds.append(preds[-1])
+
+                else:  # single-step rolling
                     preds = _predict_single_step_model(
                         model_obj, list(hist_scaled), list(lag7_window), list(hist_dates)
                     )
-                results[label] = preds
+
+                results[col_name] = preds
             except Exception as e:
-                print(f"Online prediction failed for {label} ({model_key}): {e}")
-                results[label] = None
+                print(f"Online prediction failed for {col_name} ({mk}): {e}")
+                results[col_name] = None
 
         # ── 6. 组装结果 DataFrame ──
         out_rows = []
         for step in range(horizon):
             pred_date = last_date + timedelta(days=step + 1)
             wrow = weather_df[weather_df['date'] == pred_date]
-            out_rows.append({
+            _precip = float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan')
+            _temp_h = float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan')
+            _temp_l = float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan')
+            _wmo = wrow['weathercode'].iloc[0] if len(wrow) and 'weathercode' in wrow.columns else None
+            _wspd = float(wrow['windspeed_max'].iloc[0]) if len(wrow) and 'windspeed_max' in wrow.columns else float('nan')
+            row = {
                 'date': pred_date,
-                'champion_pred': results['champion'][step] if results.get('champion') else float('nan'),
-                'runner_pred': results['runner_up'][step] if results.get('runner_up') else float('nan'),
-                'third_pred': results['third'][step] if results.get('third') else float('nan'),
-                'precip_mm': float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'),
-                'temp_high_c': float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'),
-                'temp_low_c': float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'),
-            })
+                'precip_mm': _precip,
+                'temp_high_c': _temp_h,
+                'temp_low_c': _temp_l,
+                'weather_code_en': _wmo_to_code_en(_wmo),
+                'wind_level': _windspeed_to_level(_wspd),
+                'wind_max': _wspd if not (isinstance(_wspd, float) and np.isnan(_wspd)) else None,
+            }
+            for col_name in ['gru_single_pred', 'gru_mimo_pred', 'lstm_single_pred', 'lstm_mimo_pred', 'seq2seq_pred']:
+                preds = results.get(col_name)
+                row[col_name] = preds[step] if preds and step < len(preds) else float('nan')
+            out_rows.append(row)
         return pd.DataFrame(out_rows)
 
-    # Online mode: append true future forecast to the end of timeline.
+    # ── MIMO + Seq2Seq 始终触发在线推理，单步只读 CSV ──
+    # 设计说明：
+    #   单步（GRU/LSTM）：CSV 历史回测到测试集截止日，之后留白（数据滞后所致，正常现象）
+    #   MIMO/Seq2Seq：实时推理 last_real_date+1 ~ last_real_date+7，覆盖数据空缺段
     online_used = False
-    if mode == 'online':
-        try:
-            df_future = _online_future_forecast_all_models(df_master[['date', 'actual']].copy(), h)
-            if df_future is not None and not df_future.empty:
-                online_used = True
-                df_future['actual'] = np.nan
-                # Fill missing columns
-                for c in ['weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max', 'aqi_value', 'aqi_level_en']:
-                    if c not in df_future.columns:
-                        df_future[c] = np.nan if c not in ['weather_code_en', 'wind_dir_en', 'aqi_level_en'] else None
+    try:
+        df_future = _online_future_forecast_all_models(df_master[['date', 'actual']].copy(), h)
+        if df_future is not None and not df_future.empty:
+            online_used = True
+            df_future['actual'] = np.nan
+            # 单步列在 df_future 中始终为 NaN（不做在线推理）
+            for _c in ['gru_single_pred', 'lstm_single_pred']:
+                df_future[_c] = np.nan
+            # 补齐其他可能缺失的列
+            for _c in ['wind_dir_en', 'aqi_value', 'aqi_level_en']:
+                if _c not in df_future.columns:
+                    df_future[_c] = None
+            for _c in ['weather_code_en', 'wind_level', 'wind_max']:
+                if _c not in df_future.columns:
+                    df_future[_c] = np.nan
+            # 确保 df_merge 有所有预测列
+            for _c in ['gru_single_pred', 'gru_mimo_pred', 'lstm_single_pred',
+                       'lstm_mimo_pred', 'seq2seq_pred']:
+                if _c not in df_merge.columns:
+                    df_merge[_c] = np.nan
+            # 移除 df_merge 中与 df_future 日期重叠的行（在线预测覆盖 backfill）
+            future_dates = set(df_future['date'])
+            df_merge = df_merge[~df_merge['date'].isin(future_dates)]
+            df_merge = pd.concat([
+                df_merge,
+                df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c',
+                            'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max',
+                            'aqi_value', 'aqi_level_en',
+                            'gru_single_pred', 'gru_mimo_pred',
+                            'lstm_single_pred', 'lstm_mimo_pred', 'seq2seq_pred']]
+            ], ignore_index=True)
+            df_merge = df_merge.sort_values('date').reset_index(drop=True)
+    except Exception as e:
+        warning = (warning + ' | ' if warning else '') + f'MIMO/Seq2Seq online forecast failed: {e}'
+        online_used = False
 
-                df_merge = pd.concat([
-                    df_merge,
-                    df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c',
-                                'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max',
-                                'aqi_value', 'aqi_level_en', 'champion_pred', 'runner_pred', 'third_pred']]
-                ], ignore_index=True)
-                df_merge = df_merge.sort_values('date')
-        except Exception as e:
-            warning = (warning + ' | ' if warning else '') + f'Online forecast failed; falling back to offline artifacts. ({e})'
-            online_used = False
-
-    # Thresholds come from champion metrics by default
-    threshold_crowd = float((champ_metrics.get('meta') or {}).get('peak_threshold', 18500.0))
-    wh = (champ_metrics.get('weather_hazard') or {})
+    # Thresholds — 从任意有数据的模型 metrics 里取，优先 gru
+    _ref_metrics = {}
+    for _mk in ['gru_8features', 'gru_mimo_8features', 'lstm_8features', 'seq2seq_attention_8features']:
+        if model_data.get(_mk, {}).get('metrics'):
+            _ref_metrics = model_data[_mk]['metrics']
+            break
+    threshold_crowd = float((_ref_metrics.get('meta') or {}).get('peak_threshold', 18500.0))
+    wh = (_ref_metrics.get('weather_hazard') or {})
     wh_thr = (wh.get('thresholds') or {})
     precip_high = float(wh_thr.get('precip_high', 8.0))
     temp_high = float(wh_thr.get('temp_high', 22.6))
@@ -1132,79 +1244,43 @@ def api_forecast():
     quantiles = (wh_thr.get('quantiles') or {})
 
     def _compute_risk(pred_col: str):
-        """Compute per-day risk fields required by dashboard.
-
-        Returns lists aligned to df_merge rows:
-          - crowd_alert: bool
-          - weather_hazard: bool
-          - suitability_warning_bin: int(0/1)
-          - risk_level: int (0..3)
-          - p_warn: float (0..1)
-          - drivers: list[str]
-          - risk_score: float (0..100)
-        """
-
+        """基于预测客流和天气计算逐日风险。"""
+        if pred_col not in df_merge.columns:
+            n = len(df_merge)
+            return {'crowd_alert':[False]*n,'weather_hazard':[False]*n,
+                    'suitability_warning_bin':[0]*n,'risk_level':[0]*n,
+                    'p_warn':[0.15]*n,'drivers':[[]]*n,'risk_score':[0.0]*n}
         y_pred = df_merge[pred_col].astype(float)
         crowd_alert = (y_pred >= threshold_crowd)
         weather_hazard = (
-            (df_merge['precip_mm'] >= precip_high) |
-            (df_merge['temp_high_c'] >= temp_high) |
-            (df_merge['temp_low_c'] <= temp_low)
+            (df_merge['precip_mm'].fillna(0) >= precip_high) |
+            (df_merge['temp_high_c'].fillna(0) >= temp_high) |
+            (df_merge['temp_low_c'].fillna(0) <= temp_low)
         )
         suitability = (crowd_alert | weather_hazard)
-
-        crowd_alert_list = [bool(x) if not (x is None or (isinstance(x, float) and np.isnan(x))) else False for x in crowd_alert.tolist()]
-        weather_hazard_list = [bool(x) if not (x is None or (isinstance(x, float) and np.isnan(x))) else False for x in weather_hazard.tolist()]
-        suitability_bin = [1 if bool(x) else 0 for x in suitability.tolist()]
-
-        risk_level = []
-        drivers = []
-        # Drivers are returned as stable codes; UI translates by language.
-        for ca, whz, pr, th, tl in zip(
-            crowd_alert_list,
-            weather_hazard_list,
-            df_merge['precip_mm'].tolist(),
-            df_merge['temp_high_c'].tolist(),
-            df_merge['temp_low_c'].tolist()
-        ):
-            lv = 0
-            d = []
-            if ca:
-                lv += 2
-                d.append('crowd_over_threshold')
+        ca_list = [bool(x) if not pd.isna(x) else False for x in crowd_alert]
+        wh_list = [bool(x) if not pd.isna(x) else False for x in weather_hazard]
+        sw_list = [1 if bool(x) else 0 for x in suitability]
+        risk_level, drivers = [], []
+        for ca, whz, pr, th, tl in zip(ca_list, wh_list,
+                df_merge['precip_mm'].tolist(), df_merge['temp_high_c'].tolist(), df_merge['temp_low_c'].tolist()):
+            lv, d = 0, []
+            if ca: lv += 2; d.append('crowd_over_threshold')
             if whz:
                 lv += 1
-                if pr is not None and not (isinstance(pr, float) and np.isnan(pr)) and pr >= precip_high:
-                    d.append('precip_high')
-                if th is not None and not (isinstance(th, float) and np.isnan(th)) and th >= temp_high:
-                    d.append('temp_high')
-                if tl is not None and not (isinstance(tl, float) and np.isnan(tl)) and tl <= temp_low:
-                    d.append('temp_low')
-            risk_level.append(int(lv))
-            drivers.append(d)
+                if pr is not None and not (isinstance(pr,float) and np.isnan(pr)) and pr >= precip_high: d.append('precip_high')
+                if th is not None and not (isinstance(th,float) and np.isnan(th)) and th >= temp_high: d.append('temp_high')
+                if tl is not None and not (isinstance(tl,float) and np.isnan(tl)) and tl <= temp_low: d.append('temp_low')
+            risk_level.append(int(lv)); drivers.append(d)
+        p_warn = [0.85 if s else 0.15 for s in suitability]
+        risk_score = [round(max(0.0,min(1.0,(lv/3.0)*0.65+float(pw)*0.35))*100.0,1) for lv,pw in zip(risk_level,p_warn)]
+        return {'crowd_alert':ca_list,'weather_hazard':wh_list,'suitability_warning_bin':sw_list,
+                'risk_level':risk_level,'p_warn':p_warn,'drivers':drivers,'risk_score':risk_score}
 
-        # A lightweight calibrated probability proxy for UI (offline artifact mode)
-        p_warn = [0.85 if s else 0.15 for s in suitability.tolist()]
-
-        # Risk score (0..100) used by Thermometer UI
-        risk_score = []
-        for lv, pw in zip(risk_level, p_warn):
-            v = max(0.0, min(1.0, (lv / 3.0) * 0.65 + float(pw) * 0.35))
-            risk_score.append(round(v * 100.0, 1))
-
-        return {
-            'crowd_alert': crowd_alert_list,
-            'weather_hazard': weather_hazard_list,
-            'suitability_warning_bin': suitability_bin,
-            'risk_level': risk_level,
-            'p_warn': p_warn,
-            'drivers': drivers,
-            'risk_score': risk_score,
-        }
-
-    risk_champ = _compute_risk('champion_pred')
-    risk_runner = _compute_risk('runner_pred') if runner_available else None
-    risk_third = _compute_risk('third_pred') if third_available else None
+    # 用 GRU 单步作为主风险计算基准（优先级：gru_single > gru_mimo > seq2seq）
+    _risk_col = next((c for c in ['gru_single_pred','gru_mimo_pred','seq2seq_pred','lstm_single_pred']
+                      if c in df_merge.columns and not df_merge[c].isna().all()), None)
+    risk_main = _compute_risk(_risk_col) if _risk_col else _compute_risk('gru_single_pred')
 
     # Holiday intervals (for markArea), with CN/EN names
     holiday_ranges = []
@@ -1220,34 +1296,34 @@ def api_forecast():
 
     time_axis = [d.strftime('%Y-%m-%d') if hasattr(d, 'strftime') else str(d) for d in df_merge['date'].tolist()]
 
-    if online_used:
-        # True future window: last h days are the forecast segment.
-        forecast_end_idx = len(time_axis) - 1
-        forecast_start_idx = max(0, forecast_end_idx - h + 1)
-        forecast_mode = 'online_future'
-    else:
-        # Offline artifacts: anchor the forecast window to the latest date
-        # covered by ANY prediction column (champion/runner/third).
-        # This handles the case where the champion model (e.g. Seq2Seq) has a
-        # shorter test CSV than runner/third (GRU/LSTM), so the window is
-        # determined by whichever model extends furthest into the future.
-        pred_cols = ['champion_pred', 'runner_pred', 'third_pred']
-        overall_end_idx = 0
-        for col in pred_cols:
+    # forecast window：以 MIMO/Seq2Seq 在线预测的最后日期为右端
+    # 单步 CSV 可能有 backfill，但展示窗口始终对齐到多步预测的右端
+    _online_pred_cols = ['gru_mimo_pred', 'lstm_mimo_pred', 'seq2seq_pred']
+    _all_pred_cols = list(col_map.values())
+    forecast_end_idx = 0
+    # 优先用在线推理列的末端
+    for col in _online_pred_cols:
+        if col in df_merge.columns:
+            col_s = df_merge[col].astype(float)
+            valid = ~col_s.isna()
+            if valid.any():
+                col_end = int(np.where(valid.values)[0].max())
+                if col_end > forecast_end_idx:
+                    forecast_end_idx = col_end
+    # fallback：用所有预测列的末端
+    if forecast_end_idx == 0:
+        for col in _all_pred_cols:
             if col in df_merge.columns:
-                col_series = df_merge[col].astype(float)
-                has_col = ~col_series.isna()
-                if has_col.any():
-                    col_end = int(np.where(has_col.values)[0].max())
-                    if col_end > overall_end_idx:
-                        overall_end_idx = col_end
-
-        if overall_end_idx > 0:
-            forecast_end_idx = overall_end_idx
-        else:
-            forecast_end_idx = len(time_axis) - 1
-        forecast_start_idx = max(0, forecast_end_idx - h + 1)
-        forecast_mode = 'offline_latest_window_backtest'
+                col_s = df_merge[col].astype(float)
+                valid = ~col_s.isna()
+                if valid.any():
+                    col_end = int(np.where(valid.values)[0].max())
+                    if col_end > forecast_end_idx:
+                        forecast_end_idx = col_end
+    if forecast_end_idx == 0:
+        forecast_end_idx = len(time_axis) - 1
+    forecast_start_idx = max(0, forecast_end_idx - h + 1)
+    forecast_mode = 'online_mimo_seq2seq' if online_used else 'offline_backtest'
 
     def _to_num_list(col):
         out = []
@@ -1261,19 +1337,41 @@ def api_forecast():
                     out.append(None)
         return out
 
+    # 测试集开始日期（所有模型 CSV 最早日期的最小值）
+    test_start_date = None
+    for mk, mdata in model_data.items():
+        _df = mdata['df']
+        if _df is not None and not _df.empty and 'date' in _df.columns:
+            _min = pd.to_datetime(_df['date']).min()
+            if test_start_date is None or _min < test_start_date:
+                test_start_date = _min
+    test_start_str = test_start_date.strftime('%Y-%m-%d') if test_start_date is not None else None
+
+    # 模型元信息列表
+    models_meta = []
+    display_names = {
+        'gru_8features':               ('GRU', 'GRU (单步)'),
+        'gru_mimo_8features':          ('GRU-MIMO', 'GRU (多步)'),
+        'lstm_8features':              ('LSTM', 'LSTM (单步)'),
+        'lstm_mimo_8features':         ('LSTM-MIMO', 'LSTM (多步)'),
+        'seq2seq_attention_8features': ('Seq2Seq', 'Seq2Seq+Attention'),
+    }
+    for mk in MODEL_KEYS:
+        short, full = display_names.get(mk, (mk, mk))
+        models_meta.append({
+            'model_key': mk,
+            'series_key': col_map[mk],
+            'short_name': short,
+            'display_name': full,
+            'available': model_data[mk]['df'] is not None and not model_data[mk]['df'].empty,
+        })
+
     return jsonify({
         'meta': {
             'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'champion': {
-                'model_name': _pretty_model_name(champ_key),
-            },
-            'runner_up': ({
-                'model_name': _pretty_model_name(run_key),
-            } if runner_available else None),
-            'third': ({
-                'model_name': _pretty_model_name(third_key),
-            } if third_available else None),
-            'forecast_mode': forecast_mode
+            'forecast_mode': forecast_mode,
+            'test_start_date': test_start_str,
+            'models': models_meta,
         },
         'time_axis': time_axis,
         'forecast': {
@@ -1283,9 +1381,11 @@ def api_forecast():
         },
         'series': {
             'actual': _to_num_list('actual'),
-            'champion_pred': _to_num_list('champion_pred'),
-            'runner_pred': _to_num_list('runner_pred'),
-            'third_pred': _to_num_list('third_pred'),
+            'gru_single_pred':  _to_num_list('gru_single_pred'),
+            'gru_mimo_pred':    _to_num_list('gru_mimo_pred'),
+            'lstm_single_pred': _to_num_list('lstm_single_pred'),
+            'lstm_mimo_pred':   _to_num_list('lstm_mimo_pred'),
+            'seq2seq_pred':     _to_num_list('seq2seq_pred'),
         },
         'thresholds': {
             'crowd': threshold_crowd,
@@ -1312,11 +1412,7 @@ def api_forecast():
             'aqi_level_en': [None if v is None or (isinstance(v, float) and np.isnan(v)) else str(v) for v in df_merge.get('aqi_level_en', pd.Series([None] * len(df_merge))).tolist()],
         },
         'holidays': holiday_ranges,
-        'risk': {
-            'champion': risk_champ,
-            'runner_up': risk_runner,
-            'third': risk_third
-        },
+        'risk': risk_main,
         'warning': warning
     })
 

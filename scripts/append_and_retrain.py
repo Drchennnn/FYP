@@ -300,8 +300,137 @@ def _update_append_log(date_str: str, visitor_count: int, weather: dict):
 
 
 # ─────────────────────────────────────────────
-# 核心：月度重训
+# 未来天气追加（供 backfill 使用）
 # ─────────────────────────────────────────────
+
+def append_future_weather(days_ahead: int = 16) -> int:
+    """从 Open-Meteo 预报 API 拉取未来 days_ahead 天天气，追加到 processed CSV。
+
+    未来日期行的 tourism_num=NaN（无实际客流），其余特征正常填充。
+    已存在的日期不重复追加。返回新增行数。
+    """
+    try:
+        import chinese_calendar as cncal
+        def _is_holiday(d):
+            try:
+                return int(cncal.is_holiday(d))
+            except Exception:
+                return int(d.weekday() >= 5)
+    except ImportError:
+        def _is_holiday(d):
+            return int(d.weekday() >= 5)
+
+    if not TRAIN_CSV.exists():
+        print(f"  append_future_weather: processed CSV 不存在: {TRAIN_CSV}")
+        return 0
+
+    df_existing = pd.read_csv(TRAIN_CSV)
+    df_existing['date'] = pd.to_datetime(df_existing['date']).dt.strftime('%Y-%m-%d')
+    existing_dates = set(df_existing['date'].tolist())
+
+    # 拉取未来天气预报
+    try:
+        r = requests.get(
+            'https://api.open-meteo.com/v1/forecast',
+            params={
+                'latitude': LAT, 'longitude': LON,
+                'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,'
+                         'weathercode,windspeed_10m_max',
+                'timezone': 'Asia/Shanghai',
+                'forecast_days': days_ahead,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        d = r.json()['daily']
+    except Exception as e:
+        print(f"  append_future_weather: Open-Meteo 预报获取失败: {e}")
+        return 0
+
+    new_rows = []
+    for i, date_str in enumerate(d['time']):
+        if date_str in existing_dates:
+            continue
+        dt = pd.to_datetime(date_str).date()
+        row = {
+            'date': date_str,
+            'tourism_num': float('nan'),
+            'meteo_temp_max': float(d['temperature_2m_max'][i] or float('nan')),
+            'meteo_temp_min': float(d['temperature_2m_min'][i] or float('nan')),
+            'meteo_precip_sum': float(d['precipitation_sum'][i] or 0.0),
+            'meteo_weather_code': int(d['weathercode'][i] or 0),
+            'meteo_wind_max': float(d['windspeed_10m_max'][i] or float('nan')),
+            'meteo_rain_sum': float(d['precipitation_sum'][i] or 0.0),
+            'meteo_snowfall_sum': 0.0,
+            'meteo_precip_hours': 0.0,
+            'temp_high_c': float(d['temperature_2m_max'][i] or float('nan')),
+            'temp_low_c': float(d['temperature_2m_min'][i] or float('nan')),
+            'temp_range_c': float((d['temperature_2m_max'][i] or 0) - (d['temperature_2m_min'][i] or 0)),
+            'weather_code_en': None,
+            'weather_abbr': None,
+            'weather_code_id': None,
+            'wind_dir_en': None,
+            'wind_level': None,
+            'wind_dir_id': None,
+            'aqi_value': float('nan'),
+            'aqi_level_en': None,
+            'weather_source': 'open-meteo-forecast',
+            'day_of_week': dt.weekday(),
+            'month': dt.month,
+            'day_of_month': dt.day,
+            'day_of_year': dt.timetuple().tm_yday,
+            'week_of_year': dt.isocalendar()[1],
+            'is_weekend': int(dt.weekday() >= 5),
+            'is_holiday': _is_holiday(dt),
+            'is_workday': int(dt.weekday() < 5 and not _is_holiday(dt)),
+            'month_sin': float(np.sin(2 * np.pi * dt.month / 12)),
+            'month_cos': float(np.cos(2 * np.pi * dt.month / 12)),
+            'dow_sin': float(np.sin(2 * np.pi * dt.weekday() / 7)),
+            'dow_cos': float(np.cos(2 * np.pi * dt.weekday() / 7)),
+            'month_norm': (dt.month - 1) / 11.0,
+            'day_of_week_norm': dt.weekday() / 6.0,
+        }
+        new_rows.append(row)
+
+    if not new_rows:
+        print(f"  append_future_weather: 无新日期需要追加（已有 {len(existing_dates)} 天）")
+        return 0
+
+    df_new = pd.DataFrame(new_rows)
+
+    # 合并后重新计算 scaled 特征（lag_7 等需要全量数据）
+    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+    df_combined = _compute_scaled_features(df_combined)
+
+    df_combined.to_csv(TRAIN_CSV, index=False)
+    print(f"  append_future_weather: 追加 {len(new_rows)} 个未来日期 ({new_rows[0]['date']} ~ {new_rows[-1]['date']})")
+    return len(new_rows)
+
+
+def daily_backfill():
+    """每日 backfill 任务：先追加未来天气，再滚动推理三模型预测。"""
+    print(f"\n[daily_backfill] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    # 1. 追加未来14天天气到 processed CSV
+    append_future_weather(days_ahead=16)
+    # 2. 运行 backfill 推理
+    try:
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / 'scripts' / 'backfill_predictions.py')],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True, text=True, timeout=600,
+        )
+        if result.returncode == 0:
+            print(f"  backfill_predictions 完成")
+            if result.stdout:
+                print(result.stdout[-800:])
+        else:
+            print(f"  backfill_predictions 失败:\n{result.stderr[-500:]}")
+    except Exception as e:
+        print(f"  backfill_predictions 异常: {e}")
+
+
+
 
 def monthly_retrain(epochs: int = 120) -> bool:
     """触发三个模型的重训练。
@@ -359,19 +488,21 @@ def monthly_retrain(epochs: int = 120) -> bool:
 # ─────────────────────────────────────────────
 
 def start_data_pipeline_scheduler(scheduler):
-    """向已有的 APScheduler 实例注册数据管道任务。
-
-    在 web_app/app.py 的 _start_scheduler() 中调用：
-        from scripts.append_and_retrain import start_data_pipeline_scheduler
-        start_data_pipeline_scheduler(scheduler)
-    """
-    # 每日 08:30 追加昨日数据（比爬虫任务早30分钟，确保数据已更新）
+    """向已有的 APScheduler 实例注册数据管道任务。"""
+    # 每日 08:30 追加昨日实际数据
     scheduler.add_job(
         append_new_data, 'cron', hour=8, minute=30,
         id='daily_append', replace_existing=True,
         kwargs={'target_date': None}
     )
     print("数据管道调度器：每日08:30追加数据任务已注册")
+
+    # 每日 09:30 追加未来天气 + backfill 三模型预测（爬虫09:00完成后）
+    scheduler.add_job(
+        daily_backfill, 'cron', hour=9, minute=30,
+        id='daily_backfill', replace_existing=True,
+    )
+    print("数据管道调度器：每日09:30 backfill预测任务已注册")
 
     # 每月1日 02:00 重训（避开白天高峰）
     scheduler.add_job(

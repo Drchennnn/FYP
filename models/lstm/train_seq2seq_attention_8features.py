@@ -122,6 +122,7 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     return df
 
 
+@tf.keras.utils.register_keras_serializable()
 class AttentionLayer(tf.keras.layers.Layer):
     """Bahdanau 注意力机制层（动态权重分配）
     
@@ -158,6 +159,7 @@ class AttentionLayer(tf.keras.layers.Layer):
         return context_vector, attention_weights
 
 
+@tf.keras.utils.register_keras_serializable()
 class Seq2SeqWithAttention(tf.keras.Model):
     """带有注意力机制的非自回归Seq2Seq模型（支持8/7特征输入）
     

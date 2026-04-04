@@ -172,21 +172,45 @@ body{
 .v3-page{max-width:1280px;margin:0 auto;padding:28px 24px 40px}
 .v3-page--hidden{display:none}
 
-/* ── KPI strip ── */
-.v3-kpi-strip{
-  display:flex;align-items:center;
+/* ── Weather forecast strip (replaces KPI) ── */
+.v3-wx-strip{
+  position:relative;display:flex;align-items:center;
   background:var(--bg-card);border-radius:var(--radius-lg);
-  padding:20px 32px;margin-bottom:24px;
-  box-shadow:var(--shadow-sm);
+  padding:0 40px;margin-bottom:24px;
+  box-shadow:var(--shadow-sm);height:100px;overflow:hidden;
 }
-.v3-kpi{flex:1;display:flex;flex-direction:column;gap:4px}
-.v3-kpi__label{font-size:0.72rem;color:var(--text-2);font-weight:500;text-transform:uppercase;letter-spacing:0.04em}
-.v3-kpi__value{font-size:1.9rem;font-weight:700;font-family:var(--font-mono);letter-spacing:-0.02em;line-height:1}
-.v3-kpi__value--risk{color:var(--accent-3)}
-.v3-kpi__value--sm{font-size:1rem;font-family:var(--font-sans);font-weight:600}
-.v3-kpi__value--mono{font-family:var(--font-mono);letter-spacing:0.04em}
-.v3-kpi__unit{font-size:0.72rem;color:var(--text-2)}
-.v3-kpi-divider{width:1px;height:40px;background:var(--border);margin:0 24px;flex-shrink:0}
+.v3-wx-scroll{
+  display:flex;gap:0;overflow-x:auto;scroll-behavior:smooth;
+  scrollbar-width:none;flex:1;
+}
+.v3-wx-scroll::-webkit-scrollbar{display:none}
+.v3-wx-card{
+  flex-shrink:0;width:88px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:3px;
+  padding:10px 6px;border-radius:var(--radius-md);
+  cursor:default;transition:background 0.15s;
+  border-right:1px solid var(--border);
+}
+.v3-wx-card:last-child{border-right:none}
+.v3-wx-card--today{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.v3-wx-date{font-size:0.7rem;color:var(--text-2);font-weight:500}
+.v3-wx-icon{font-size:1.4rem;line-height:1}
+.v3-wx-desc{font-size:0.65rem;color:var(--text-2);text-align:center;line-height:1.2;max-width:76px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v3-wx-temps{display:flex;gap:5px;align-items:baseline}
+.v3-wx-high{font-size:0.85rem;font-weight:700;color:var(--text)}
+.v3-wx-low{font-size:0.75rem;color:var(--text-2)}
+.v3-wx-arrow{
+  position:absolute;top:50%;transform:translateY(-50%);
+  width:28px;height:28px;border-radius:50%;border:none;
+  background:var(--bg-card);box-shadow:var(--shadow-sm);
+  color:var(--text);font-size:1.2rem;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  z-index:2;transition:opacity 0.15s;
+}
+.v3-wx-arrow--left{left:6px}
+.v3-wx-arrow--right{right:6px}
+.v3-wx-arrow:hover{opacity:0.7}
+
 
 /* ── Main grid ── */
 .v3-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
@@ -215,27 +239,68 @@ body{
 .v3-subchart-label{display:flex;align-items:center;gap:6px;font-size:0.78rem;color:var(--text-2);cursor:pointer}
 .v3-subchart-label input{accent-color:var(--accent)}
 
-/* ── Weather sub-chart card (independent card below main chart) ── */
-.v3-card--weather-sub{grid-column:1/2;grid-row:2;padding:20px 24px}
-.v3-card--weather-sub .v3-card__head{margin-bottom:8px}
-.v3-card--weather-sub .v3-subchart-toggle{padding:0}
-
-/* ── Side panel spans rows 1+2 so it aligns with both chart cards ── */
-.v3-side--sticky{grid-column:2/3;grid-row:1/3;align-self:start}
+/* ── Side panel spans row 1 only now (weather sub-chart removed) ── */
+.v3-side--sticky{grid-column:2/3;grid-row:1;align-self:start}
 
 /* ── Chart toolbar ── */
 .v3-chart-toolbar{
-  display:flex;justify-content:space-between;align-items:center;
-  padding:8px 0;flex-wrap:wrap;gap:8px;
+  display:flex;justify-content:flex-start;align-items:center;
+  padding:8px 0;flex-wrap:wrap;gap:12px;
 }
 
-/* ── Curve toggles ── */
-.v3-curve-toggles{display:flex;gap:12px;flex-wrap:wrap}
-.v3-curve-toggle{
-  display:flex;align-items:center;gap:5px;
-  font-size:0.78rem;color:var(--text-2);cursor:pointer;
+/* ── Online toggle switch ── */
+.v3-online-toggle{
+  display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+  padding:4px 10px 4px 6px;border-radius:999px;
+  border:1.5px solid var(--border);
+  transition:border-color 0.15s;user-select:none;
 }
-.v3-curve-toggle input{accent-color:var(--accent)}
+.v3-online-toggle:has(input:checked){border-color:var(--accent)}
+.v3-online-toggle input{display:none}
+.v3-online-toggle__track{
+  width:32px;height:18px;border-radius:999px;
+  background:var(--border);position:relative;
+  transition:background 0.2s;flex-shrink:0;
+}
+.v3-online-toggle__track::after{
+  content:'';position:absolute;top:2px;left:2px;
+  width:14px;height:14px;border-radius:50%;
+  background:#fff;transition:transform 0.2s;
+}
+.v3-online-toggle:has(input:checked) .v3-online-toggle__track{background:var(--accent)}
+.v3-online-toggle:has(input:checked) .v3-online-toggle__track::after{transform:translateX(14px)}
+.v3-online-toggle__label{font-size:0.78rem;font-weight:500;color:var(--text-2)}
+.v3-online-toggle:has(input:checked) .v3-online-toggle__label{color:var(--accent)}
+
+
+/* ── Toggle chips ── */
+.v3-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.v3-chip{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:4px 12px;border-radius:999px;border:1.5px solid transparent;
+  font-size:0.78rem;font-weight:500;cursor:pointer;
+  background:transparent;
+  color:var(--text-2);
+  border-color:var(--chip-color, var(--border));
+  transition:all 0.15s ease;
+  position:relative;
+}
+.v3-chip::before{
+  content:'';display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--chip-color, var(--text-2));opacity:0.5;
+  transition:opacity 0.15s;
+}
+.v3-chip--active{
+  background:color-mix(in srgb, var(--chip-color, var(--accent)) 15%, transparent);
+  color:var(--text);
+  border-color:var(--chip-color, var(--accent));
+}
+.v3-chip--active::before{opacity:1}
+.v3-chip:hover{opacity:0.85}
+.v3-chip--all{--chip-color:var(--text-2)}
+.v3-chip--all::before{display:none}
+.v3-chip--actual{--chip-color:#ffffff}
+[data-theme="light"] .v3-chip--actual{--chip-color:#1c1c1e}
 
 /* ── Reset button ── */
 .v3-btn-reset{
@@ -447,7 +512,7 @@ body{
 }
 @media(max-width:720px){
   .v3-nav__tabs{display:none}
-  .v3-kpi-strip{flex-wrap:wrap;gap:16px;padding:16px 20px}
+  .v3-wx-strip{padding:0 32px}
   .v3-kpi-divider{display:none}
   .v3-forecast-strip{grid-template-columns:repeat(3,1fr)}
   .v3-models-grid{grid-template-columns:1fr}

@@ -40,13 +40,11 @@
       perfect_calib: '完美校准', actual_calib: '实际校准',
       confidence: '置信度', accuracy: '准确率',
       warn_fallback: '在线预测失败，已自动回退离线产物。',
-      h_1d: '1天', h_7d: '7天', h_14d: '14天',
-      h_offline: '离线回测',
-      btn_reset: '复原',
       show_precip: '降水', show_temp: '温度',
       weather_sub_title: '降水 / 温度',
       curve_actual: '实际', curve_champ: '冠军',
       curve_runner: '亚军', curve_third: '第三',
+      filter_all: '全部', filter_gru: 'GRU', filter_seq2seq: 'Seq2Seq', filter_lstm: 'LSTM', filter_actual: '真实',
       wf_explain: 'Walk-forward 评估使用扩展窗口策略，每折独立训练，覆盖不同季节。MAE 越低表示回归精度越高；F1 越高表示预警准确率越高。',
       calib_explain: '可靠性图展示模型预警概率的校准质量。理想情况下，置信度为 X 时实际准确率也应为 X（对角线）。当前模型使用确定性近似，概率集中在 0 和 1 附近属正常现象。',
       reco_reason_low: '预测客流较少，适合出游',
@@ -85,14 +83,11 @@
       metrics_suit: 'Suitability', metrics_meta: 'Training Params',
       perfect_calib: 'Perfect Calibration', actual_calib: 'Actual',
       confidence: 'Confidence', accuracy: 'Accuracy',
-      warn_fallback: 'Online forecast failed; falling back to offline artifacts.',
-      h_1d: '1 Day', h_7d: '7 Days', h_14d: '14 Days',
-      h_offline: 'Offline',
-      btn_reset: 'Reset View',
       show_precip: 'Precip', show_temp: 'Temp',
       weather_sub_title: 'Precip / Temp',
       curve_actual: 'Actual', curve_champ: 'Champion',
       curve_runner: 'Runner', curve_third: 'Third',
+      filter_all: 'All', filter_gru: 'GRU', filter_seq2seq: 'Seq2Seq', filter_lstm: 'LSTM', filter_actual: 'Actual',
       wf_explain: 'Walk-forward uses expanding window strategy. Each fold trains independently covering different seasons. Lower MAE = better regression; Higher F1 = better warning accuracy.',
       calib_explain: 'Reliability diagram shows calibration quality. Ideally confidence X should match accuracy X (diagonal). Current model uses deterministic approximation; probability concentration at 0 and 1 is expected.',
       reco_reason_low: 'Low predicted crowd, good for visiting',
@@ -106,10 +101,13 @@
   // ─────────────────────────────────────────────
   const state = {
     h: 7,
-    mode: 'offline',
+    mode: 'online',  // 始终在线：MIMO/Seq2Seq 实时推理，单步只读离线 CSV
     lang: 'zh',
     theme: 'dark',
     modelView: 'both',
+    curveFilter: 'all',
+    // 方案B：独立 chip 多选状态
+    activeChips: new Set(['actual', 'gru_single', 'gru_mimo', 'lstm_single', 'lstm_mimo', 'seq2seq']),
     selectedIdx: null,
     payload: null,
     chart: null,
@@ -221,12 +219,16 @@
   function normalizeForecastPayload(raw) {
     const out = {
       timeAxis: [], forecast: { h: state.h, startIndex: 0, endIndex: 0 },
-      meta: {}, series: { actual: [], champion: [], runner: [], third: [] },
+      meta: {}, series: {
+        actual: [],
+        gru_single: [], gru_mimo: [],
+        lstm_single: [], lstm_mimo: [],
+        seq2seq: []
+      },
       thresholds: { crowd: null, weather: {} },
       weather: { precipMm: [], tempHighC: [], tempLowC: [], weatherCodeEn: [],
         windLevel: [], windDirEn: [], windMax: [], aqiValue: [], aqiLevelEn: [] },
-      holidays: [], risk: { champion: null, runner: null, third: null },
-      warning: null
+      holidays: [], risk: {}, warning: null
     };
     if (!raw || typeof raw !== 'object') return out;
 
@@ -237,9 +239,8 @@
     const meta = raw.meta || {};
     out.meta.generatedAt = meta.generated_at || meta.generatedAt || null;
     out.meta.forecastMode = meta.forecast_mode || meta.forecastMode || null;
-    out.meta.championName = (meta.champion && meta.champion.model_name) || meta.championName || null;
-    out.meta.runnerName = (meta.runner_up && meta.runner_up.model_name) || meta.runnerName || null;
-    out.meta.thirdName = (meta.third && meta.third.model_name) || meta.thirdName || null;
+    out.meta.testStartDate = meta.test_start_date || meta.testStartDate || null;
+    out.meta.models = meta.models || [];
 
     const fc = raw.forecast || {};
     out.forecast.h = safeNum(fc.h) || state.h;
@@ -247,10 +248,12 @@
     out.forecast.endIndex = Math.max(0, safeNum(fc.end_index) ?? safeNum(fc.endIndex) ?? Math.max(0, n - 1));
 
     const s = raw.series || {};
-    out.series.actual = safeArr(s.actual || [], n, safeNum);
-    out.series.champion = safeArr(s.champion_pred || s.pred_vals || [], n, safeNum);
-    out.series.runner = safeArr(s.runner_pred || [], n, safeNum);
-    out.series.third = safeArr(s.third_pred || [], n, safeNum);
+    out.series.actual      = safeArr(s.actual || [], n, safeNum);
+    out.series.gru_single  = safeArr(s.gru_single_pred || [], n, safeNum);
+    out.series.gru_mimo    = safeArr(s.gru_mimo_pred || [], n, safeNum);
+    out.series.lstm_single = safeArr(s.lstm_single_pred || [], n, safeNum);
+    out.series.lstm_mimo   = safeArr(s.lstm_mimo_pred || [], n, safeNum);
+    out.series.seq2seq     = safeArr(s.seq2seq_pred || [], n, safeNum);
 
     const thr = raw.thresholds || {};
     out.thresholds.crowd = safeNum(thr.crowd);
@@ -279,9 +282,7 @@
     })).filter((h) => h.start && h.end);
 
     const r = raw.risk || {};
-    out.risk.champion = r.champion || null;
-    out.risk.runner = r.runner_up || r.runner || null;
-    out.risk.third = r.third || null;
+    out.risk = r;  // 直接存整个 risk 对象
     out.warning = raw.warning || null;
     return out;
   }
@@ -303,48 +304,42 @@
     showError(null);
     setStatus('', t('status_loading'));
 
-    const cacheKey = `v3_forecast_${state.mode}_h${state.h}`;
-
-    // Check cache for online mode (cache for 30 minutes)
-    if (state.mode === 'online') {
-      try {
-        const cached = localStorage.getItem(cacheKey);
-        if (cached) {
-          const { data, ts } = JSON.parse(cached);
-          if (Date.now() - ts < 30 * 60 * 1000) {
-            const normalized = normalizeForecastPayload(data);
-            // 缓存验证：timeAxis 必须非空才使用缓存
-            if (normalized.timeAxis && normalized.timeAxis.length > 0) {
-              state.payload = normalized;
-              renderAll(state.payload);
-              showSpinner(false);
-              setStatus('ok', t('online_mode') + ' (cached)', state.payload.meta.generatedAt || '');
-              return;
-            }
-            // 缓存无效，删除并重新请求
-            localStorage.removeItem(cacheKey);
+    // 缓存 key：固定 online 模式，30分钟 TTL
+    const cacheKey = `v3_forecast_v5_h${state.h}`;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const { data, ts } = JSON.parse(cached);
+        if (Date.now() - ts < 30 * 60 * 1000) {
+          const normalized = normalizeForecastPayload(data);
+          const _fc = normalized.forecast;
+          const _wx = normalized.weather;
+          const _wSlice = _wx.tempHighC.slice(_fc.startIndex, _fc.endIndex + 1);
+          const _wxOk = _wSlice.some((v) => v !== null && v !== undefined);
+          if (normalized.timeAxis && normalized.timeAxis.length > 0 && _wxOk) {
+            state.payload = normalized;
+            renderAll(state.payload);
+            showSpinner(false);
+            setStatus('ok', t('online_mode') + ' (cached)', state.payload.meta.generatedAt || '');
+            return;
           }
+          localStorage.removeItem(cacheKey);
         }
-      } catch (e) {
-        try { localStorage.removeItem(cacheKey); } catch (_) {}
       }
+    } catch (e) {
+      try { localStorage.removeItem(cacheKey); } catch (_) {}
     }
 
     try {
-      const url = `/api/forecast?h=${state.h}&include_all=1&mode=${state.mode}`;
+      const url = `/api/forecast?h=${state.h}`;
       const raw = await apiFetch(url);
-
-      // Cache online results
-      if (state.mode === 'online') {
-        try {
-          localStorage.setItem(cacheKey, JSON.stringify({ data: raw, ts: Date.now() }));
-        } catch (e) {}
-      }
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({ data: raw, ts: Date.now() }));
+      } catch (e) {}
 
       state.payload = normalizeForecastPayload(raw);
       if (state.payload.warning) showError(state.payload.warning);
-      const modeLabel = state.mode === 'online' ? t('online_mode') : t('offline_mode');
-      setStatus('ok', modeLabel, state.payload.meta.generatedAt || '');
+      setStatus('ok', t('online_mode'), state.payload.meta.generatedAt || '');
       renderAll(state.payload);
     } catch (err) {
       console.error('loadForecast error:', err);
@@ -401,11 +396,25 @@
     return RISK_BADGE_CLASSES[v] || '';
   }
 
+  // 从5条曲线中取第一个有值的预测（用于 KPI/Reco/Strip 的"最佳可用预测"）
+  const PRED_KEYS = ['gru_single', 'gru_mimo', 'lstm_single', 'lstm_mimo', 'seq2seq'];
+  function bestPred(series, i) {
+    for (const k of PRED_KEYS) {
+      const v = series[k] && series[k][i];
+      if (v !== null && v !== undefined) return v;
+    }
+    return null;
+  }
+  function latestPredIdx(series) {
+    const n = (series.gru_single || []).length;
+    for (let i = n - 1; i >= 0; i--) {
+      if (bestPred(series, i) !== null) return i;
+    }
+    return -1;
+  }
+
   function pickActiveRisk(payload) {
-    if (!payload || !payload.risk) return null;
-    if (state.modelView === 'runner' && payload.risk.runner) return payload.risk.runner;
-    if (state.modelView === 'third' && payload.risk.third) return payload.risk.third;
-    return payload.risk.champion || payload.risk.runner || payload.risk.third || null;
+    return (payload && payload.risk && payload.risk.risk_level) ? payload.risk : null;
   }
 
   function driverLabel(key) {
@@ -415,71 +424,69 @@
   }
 
   // ─────────────────────────────────────────────
-  // KPI strip — 最新预测+时间、综合风险、当前时间
+  // Weather forecast strip (replaces KPI)
   // ─────────────────────────────────────────────
-  function renderKpi(payload) {
-    const { timeAxis, series, forecast, meta } = payload;
+  const WX_ICONS = {
+    SUNNY: '☀️', PARTLY_CLOUDY: '⛅', CLOUDY: '☁️', OVERCAST: '☁️',
+    FOGGY: '🌫️', DRIZZLE: '🌦️', RAINY: '🌧️', SNOWY: '❄️',
+    THUNDERSTORM: '⛈️'
+  };
+  const WX_DESC_ZH = {
+    SUNNY:'晴', PARTLY_CLOUDY:'多云', CLOUDY:'阴', OVERCAST:'阴',
+    FOGGY:'雾', DRIZZLE:'小雨', RAINY:'雨', SNOWY:'雪', THUNDERSTORM:'雷雨'
+  };
+  const WX_DESC_EN = {
+    SUNNY:'Sunny', PARTLY_CLOUDY:'Partly Cloudy', CLOUDY:'Cloudy', OVERCAST:'Overcast',
+    FOGGY:'Foggy', DRIZZLE:'Drizzle', RAINY:'Rainy', SNOWY:'Snowy', THUNDERSTORM:'Thunderstorm'
+  };
 
-    // 最新预测：取所有模型中日期最新的一条预测（champion优先，否则runner/third）
-    let latestPred = null;
-    let latestPredDate = null;
-    // Find latest index with ANY prediction
-    const n = timeAxis.length;
-    for (let i = n - 1; i >= 0; i--) {
-      const v = series.champion[i] !== null ? series.champion[i]
-              : series.runner[i] !== null ? series.runner[i]
-              : series.third[i];
-      if (v !== null && v !== undefined) {
-        latestPred = v;
-        latestPredDate = timeAxis[i] || null;
-        break;
-      }
-    }
-    const latestEl = $('kpiLatestVal');
-    if (latestEl) latestEl.textContent = fmtVisitors(latestPred);
-    const latestDateEl = $('kpiLatestDate');
-    if (latestDateEl) latestDateEl.textContent = latestPredDate || '';
+  function renderWxStrip(payload) {
+    const scroll = $('v3WxScroll');
+    if (!scroll) return;
+    const { timeAxis, weather, forecast } = payload;
+    const today = new Date().toISOString().slice(0, 10);
 
-    // 综合风险：预测窗口末尾的风险等级
-    const activeRisk = pickActiveRisk(payload);
-    const riskEl = $('kpiRiskVal');
-    if (riskEl) {
-      if (activeRisk && Array.isArray(activeRisk.risk_level)) {
-        const lv = activeRisk.risk_level[forecast.endIndex] ?? 0;
-        riskEl.textContent = riskLevelText(lv);
-        riskEl.className = 'v3-kpi__value v3-kpi__value--risk';
-        if (lv >= 3) riskEl.classList.add('v3-kpi__value--risk-high');
-        else if (lv >= 1) riskEl.classList.add('v3-kpi__value--risk-warn');
-      } else {
-        riskEl.textContent = t('risk_normal');
-      }
+    // 只展示未来有天气数据的日期（temp_high_c 不为 null）
+    const cards = [];
+    for (let i = 0; i < timeAxis.length; i++) {
+      const th = weather.tempHighC[i];
+      const tl = weather.tempLowC[i];
+      if (th === null && tl === null) continue;
+      if (timeAxis[i] < today) continue;  // 只显示今天及以后
+      cards.push({ date: timeAxis[i], th, tl, code: weather.weatherCodeEn[i] });
+      if (cards.length >= 16) break;
     }
 
-    // 当前时间（24小时制，仅显示时间）
-    const clockEl = $('kpiClockVal');
-    if (clockEl) {
-      const now = new Date();
-      const hh = String(now.getHours()).padStart(2, '0');
-      const mm = String(now.getMinutes()).padStart(2, '0');
-      clockEl.textContent = `${hh}:${mm}`;
+    if (cards.length === 0) {
+      scroll.innerHTML = '<div style="padding:0 16px;color:var(--text-2);font-size:0.8rem">暂无天气预报数据</div>';
+      return;
     }
 
-    // 冠军模型名
-    const modelEl = $('kpiModelVal');
-    if (modelEl) modelEl.textContent = meta.championName || '—';
+    scroll.innerHTML = cards.map(({ date, th, tl, code }) => {
+      const isToday = date === today;
+      const d = new Date(date + 'T00:00:00');
+      const mon = d.getMonth() + 1;
+      const day = d.getDate();
+      const icon = WX_ICONS[code] || '🌤️';
+      const desc = state.lang === 'zh' ? (WX_DESC_ZH[code] || code || '—') : (WX_DESC_EN[code] || code || '—');
+      const high = th !== null ? `${Math.round(th)}°` : '—';
+      const low  = tl !== null ? `${Math.round(tl)}°` : '—';
+      return `<div class="v3-wx-card${isToday ? ' v3-wx-card--today' : ''}">
+        <span class="v3-wx-date">${isToday ? (state.lang === 'zh' ? '今天' : 'Today') : `${mon}/${day}`}</span>
+        <span class="v3-wx-icon">${icon}</span>
+        <span class="v3-wx-desc">${desc}</span>
+        <div class="v3-wx-temps"><span class="v3-wx-high">${high}</span><span class="v3-wx-low">${low}</span></div>
+      </div>`;
+    }).join('');
   }
 
-  // 每分钟更新时钟
-  function startClock() {
-    const update = () => {
-      const clockEl = $('kpiClockVal');
-      if (clockEl) {
-        const now = new Date();
-        clockEl.textContent = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-      }
-    };
-    update();
-    setInterval(update, 60000);
+  function bindWxArrows() {
+    const scroll = $('v3WxScroll');
+    const left = $('v3WxLeft');
+    const right = $('v3WxRight');
+    if (!scroll || !left || !right) return;
+    left.addEventListener('click', () => { scroll.scrollBy({ left: -264, behavior: 'smooth' }); });
+    right.addEventListener('click', () => { scroll.scrollBy({ left: 264, behavior: 'smooth' }); });
   }
 
   // ─────────────────────────────────────────────
@@ -491,8 +498,7 @@
     const { timeAxis } = payload;
     const start = timeAxis[0] || '';
     const end = timeAxis[timeAxis.length - 1] || '';
-    const modeLabel = state.mode === 'online' ? t('online_mode') : t('offline_mode');
-    el.textContent = `${start} ~ ${end} · ${modeLabel}`;
+    el.textContent = `${start} ~ ${end} · ${t('online_mode')}`;
   }
 
   // ─────────────────────────────────────────────
@@ -507,14 +513,17 @@
     const tooltipBg = isDark ? '#1c1c1e' : '#ffffff';
     const tooltipBorder = isDark ? '#3a3a3c' : '#e0e0e0';
 
-    const mv = state.modelView;
-    const champName = payload.meta.championName || t('model_champ');
-    const runnerName = payload.meta.runnerName || t('model_runner');
-    const thirdName = payload.meta.thirdName || t('model_third');
-    const showChamp = (mv === 'both' || mv === 'champion') && state.curveVisible.champion;
-    const showRunner = (mv === 'both' || mv === 'runner') && state.curveVisible.runner;
-    const showThird = (mv === 'both' || mv === 'third') && state.curveVisible.third;
-    const showActual = state.curveVisible.actual;
+    // 5条曲线配置：key, 显示名, 颜色
+    const CURVE_DEFS = [
+      { key: 'gru_single',  nameZh: 'GRU (单步)',       nameEn: 'GRU (Single)',    color: '#0a84ff' },
+      { key: 'gru_mimo',    nameZh: 'GRU (多步)',        nameEn: 'GRU (MIMO)',      color: '#5ac8fa' },
+      { key: 'lstm_single', nameZh: 'LSTM (单步)',       nameEn: 'LSTM (Single)',   color: '#ff9f0a' },
+      { key: 'lstm_mimo',   nameZh: 'LSTM (多步)',       nameEn: 'LSTM (MIMO)',     color: '#ffd60a' },
+      { key: 'seq2seq',     nameZh: 'Seq2Seq+Attention', nameEn: 'Seq2Seq+Attn',   color: '#30d158' },
+    ];
+
+    const chips = state.activeChips;
+    const showActual = chips.has('actual');
 
     // Holiday markAreas
     const markAreaData = (holidays || []).map((h) => {
@@ -532,40 +541,41 @@
 
     const seriesList = [
       {
-        name: t('chart_title') + ' (Actual)',
+        name: state.lang === 'zh' ? '实际客流' : 'Actual',
         type: 'line', data: showActual ? series.actual : series.actual.map(() => null),
         symbol: 'none', connectNulls: false,
         lineStyle: { color: isDark ? '#ffffff' : '#1c1c1e', width: 2 },
         itemStyle: { color: isDark ? '#ffffff' : '#1c1c1e' },
         markArea: { silent: true, data: markAreaData },
-        markLine: thresholds.crowd ? {
+        markLine: {
           silent: true,
-          data: [{ yAxis: thresholds.crowd, name: 'Crowd Threshold',
-            lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
-            label: { show: true, color: '#ff453a', formatter: (params) => fmtVisitors(params.value) } }]
-        } : undefined
+          data: [
+            ...(thresholds.crowd ? [{
+              yAxis: thresholds.crowd, name: 'Crowd Threshold',
+              lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
+              label: { show: true, color: '#ff453a', formatter: (params) => fmtVisitors(params.value) }
+            }] : []),
+            ...(payload.meta.testStartDate ? [{
+              xAxis: payload.meta.testStartDate,
+              lineStyle: { color: isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.35)', type: 'dashed', width: 1.5 },
+              label: {
+                show: true, position: 'insideEndTop',
+                color: isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)',
+                fontSize: 11,
+                formatter: state.lang === 'zh' ? '预测集开始' : 'Test Set Start'
+              }
+            }] : [])
+          ]
+        }
       },
-      {
-        name: champName,
-        type: 'line', data: showChamp ? series.champion : series.champion.map(() => null),
+      ...CURVE_DEFS.map(({ key, nameZh, nameEn, color }) => ({
+        name: state.lang === 'zh' ? nameZh : nameEn,
+        type: 'line',
+        data: chips.has(key) ? (series[key] || []) : (series[key] || []).map(() => null),
         symbol: 'none', showSymbol: false, connectNulls: false,
-        lineStyle: { color: '#0a84ff', width: 2 },
-        itemStyle: { color: '#0a84ff' }
-      },
-      {
-        name: runnerName,
-        type: 'line', data: showRunner ? series.runner : series.runner.map(() => null),
-        symbol: 'none', showSymbol: false, connectNulls: false,
-        lineStyle: { color: '#30d158', width: 2 },
-        itemStyle: { color: '#30d158' }
-      },
-      {
-        name: thirdName,
-        type: 'line', data: showThird ? series.third : series.third.map(() => null),
-        symbol: 'none', showSymbol: false, connectNulls: false,
-        lineStyle: { color: '#ff9f0a', width: 2 },
-        itemStyle: { color: '#ff9f0a' }
-      }
+        lineStyle: { color, width: 2 },
+        itemStyle: { color }
+      }))
     ];
 
     return {
@@ -741,16 +751,30 @@
   // ─────────────────────────────────────────────
   function renderWeather(payload, idx) {
     const { timeAxis, weather } = payload;
-    const date = timeAxis[idx] || '—';
-    const code = weather.weatherCodeEn[idx];
-    const tempHigh = safeNum(weather.tempHighC[idx]);
-    const tempLow = safeNum(weather.tempLowC[idx]);
-    const precip = safeNum(weather.precipMm[idx]);
-    const windLv = safeNum(weather.windLevel[idx]);
-    const windDir = weather.windDirEn[idx];
-    const windMax = safeNum(weather.windMax[idx]);
-    const aqi = safeNum(weather.aqiValue[idx]);
-    const aqiLevel = weather.aqiLevelEn[idx];
+    // If all key weather fields are null at idx, find nearest index with data
+    let resolvedIdx = idx;
+    if (safeNum(weather.tempHighC[idx]) === null && safeNum(weather.precipMm[idx]) === null) {
+      for (let delta = 1; delta <= 3; delta++) {
+        const next = idx + delta;
+        if (next < timeAxis.length && safeNum(weather.tempHighC[next]) !== null) {
+          resolvedIdx = next; break;
+        }
+        const prev = idx - delta;
+        if (prev >= 0 && safeNum(weather.tempHighC[prev]) !== null) {
+          resolvedIdx = prev; break;
+        }
+      }
+    }
+    const date = timeAxis[idx] || '—'; // still show original date label
+    const code = weather.weatherCodeEn[resolvedIdx];
+    const tempHigh = safeNum(weather.tempHighC[resolvedIdx]);
+    const tempLow = safeNum(weather.tempLowC[resolvedIdx]);
+    const precip = safeNum(weather.precipMm[resolvedIdx]);
+    const windLv = safeNum(weather.windLevel[resolvedIdx]);
+    const windDir = weather.windDirEn[resolvedIdx];
+    const windMax = safeNum(weather.windMax[resolvedIdx]);
+    const aqi = safeNum(weather.aqiValue[resolvedIdx]);
+    const aqiLevel = weather.aqiLevelEn[resolvedIdx];
 
     const wDate = $('v3WDate');
     if (wDate) wDate.textContent = date;
@@ -863,27 +887,18 @@
     const activeRisk = pickActiveRisk(payload);
     const threshold = payload.thresholds.crowd;
 
-    // Find the latest h-day window that has ANY prediction (champion→runner→third)
+    // 推荐窗口 = forecast window（在线预测的未来7天，或离线最新7天）
     const h = forecast.h || 7;
-    const n = timeAxis.length;
-    let recoEnd = forecast.endIndex;
-    // Walk to the latest index with any prediction
-    for (let i = n - 1; i >= 0; i--) {
-      const v = series.champion[i] !== null ? series.champion[i]
-              : series.runner[i] !== null ? series.runner[i]
-              : series.third[i];
-      if (v !== null && v !== undefined) { recoEnd = Math.max(recoEnd, i); break; }
-    }
+    const recoEnd = forecast.endIndex;
     const recoStart = Math.max(0, recoEnd - h + 1);
 
     const candidates = [];
     for (let i = recoStart; i <= recoEnd; i++) {
-      const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
-      // Best available prediction
-      const predVal = series.champion[i] !== null ? series.champion[i]
-                    : series.runner[i] !== null ? series.runner[i]
-                    : series.third[i];
-      const pred = safeNum(predVal);
+      const pred = safeNum(bestPred(series, i));
+      if (pred === null) continue;  // 跳过无预测值的日期
+      // 取 risk 等级（来自后端 risk_main 数组）
+      const lv = activeRisk && Array.isArray(activeRisk.risk_level)
+        ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
       candidates.push({ idx: i, date: timeAxis[i], lv, pred });
     }
 
@@ -950,10 +965,7 @@
       return -1;
     }
 
-    const champEnd = latestNonNullEnd(series.champion);
-    const runnerEnd = latestNonNullEnd(series.runner);
-    const thirdEnd = latestNonNullEnd(series.third);
-    const anyEnd = Math.max(champEnd, runnerEnd, thirdEnd);
+    const anyEnd = Math.max(...PRED_KEYS.map(k => latestNonNullEnd(series[k] || [])));
 
     // Use whichever end is latest (server endIndex is also a candidate)
     let endIdx = Math.max(forecast.endIndex, anyEnd);
@@ -961,13 +973,17 @@
 
     for (let i = startIdx; i <= endIdx; i++) {
       const date = timeAxis[i] || '';
-      // Show best available prediction: champion → runner → third
-      const predVal = series.champion[i] !== null ? series.champion[i]
-                    : series.runner[i] !== null ? series.runner[i]
-                    : series.third[i];
-      const pred = safeNum(predVal);
-      const code = weather.weatherCodeEn[i];
-      const tempHigh = safeNum(weather.tempHighC[i]);
+      const pred = safeNum(bestPred(series, i));
+      // Use nearest index with weather data if current has none
+      let wi = i;
+      if (safeNum(weather.tempHighC[i]) === null && safeNum(weather.precipMm[i]) === null) {
+        for (let d = 1; d <= 3; d++) {
+          if (i + d <= endIdx && safeNum(weather.tempHighC[i + d]) !== null) { wi = i + d; break; }
+          if (i - d >= startIdx && safeNum(weather.tempHighC[i - d]) !== null) { wi = i - d; break; }
+        }
+      }
+      const code = weather.weatherCodeEn[wi];
+      const tempHigh = safeNum(weather.tempHighC[wi]);
       const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
       const isSelected = i === state.selectedIdx;
 
@@ -1018,42 +1034,24 @@
   // Update curve toggle labels to show actual model names
   // ─────────────────────────────────────────────
   function updateCurveToggleLabels(payload) {
-    const champName = payload.meta.championName || t('model_champ');
-    const runnerName = payload.meta.runnerName || t('model_runner');
-    const thirdName = payload.meta.thirdName || t('model_third');
-    const map = { champion: champName, runner: runnerName, third: thirdName };
-    $$('[data-curve]').forEach((input) => {
-      const curve = input.getAttribute('data-curve');
-      if (map[curve]) {
-        const label = input.closest('label');
-        if (label) {
-          const span = label.querySelector('span');
-          if (span) span.textContent = map[curve];
-        }
-      }
-    });
+    // chip labels are static; sync active state only
+    _syncChipUI();
   }
 
   // ─────────────────────────────────────────────
   // Render all forecast page components
   // ─────────────────────────────────────────────
   function renderAll(payload) {
-    renderKpi(payload);
+    renderWxStrip(payload);
     renderChartSub(payload);
     renderChart(payload);
     renderWeatherChart(payload);
     renderForecastStrip(payload);
     renderReco(payload);
     updateCurveToggleLabels(payload);
-    // Default selection: latest index with any prediction (champion→runner→third)
+    // Default selection: latest index with any prediction
     const { series } = payload;
-    let defaultIdx = payload.forecast.endIndex;
-    for (let i = series.champion.length - 1; i >= 0; i--) {
-      const v = series.champion[i] !== null ? series.champion[i]
-              : series.runner[i] !== null ? series.runner[i]
-              : series.third[i];
-      if (v !== null && v !== undefined) { defaultIdx = i; break; }
-    }
+    const defaultIdx = latestPredIdx(series) >= 0 ? latestPredIdx(series) : payload.forecast.endIndex;
     updateSelection(defaultIdx);
   }
 
@@ -1370,37 +1368,35 @@
   }
 
   // ─────────────────────────────────────────────
-  // Horizon / model view
+  // Curve chip toggle（多选）
   // ─────────────────────────────────────────────
-  function setH(h) {
-    const hNum = Number(h);
-    if (hNum === 0) {
-      state.mode = 'offline';
-      state.h = 7;
+  const ALL_CHIPS = ['actual', 'gru_single', 'gru_mimo', 'lstm_single', 'lstm_mimo', 'seq2seq'];
+
+  function toggleChip(key) {
+    if (key === 'all') {
+      // 全选/全取消
+      if (state.activeChips.size === ALL_CHIPS.length) {
+        state.activeChips.clear();
+      } else {
+        ALL_CHIPS.forEach(k => state.activeChips.add(k));
+      }
     } else {
-      state.mode = 'online';
-      state.h = [1, 7, 14].includes(hNum) ? hNum : 7;
+      if (state.activeChips.has(key)) {
+        state.activeChips.delete(key);
+      } else {
+        state.activeChips.add(key);
+      }
     }
-    $$('[data-h]').forEach((btn) => {
-      const bh = Number(btn.getAttribute('data-h'));
-      const isActive = (hNum === 0 && bh === 0) || (hNum !== 0 && bh === hNum);
-      btn.classList.toggle('v3-seg__btn--active', isActive);
-    });
-    loadForecast();
+    _syncChipUI();
+    if (state.payload) renderChart(state.payload);
   }
 
-  function setModelView(view) {
-    const valid = ['both', 'champion', 'runner', 'third'];
-    state.modelView = valid.includes(view) ? view : 'both';
-    // Only update buttons in the chart-head seg group (not curve toggles)
-    $$('.v3-card__head [data-model]').forEach((btn) => {
-      btn.classList.toggle('v3-seg__btn--active', btn.getAttribute('data-model') === state.modelView);
+  function _syncChipUI() {
+    const allActive = state.activeChips.size === ALL_CHIPS.length;
+    $$('[data-chip="all"]').forEach(el => el.classList.toggle('v3-chip--active', allActive));
+    ALL_CHIPS.forEach(key => {
+      $$(`[data-chip="${key}"]`).forEach(el => el.classList.toggle('v3-chip--active', state.activeChips.has(key)));
     });
-    if (state.payload && state.payload.timeAxis && state.payload.timeAxis.length > 0) {
-      renderChart(state.payload);
-      if (state.selectedIdx !== null) renderRisk(state.payload, state.selectedIdx);
-      renderReco(state.payload);
-    }
   }
 
   // ─────────────────────────────────────────────
@@ -1412,14 +1408,13 @@
       btn.addEventListener('click', () => showPage(btn.getAttribute('data-page')));
     });
 
-    // Horizon (FIX 2: now in chart toolbar)
-    $$('[data-h]').forEach((btn) => {
-      btn.addEventListener('click', () => setH(btn.getAttribute('data-h')));
-    });
+    // 在线预测 toggle 已废弃（始终在线），隐藏控件
+    const onlineToggle = $('v3OnlineToggle');
+    if (onlineToggle) onlineToggle.style.display = 'none';
 
-    // Model view — only bind buttons in the chart card header seg group
-    $$('.v3-card__head [data-model]').forEach((btn) => {
-      btn.addEventListener('click', () => setModelView(btn.getAttribute('data-model')));
+    // Curve chip toggle
+    $$('[data-chip]').forEach((el) => {
+      el.addEventListener('click', () => toggleChip(el.getAttribute('data-chip')));
     });
 
     // Lang
@@ -1484,7 +1479,7 @@
     console.log('dashboard_v3.js loaded');
     applyI18n();
     bindEvents();
-    startClock();
+    bindWxArrows();
     loadForecast();
   }
 
