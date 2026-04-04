@@ -863,8 +863,10 @@ def api_forecast():
     df_merge = df_base.sort_values('date').reset_index(drop=True)
 
     def _fetch_weather_forecast(horizon: int) -> pd.DataFrame:
-        """从 Open-Meteo 获取未来 horizon 天天气预报。
+        """从 Open-Meteo 获取天气数据（含最近7天历史 + 未来 horizon 天预报）。
 
+        加入 past_days=7 以覆盖官网数据滞后导致的空缺段（如最新真实数据到4/2，
+        今天4/5，则4/3、4/4的天气从过去数据里取）。
         返回 DataFrame，列：date(str), temp_high, temp_low, precip_sum,
                            weathercode, windspeed_max
         失败时返回全 NaN 的占位 DataFrame。
@@ -877,6 +879,7 @@ def api_forecast():
                 'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max',
                 'timezone': 'Asia/Shanghai',
                 'forecast_days': horizon,
+                'past_days': 7,  # 覆盖数据滞后造成的空缺段
             }
             r = _req.get(url, params=params, timeout=10)
             r.raise_for_status()
