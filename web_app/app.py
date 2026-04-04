@@ -94,10 +94,8 @@ db.init_app(app)
 
 # --- Model Configuration ---
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODEL_RUNS_DIR = os.path.join(base_dir, 'model', 'runs')
 OFFLINE_BACKUPS_DIR = os.path.join(base_dir, 'output', 'backups')
 OUTPUT_RUNS_DIR = os.path.join(base_dir, 'output', 'runs')
-lstm_model = None
 
 
 def _get_latest_backup_dir():
@@ -435,72 +433,6 @@ def _load_weather_by_date(dates: list):
     except Exception as e:
         print(f"Failed to load weather from processed data: {e}")
         return None
-
-def get_latest_model_path():
-    """Get the latest model file path (prefer .h5, then .keras)"""
-    if not os.path.exists(MODEL_RUNS_DIR):
-        return None
-    
-    run_dirs = glob.glob(os.path.join(MODEL_RUNS_DIR, 'run_*'))
-    if not run_dirs:
-        return None
-    
-    latest_run_dir = max(run_dirs, key=os.path.getmtime)
-    
-    # Priority 1: H5 format (Best compatibility)
-    h5_path = os.path.join(latest_run_dir, 'lstm_jiuzhaigou.h5')
-    if os.path.exists(h5_path):
-        return h5_path
-        
-    # Priority 2: Keras format
-    keras_path = os.path.join(latest_run_dir, 'lstm_jiuzhaigou.keras')
-    return keras_path if os.path.exists(keras_path) else None
-
-def load_model():
-    """Legacy single-model loader — kept for /api/predict endpoint compatibility.
-    Dashboard v3 uses _load_model_by_key() instead."""
-    global lstm_model
-    path = get_latest_model_path()
-    if not path:
-        return  # 静默跳过，dashboard 不依赖此函数
-
-    print(f"Loading model from: {path}")
-    try:
-        # Strategy 1: TF Keras (Preferred when Keras is broken)
-        if tf:
-            try:
-                print("Attempting load with tf.keras.models.load_model...")
-                # 显式指定 compile=False
-                lstm_model = tf.keras.models.load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
-                print("Model loaded successfully (tf.keras).")
-                return
-            except Exception as e:
-                print(f"tf.keras load failed: {e}")
-
-        # Strategy 2: Keras Standalone
-        if keras:
-            try:
-                print(f"Attempting load with keras (v{keras.__version__})...")
-                if hasattr(keras, 'saving') and hasattr(keras.saving, 'load_model'):
-                    lstm_model = keras.saving.load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
-                elif hasattr(keras.models, 'load_model'):
-                    lstm_model = keras.models.load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
-                else:
-                    from keras.models import load_model as k_load_model
-                    lstm_model = k_load_model(path, custom_objects=_seq2seq_custom_objects or None, compile=False)
-
-                if lstm_model:
-                    print("Model loaded successfully (keras).")
-                    return
-            except Exception as e:
-                print(f"Keras load failed: {e}")
-        
-        print("ERROR: All model loading methods failed.")
-        
-    except Exception as e:
-        print(f"Unhandled exception during model loading: {e}")
-        import traceback
-        traceback.print_exc()
 
 # --- Holiday Configuration ---
 def load_holidays_config():
@@ -1487,118 +1419,6 @@ def get_data():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/predict', methods=['POST'])
-def predict():
-    """Rolling prediction endpoint"""
-    if not lstm_model:
-        return jsonify({"error": "Model not loaded"}), 500
-        
-    req_data = request.json
-    target_date_str = req_data.get('future_date')
-    days_to_predict = req_data.get('days')
-    
-    last_actual_record = TrafficRecord.query.filter(
-        TrafficRecord.actual_visitor.isnot(None)
-    ).order_by(TrafficRecord.record_date.desc()).first()
-    
-    if not last_actual_record:
-        return jsonify({"error": "No history data available"}), 400
-        
-    # Reset future predictions logic
-    try:
-        TrafficRecord.query.filter(
-            TrafficRecord.record_date > last_actual_record.record_date
-        ).delete()
-        db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        print(f"Warning: Failed to clear old predictions: {e}")
-
-    start_date = last_actual_record.record_date + timedelta(days=1)
-    
-    if target_date_str:
-        end_date = pd.to_datetime(target_date_str).date()
-    elif days_to_predict:
-        end_date = start_date + timedelta(days=int(days_to_predict) - 1)
-    else:
-        return jsonify({"error": "Missing future_date or days parameter"}), 400
-
-    if end_date < start_date:
-        return jsonify({"error": "Target date is in the past"}), 400
-
-    # Prediction Logic
-    try:
-        # 1. Scaler
-        all_actuals = db.session.query(TrafficRecord.actual_visitor).filter(
-            TrafficRecord.actual_visitor.isnot(None)
-        ).all()
-        all_counts_arr = np.array([r[0] for r in all_actuals]).reshape(-1, 1)
-        scaler = MinMaxScaler()
-        scaler.fit(all_counts_arr)
-        
-        # 2. Initial Window (Lookback 30)
-        look_back = 30
-        history_records = TrafficRecord.query.filter(
-            TrafficRecord.actual_visitor.isnot(None)
-        ).order_by(TrafficRecord.record_date.desc()).limit(look_back).all()
-        
-        if len(history_records) < look_back:
-            return jsonify({"error": "Not enough history"}), 400
-            
-        current_input_sequence = [scaler.transform([[r.actual_visitor]])[0][0] for r in reversed(history_records)]
-        
-        predictions_result = []
-        current_date = last_actual_record.record_date + timedelta(days=1)
-        
-        while current_date <= end_date:
-            model_input = []
-            for i in range(look_back):
-                val = current_input_sequence[i]
-                feature_date = current_date - timedelta(days=(look_back - i))
-                m_norm = (feature_date.month - 1) / 11.0
-                d_norm = feature_date.weekday() / 6.0
-                hol = mark_core_holiday(feature_date)
-                model_input.append([val, m_norm, d_norm, hol])
-            
-            input_arr = np.array(model_input).reshape(1, look_back, 4)
-            pred_scaled = lstm_model.predict(input_arr, verbose=0)[0][0]
-            pred_val = int(round(scaler.inverse_transform([[pred_scaled]])[0][0]))
-            
-            if current_date >= start_date:
-                predictions_result.append({
-                    "date": current_date.strftime('%Y-%m-%d'),
-                    "value": pred_val
-                })
-            
-            # Save to DB
-            existing = TrafficRecord.query.filter_by(record_date=current_date).first()
-            if existing:
-                existing.predicted_visitor = pred_val
-                existing.is_forecast = True
-            else:
-                db.session.add(TrafficRecord(
-                    record_date=current_date,
-                    predicted_visitor=pred_val,
-                    is_forecast=True
-                ))
-            
-            current_input_sequence.pop(0)
-            current_input_sequence.append(pred_scaled)
-            current_date += timedelta(days=1)
-            
-        db.session.commit()
-        
-        return jsonify({
-            "start_date": start_date.strftime('%Y-%m-%d'),
-            "end_date": end_date.strftime('%Y-%m-%d'),
-            "predictions": predictions_result
-        })
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
 # --- Scheduler Setup ---
 def _start_scheduler():
     """Start APScheduler background scheduler for daily auto-crawl and monthly retrain."""
@@ -1637,7 +1457,6 @@ def api_scheduler_status():
 # --- App Entry Point ---
 if __name__ == '__main__':
     with app.app_context():
-        load_model()
         db.create_all()
 
     print("Attempting to sync latest data...")

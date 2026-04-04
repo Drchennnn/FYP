@@ -27,7 +27,7 @@
       models_sub: '架构 · 特征 · 训练参数 · Attention 热力图',
       status_loading: '加载中',
       status_source: '数据来源：九寨沟官网 · Open-Meteo',
-      offline_mode: '离线回测', online_mode: '在线预测',
+      online_mode: '在线预测',
       risk_lv_0: '正常', risk_lv_1: '关注', risk_lv_2: '预警', risk_lv_3: '高风险',
       driver_crowd_over_threshold: '客流超阈值', driver_precip_high: '强降水',
       driver_temp_high: '高温', driver_temp_low: '低温',
@@ -39,11 +39,10 @@
       metrics_suit: '适宜性预警', metrics_meta: '训练参数',
       perfect_calib: '完美校准', actual_calib: '实际校准',
       confidence: '置信度', accuracy: '准确率',
-      warn_fallback: '在线预测失败，已自动回退离线产物。',
+      warn_fallback: '在线预测失败。',
       show_precip: '降水', show_temp: '温度',
       weather_sub_title: '降水 / 温度',
       curve_actual: '实际', curve_champ: '冠军',
-      curve_runner: '亚军', curve_third: '第三',
       filter_all: '全部', filter_gru: 'GRU', filter_seq2seq: 'Seq2Seq', filter_lstm: 'LSTM', filter_actual: '真实',
       wf_explain: 'Walk-forward 评估使用扩展窗口策略，每折独立训练，覆盖不同季节。MAE 越低表示回归精度越高；F1 越高表示预警准确率越高。',
       calib_explain: '可靠性图展示模型预警概率的校准质量。理想情况下，置信度为 X 时实际准确率也应为 X（对角线）。当前模型使用确定性近似，概率集中在 0 和 1 附近属正常现象。',
@@ -70,7 +69,7 @@
       models_sub: 'Architecture · Features · Training · Attention Heatmap',
       status_loading: 'Loading',
       status_source: 'Source: Jiuzhaigou Official · Open-Meteo',
-      offline_mode: 'Offline backtest', online_mode: 'Online forecast',
+      online_mode: 'Online forecast',
       risk_lv_0: 'Normal', risk_lv_1: 'Watch', risk_lv_2: 'Warning', risk_lv_3: 'High Risk',
       driver_crowd_over_threshold: 'Crowd over threshold',
       driver_precip_high: 'Heavy precipitation',
@@ -86,7 +85,6 @@
       show_precip: 'Precip', show_temp: 'Temp',
       weather_sub_title: 'Precip / Temp',
       curve_actual: 'Actual', curve_champ: 'Champion',
-      curve_runner: 'Runner', curve_third: 'Third',
       filter_all: 'All', filter_gru: 'GRU', filter_seq2seq: 'Seq2Seq', filter_lstm: 'LSTM', filter_actual: 'Actual',
       wf_explain: 'Walk-forward uses expanding window strategy. Each fold trains independently covering different seasons. Lower MAE = better regression; Higher F1 = better warning accuracy.',
       calib_explain: 'Reliability diagram shows calibration quality. Ideally confidence X should match accuracy X (diagonal). Current model uses deterministic approximation; probability concentration at 0 and 1 is expected.',
@@ -117,7 +115,6 @@
     metricsCache: {},
     analysisLoaded: false,
     modelsLoaded: false,
-    curveVisible: { actual: true, champion: true, runner: true, third: true },
     // 前端直接从 Open-Meteo 获取的天气数据：date string → weather object
     wxData: {},
     // 后端 payload 历史天气（2016~今天）：date string → weather object
@@ -1488,10 +1485,6 @@
       btn.addEventListener('click', () => showPage(btn.getAttribute('data-page')));
     });
 
-    // 在线预测 toggle 已废弃（始终在线），隐藏控件
-    const onlineToggle = $('v3OnlineToggle');
-    if (onlineToggle) onlineToggle.style.display = 'none';
-
     // Curve chip toggle
     $$('[data-chip]').forEach((el) => {
       el.addEventListener('click', () => toggleChip(el.getAttribute('data-chip')));
@@ -1540,17 +1533,6 @@
     ['v3ShowPrecip', 'v3ShowTemp'].forEach((id) => {
       const el = $(id);
       if (el) el.addEventListener('change', () => { if (state.payload) renderWeatherChart(state.payload); });
-    });
-
-    // Curve toggles (FIX 9)
-    $$('[data-curve]').forEach((chk) => {
-      chk.addEventListener('change', () => {
-        const curve = chk.getAttribute('data-curve');
-        if (curve in state.curveVisible) {
-          state.curveVisible[curve] = chk.checked;
-          if (state.payload) renderChart(state.payload);
-        }
-      });
     });
   }
 
