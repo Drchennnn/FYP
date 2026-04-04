@@ -1249,9 +1249,12 @@ def api_forecast():
                        'lstm_mimo_pred', 'seq2seq_pred']:
                 if _c not in df_merge.columns:
                     df_merge[_c] = np.nan
-            # 移除 df_merge 中与 df_future 日期重叠的行（在线预测覆盖 backfill）
-            future_dates = set(df_future['date'])
-            df_merge = df_merge[~df_merge['date'].isin(future_dates)]
+            # today 이후의 모든 행 제거（backfill CSV의 4/12~4/19 등 포함）
+            # df_future(today~today+6)로 완전히 대체
+            from datetime import date as _trim_date
+            _today = _trim_date.today()
+            df_merge['date'] = pd.to_datetime(df_merge['date']).dt.date
+            df_merge = df_merge[df_merge['date'] < _today]
             df_merge = pd.concat([
                 df_merge,
                 df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c',
