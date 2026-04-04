@@ -117,7 +117,9 @@
     metricsCache: {},
     analysisLoaded: false,
     modelsLoaded: false,
-    curveVisible: { actual: true, champion: true, runner: true, third: true }
+    curveVisible: { actual: true, champion: true, runner: true, third: true },
+    // 前端直接从 Open-Meteo 获取的天气数据：date string → weather object
+    wxData: {}
   };
 
   // ─────────────────────────────────────────────
@@ -299,6 +301,80 @@
     return res.json();
   }
 
+  // ─────────────────────────────────────────────
+  // Direct Open-Meteo weather fetch (frontend-side)
+  // 覆盖 past_days=14（历史段）+ forecast_days=14（未来段），减轻后端负担
+  // state.wxData: { "YYYY-MM-DD": { th, tl, precip, code, windMax, ... } }
+  // ─────────────────────────────────────────────
+  const WMO_CODE_MAP = {
+    0:'SUNNY',1:'SUNNY',2:'PARTLY_CLOUDY',3:'CLOUDY',
+    45:'FOGGY',48:'FOGGY',
+    51:'DRIZZLE',53:'DRIZZLE',55:'DRIZZLE',
+    61:'RAINY',63:'RAINY',65:'RAINY',
+    71:'SNOWY',73:'SNOWY',75:'SNOWY',77:'SNOWY',
+    80:'RAINY',81:'RAINY',82:'RAINY',
+    85:'SNOWY',86:'SNOWY',
+    95:'THUNDERSTORM',96:'THUNDERSTORM',99:'THUNDERSTORM'
+  };
+
+  async function fetchWeatherDirect() {
+    try {
+      const params = new URLSearchParams({
+        latitude: '33.2', longitude: '103.9',
+        daily: 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max',
+        timezone: 'Asia/Shanghai',
+        past_days: '14',
+        forecast_days: '14'
+      });
+      const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const json = await res.json();
+      const d = json.daily || {};
+      const times = d.time || [];
+      const th = d.temperature_2m_max || [];
+      const tl = d.temperature_2m_min || [];
+      const precip = d.precipitation_sum || [];
+      const wmo = d.weathercode || [];
+      const wind = d.windspeed_10m_max || [];
+      const newWx = {};
+      times.forEach((date, i) => {
+        const code = WMO_CODE_MAP[wmo[i]] || 'CLOUDY';
+        newWx[date] = {
+          th: th[i] != null ? th[i] : null,
+          tl: tl[i] != null ? tl[i] : null,
+          precip: precip[i] != null ? precip[i] : null,
+          code,
+          windMax: wind[i] != null ? wind[i] : null
+        };
+      });
+      state.wxData = newWx;
+      // Re-render weather UI with fresh data if we have a payload
+      if (state.payload) {
+        renderWxStrip(state.payload);
+        if (state.selectedIdx !== null) renderWeatherCard(state.selectedIdx);
+      }
+    } catch (e) {
+      console.warn('fetchWeatherDirect failed:', e);
+    }
+  }
+
+  // 根据 date string 从 wxData 查找天气，支持 ±3 天 fallback
+  function getWxForDate(dateStr) {
+    if (!dateStr) return null;
+    if (state.wxData[dateStr]) return state.wxData[dateStr];
+    // fallback: search ±3 days
+    const base = new Date(dateStr + 'T00:00:00');
+    for (let delta = 1; delta <= 3; delta++) {
+      for (const sign of [1, -1]) {
+        const d = new Date(base);
+        d.setDate(d.getDate() + sign * delta);
+        const key = d.toISOString().slice(0, 10);
+        if (state.wxData[key]) return state.wxData[key];
+      }
+    }
+    return null;
+  }
+
   async function loadForecast() {
     showSpinner(true);
     showError(null);
@@ -443,22 +519,21 @@
   function renderWxStrip(payload) {
     const scroll = $('v3WxScroll');
     if (!scroll) return;
-    const { timeAxis, weather, forecast } = payload;
     const today = new Date().toISOString().slice(0, 10);
 
-    // 只展示未来有天气数据的日期（temp_high_c 不为 null）
+    // 直接用 state.wxData（前端从 Open-Meteo 获取），只展示今天及以后，最多16天
+    const sortedDates = Object.keys(state.wxData).sort();
     const cards = [];
-    for (let i = 0; i < timeAxis.length; i++) {
-      const th = weather.tempHighC[i];
-      const tl = weather.tempLowC[i];
-      if (th === null && tl === null) continue;
-      if (timeAxis[i] < today) continue;  // 只显示今天及以后
-      cards.push({ date: timeAxis[i], th, tl, code: weather.weatherCodeEn[i] });
+    for (const date of sortedDates) {
+      if (date < today) continue;
+      const wx = state.wxData[date];
+      if (wx.th === null && wx.tl === null) continue;
+      cards.push({ date, ...wx });
       if (cards.length >= 16) break;
     }
 
     if (cards.length === 0) {
-      scroll.innerHTML = '<div style="padding:0 16px;color:var(--text-2);font-size:0.8rem">暂无天气预报数据</div>';
+      scroll.innerHTML = '<div style="padding:0 16px;color:var(--text-2);font-size:0.8rem">天气数据加载中…</div>';
       return;
     }
 
@@ -747,37 +822,24 @@
   }
 
   // ─────────────────────────────────────────────
-  // Weather card (FIX 4: wind/AQI fallback)
+  // Weather card — 前端直接用 state.wxData（Open-Meteo 直接拉取）
+  // renderWeatherCard(idx)：从 payload.timeAxis[idx] 取日期 → 查 wxData
+  // renderWeather(payload, idx)：保留兼容调用入口
   // ─────────────────────────────────────────────
-  function renderWeather(payload, idx) {
-    const { timeAxis, weather } = payload;
-    // If all key weather fields are null at idx, find nearest index with data
-    let resolvedIdx = idx;
-    if (safeNum(weather.tempHighC[idx]) === null && safeNum(weather.precipMm[idx]) === null) {
-      for (let delta = 1; delta <= 3; delta++) {
-        const next = idx + delta;
-        if (next < timeAxis.length && safeNum(weather.tempHighC[next]) !== null) {
-          resolvedIdx = next; break;
-        }
-        const prev = idx - delta;
-        if (prev >= 0 && safeNum(weather.tempHighC[prev]) !== null) {
-          resolvedIdx = prev; break;
-        }
-      }
-    }
-    const date = timeAxis[idx] || '—'; // still show original date label
-    const code = weather.weatherCodeEn[resolvedIdx];
-    const tempHigh = safeNum(weather.tempHighC[resolvedIdx]);
-    const tempLow = safeNum(weather.tempLowC[resolvedIdx]);
-    const precip = safeNum(weather.precipMm[resolvedIdx]);
-    const windLv = safeNum(weather.windLevel[resolvedIdx]);
-    const windDir = weather.windDirEn[resolvedIdx];
-    const windMax = safeNum(weather.windMax[resolvedIdx]);
-    const aqi = safeNum(weather.aqiValue[resolvedIdx]);
-    const aqiLevel = weather.aqiLevelEn[resolvedIdx];
+  function renderWeatherCard(idx) {
+    if (!state.payload) return;
+    const { timeAxis, thresholds } = state.payload;
+    const date = (timeAxis && timeAxis[idx]) || null;
+    const wx = date ? getWxForDate(date) : null;
+
+    const tempHigh = wx ? safeNum(wx.th) : null;
+    const tempLow  = wx ? safeNum(wx.tl) : null;
+    const precip   = wx ? safeNum(wx.precip) : null;
+    const windMax  = wx ? safeNum(wx.windMax) : null;
+    const code     = wx ? wx.code : null;
 
     const wDate = $('v3WDate');
-    if (wDate) wDate.textContent = date;
+    if (wDate) wDate.textContent = date || '—';
 
     const iconWrap = $('v3WIconWrap');
     if (iconWrap) iconWrap.innerHTML = weatherIconHtml(code);
@@ -791,47 +853,37 @@
     const wTempHL = $('v3WTempHL');
     if (wTempHL) {
       const hi = tempHigh !== null ? `${Math.round(tempHigh)}°` : '—';
-      const lo = tempLow !== null ? `${Math.round(tempLow)}°` : '—';
+      const lo = tempLow  !== null ? `${Math.round(tempLow)}°`  : '—';
       wTempHL.textContent = `${hi} / ${lo}`;
     }
 
     const wWind = $('v3WWind');
     if (wWind) {
-      if (windLv === null && windMax === null && (windDir === null || windDir === 'null')) {
-        wWind.textContent = '—';
-      } else {
-        const lvStr = windLv !== null ? `Lv ${Math.round(windLv)}` : (windMax !== null ? `${windMax}m/s` : '—');
-        const dirStr = (windDir && windDir !== 'null') ? ` · ${windDir}` : '';
-        wWind.textContent = lvStr + dirStr;
-      }
+      wWind.textContent = windMax !== null ? `${windMax.toFixed(1)} m/s` : '—';
     }
 
+    // AQI 不在 Open-Meteo 免费 forecast 里，留空
     const wAqi = $('v3WAqi');
-    if (wAqi) {
-      if (aqi === null && (!aqiLevel || aqiLevel === 'null')) {
-        wAqi.textContent = '—';
-      } else {
-        const aqiStr = aqi !== null ? String(Math.round(aqi)) : '—';
-        const lvStr = (aqiLevel && aqiLevel !== 'null') ? ` · ${aqiLevel}` : '';
-        wAqi.textContent = aqiStr + lvStr;
-      }
-    }
+    if (wAqi) wAqi.textContent = '—';
 
     const wFlags = $('v3WFlags');
     if (wFlags) {
       const flags = [];
-      const thr = payload.thresholds;
-      if (precip !== null && thr.weather.precipHigh !== null && precip >= thr.weather.precipHigh) {
+      const thr = thresholds || {};
+      const wthr = thr.weather || {};
+      if (precip  !== null && wthr.precipHigh !== null && precip  >= wthr.precipHigh)
         flags.push(`<span class="v3-flag v3-flag--driver">${t('driver_precip_high')}</span>`);
-      }
-      if (tempHigh !== null && thr.weather.tempHigh !== null && tempHigh >= thr.weather.tempHigh) {
+      if (tempHigh !== null && wthr.tempHigh   !== null && tempHigh >= wthr.tempHigh)
         flags.push(`<span class="v3-flag v3-flag--driver">${t('driver_temp_high')}</span>`);
-      }
-      if (tempLow !== null && thr.weather.tempLow !== null && tempLow <= thr.weather.tempLow) {
+      if (tempLow  !== null && wthr.tempLow    !== null && tempLow  <= wthr.tempLow)
         flags.push(`<span class="v3-flag v3-flag--driver">${t('driver_temp_low')}</span>`);
-      }
       wFlags.innerHTML = flags.join('');
     }
+  }
+
+  // 兼容旧调用（updateSelection 里用 renderWeather(payload, idx)）
+  function renderWeather(payload, idx) {
+    renderWeatherCard(idx);
   }
 
   // ─────────────────────────────────────────────
@@ -947,7 +999,7 @@
   function renderForecastStrip(payload) {
     const el = $('v3ForecastStrip');
     if (!el) return;
-    const { timeAxis, series, weather, forecast } = payload;
+    const { timeAxis, series, forecast } = payload;
     const activeRisk = pickActiveRisk(payload);
 
     const cards = [];
@@ -974,16 +1026,10 @@
     for (let i = startIdx; i <= endIdx; i++) {
       const date = timeAxis[i] || '';
       const pred = safeNum(bestPred(series, i));
-      // Use nearest index with weather data if current has none
-      let wi = i;
-      if (safeNum(weather.tempHighC[i]) === null && safeNum(weather.precipMm[i]) === null) {
-        for (let d = 1; d <= 3; d++) {
-          if (i + d <= endIdx && safeNum(weather.tempHighC[i + d]) !== null) { wi = i + d; break; }
-          if (i - d >= startIdx && safeNum(weather.tempHighC[i - d]) !== null) { wi = i - d; break; }
-        }
-      }
-      const code = weather.weatherCodeEn[wi];
-      const tempHigh = safeNum(weather.tempHighC[wi]);
+      // 直接从 wxData 查询天气（前端拉取，支持 ±3 天 fallback）
+      const wxEntry = date ? getWxForDate(date) : null;
+      const code = wxEntry ? wxEntry.code : null;
+      const tempHigh = wxEntry ? safeNum(wxEntry.th) : null;
       const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
       const isSelected = i === state.selectedIdx;
 
@@ -1042,7 +1088,7 @@
   // Render all forecast page components
   // ─────────────────────────────────────────────
   function renderAll(payload) {
-    renderWxStrip(payload);
+    renderWxStrip(payload);   // 先用已有 wxData 渲染（可能为空，会显示"加载中"）
     renderChartSub(payload);
     renderChart(payload);
     renderWeatherChart(payload);
@@ -1053,6 +1099,9 @@
     const { series } = payload;
     const defaultIdx = latestPredIdx(series) >= 0 ? latestPredIdx(series) : payload.forecast.endIndex;
     updateSelection(defaultIdx);
+
+    // 异步拉取天气（前端直连 Open-Meteo），完成后 fetchWeatherDirect 内部会自动刷新天气卡片和顶部条
+    fetchWeatherDirect();
   }
 
   // ─────────────────────────────────────────────
@@ -1435,6 +1484,7 @@
       refreshBtn.addEventListener('click', () => {
         state.analysisLoaded = false;
         state.modelsLoaded = false;
+        state.wxData = {};  // 清空天气缓存，强制重新拉取
         loadForecast();
       });
     }
