@@ -11,7 +11,7 @@
     zh: {
       tab_forecast: '预测', tab_analysis: '分析', tab_models: '模型',
       online: '在线', kpi_latest: '最新预测', kpi_peak: '预测峰值',
-      kpi_risk: '综合风险', kpi_model: '冠军模型', kpi_unit: '人',
+      kpi_risk: '综合风险', kpi_model: '冠军模型', kpi_clock: '当前时间', kpi_unit: '人',
       chart_title: '客流预测', model_all: '全部', model_champ: '冠军',
       model_runner: '亚军', model_third: '第三', risk_title: '适宜性预警',
       risk_normal: '正常', risk_watch: '关注', risk_warning: '预警',
@@ -44,6 +44,7 @@
       h_offline: '离线回测',
       btn_reset: '复原',
       show_precip: '降水', show_temp: '温度',
+      weather_sub_title: '降水 / 温度',
       curve_actual: '实际', curve_champ: '冠军',
       curve_runner: '亚军', curve_third: '第三',
       wf_explain: 'Walk-forward 评估使用扩展窗口策略，每折独立训练，覆盖不同季节。MAE 越低表示回归精度越高；F1 越高表示预警准确率越高。',
@@ -55,7 +56,7 @@
     en: {
       tab_forecast: 'Forecast', tab_analysis: 'Analysis', tab_models: 'Models',
       online: 'Online', kpi_latest: 'Latest Forecast', kpi_peak: 'Forecast Peak',
-      kpi_risk: 'Risk Level', kpi_model: 'Champion', kpi_unit: 'visitors',
+      kpi_risk: 'Risk Level', kpi_model: 'Champion', kpi_clock: 'Current Time', kpi_unit: 'visitors',
       chart_title: 'Visitor Forecast', model_all: 'All', model_champ: 'Champion',
       model_runner: 'Runner', model_third: 'Third', risk_title: 'Suitability Warning',
       risk_normal: 'Normal', risk_watch: 'Watch', risk_warning: 'Warning',
@@ -89,6 +90,7 @@
       h_offline: 'Offline',
       btn_reset: 'Reset View',
       show_precip: 'Precip', show_temp: 'Temp',
+      weather_sub_title: 'Precip / Temp',
       curve_actual: 'Actual', curve_champ: 'Champion',
       curve_runner: 'Runner', curve_third: 'Third',
       wf_explain: 'Walk-forward uses expanding window strategy. Each fold trains independently covering different seasons. Lower MAE = better regression; Higher F1 = better warning accuracy.',
@@ -310,14 +312,22 @@
         if (cached) {
           const { data, ts } = JSON.parse(cached);
           if (Date.now() - ts < 30 * 60 * 1000) {
-            state.payload = normalizeForecastPayload(data);
-            renderAll(state.payload);
-            showSpinner(false);
-            setStatus('ok', t('online_mode') + ' (cached)', state.payload.meta.generatedAt || '');
-            return;
+            const normalized = normalizeForecastPayload(data);
+            // 缓存验证：timeAxis 必须非空才使用缓存
+            if (normalized.timeAxis && normalized.timeAxis.length > 0) {
+              state.payload = normalized;
+              renderAll(state.payload);
+              showSpinner(false);
+              setStatus('ok', t('online_mode') + ' (cached)', state.payload.meta.generatedAt || '');
+              return;
+            }
+            // 缓存无效，删除并重新请求
+            localStorage.removeItem(cacheKey);
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        try { localStorage.removeItem(cacheKey); } catch (_) {}
+      }
     }
 
     try {
@@ -405,18 +415,23 @@
   }
 
   // ─────────────────────────────────────────────
-  // KPI strip (FIX 4: peak fallback)
+  // KPI strip — 最新预测+时间、综合风险、当前时间
   // ─────────────────────────────────────────────
   function renderKpi(payload) {
-    const { series, forecast, meta, risk } = payload;
+    const { timeAxis, series, forecast, meta } = payload;
 
-    // Latest prediction (last non-null champion pred)
+    // 最新预测：取所有模型中日期最新的一条预测（champion优先，否则runner/third）
     let latestPred = null;
     let latestPredDate = null;
-    for (let i = series.champion.length - 1; i >= 0; i--) {
-      if (series.champion[i] !== null) {
-        latestPred = series.champion[i];
-        latestPredDate = timeAxis[i];
+    // Find latest index with ANY prediction
+    const n = timeAxis.length;
+    for (let i = n - 1; i >= 0; i--) {
+      const v = series.champion[i] !== null ? series.champion[i]
+              : series.runner[i] !== null ? series.runner[i]
+              : series.third[i];
+      if (v !== null && v !== undefined) {
+        latestPred = v;
+        latestPredDate = timeAxis[i] || null;
         break;
       }
     }
@@ -425,25 +440,7 @@
     const latestDateEl = $('kpiLatestDate');
     if (latestDateEl) latestDateEl.textContent = latestPredDate || '';
 
-    // Peak predicted in forecast window
-    let peak = null;
-    const champSeries = series.champion;
-    const endIdx = Math.min(forecast.endIndex, champSeries.length - 1);
-    for (let i = forecast.startIndex; i <= endIdx; i++) {
-      const v = champSeries[i];
-      if (v !== null && (peak === null || v > peak)) peak = v;
-    }
-    // Fallback: scan last h non-null values
-    if (peak === null) {
-      let count = 0;
-      for (let i = champSeries.length - 1; i >= 0 && count < state.h; i--) {
-        if (champSeries[i] !== null) { if (peak === null || champSeries[i] > peak) peak = champSeries[i]; count++; }
-      }
-    }
-    const peakEl = $('kpiPeakVal');
-    if (peakEl) peakEl.textContent = fmtVisitors(peak);
-
-    // Risk level at end_index
+    // 综合风险：预测窗口末尾的风险等级
     const activeRisk = pickActiveRisk(payload);
     const riskEl = $('kpiRiskVal');
     if (riskEl) {
@@ -458,9 +455,31 @@
       }
     }
 
-    // Champion model name
+    // 当前时间（24小时制，仅显示时间）
+    const clockEl = $('kpiClockVal');
+    if (clockEl) {
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      clockEl.textContent = `${hh}:${mm}`;
+    }
+
+    // 冠军模型名
     const modelEl = $('kpiModelVal');
     if (modelEl) modelEl.textContent = meta.championName || '—';
+  }
+
+  // 每分钟更新时钟
+  function startClock() {
+    const update = () => {
+      const clockEl = $('kpiClockVal');
+      if (clockEl) {
+        const now = new Date();
+        clockEl.textContent = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      }
+    };
+    update();
+    setInterval(update, 60000);
   }
 
   // ─────────────────────────────────────────────
@@ -604,6 +623,7 @@
   }
 
   function renderChart(payload) {
+    if (!payload || !payload.timeAxis || payload.timeAxis.length === 0) return;
     const container = $('v3Chart');
     if (!container || !window.echarts) return;
     if (!state.chart) {
@@ -640,6 +660,7 @@
   // Weather sub-chart (FIX 7)
   // ─────────────────────────────────────────────
   function renderWeatherChart(payload) {
+    if (!payload || !payload.timeAxis || payload.timeAxis.length === 0) return;
     const container = $('v3WeatherChart');
     if (!container || !window.echarts) return;
     if (!state.weatherChart) {
@@ -680,7 +701,6 @@
 
     state.weatherChart.setOption({
       backgroundColor: 'transparent',
-      grid: { top: 8, right: 60, bottom: 30, left: 64 },
       xAxis: {
         type: 'category', data: timeAxis, boundaryGap: true,
         axisLine: { lineStyle: { color: gridColor } }, axisTick: { show: false },
@@ -705,7 +725,13 @@
       tooltip: { trigger: 'axis', backgroundColor: isDark ? '#1c1c1e' : '#fff',
         borderColor: isDark ? '#3a3a3c' : '#e0e0e0', textStyle: { color: textColor, fontSize: 11 } },
       legend: { show: false },
-      dataZoom: [{ type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: false }],
+      dataZoom: [
+        { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: false },
+        { type: 'slider', bottom: 4, height: 18, borderColor: gridColor,
+          fillerColor: 'rgba(10,132,255,0.12)', handleStyle: { color: '#0a84ff' },
+          textStyle: { color: mutedColor, fontSize: 10 } }
+      ],
+      grid: { top: 8, right: 60, bottom: 44, left: 64 },
       series
     }, { notMerge: true });
   }
@@ -837,23 +863,28 @@
     const activeRisk = pickActiveRisk(payload);
     const threshold = payload.thresholds.crowd;
 
-    const candidates = [];
-    for (let i = forecast.startIndex; i <= forecast.endIndex; i++) {
-      const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
-      const pred = safeNum(series.champion[i]);
-      candidates.push({ idx: i, date: timeAxis[i], lv, pred });
+    // Find the latest h-day window that has ANY prediction (champion→runner→third)
+    const h = forecast.h || 7;
+    const n = timeAxis.length;
+    let recoEnd = forecast.endIndex;
+    // Walk to the latest index with any prediction
+    for (let i = n - 1; i >= 0; i--) {
+      const v = series.champion[i] !== null ? series.champion[i]
+              : series.runner[i] !== null ? series.runner[i]
+              : series.third[i];
+      if (v !== null && v !== undefined) { recoEnd = Math.max(recoEnd, i); break; }
     }
+    const recoStart = Math.max(0, recoEnd - h + 1);
 
-    // FIX 7: if no valid predictions in forecast window, scan last 14 days of champion preds
-    const hasValidPreds = candidates.some((c) => c.pred !== null);
-    if (!hasValidPreds) {
-      candidates.length = 0;
-      for (let i = series.champion.length - 1; i >= 0 && candidates.length < 14; i--) {
-        if (series.champion[i] !== null) {
-          const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
-          candidates.unshift({ idx: i, date: timeAxis[i], lv, pred: series.champion[i] });
-        }
-      }
+    const candidates = [];
+    for (let i = recoStart; i <= recoEnd; i++) {
+      const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
+      // Best available prediction
+      const predVal = series.champion[i] !== null ? series.champion[i]
+                    : series.runner[i] !== null ? series.runner[i]
+                    : series.third[i];
+      const pred = safeNum(predVal);
+      candidates.push({ idx: i, date: timeAxis[i], lv, pred });
     }
 
     const good = candidates.filter((c) => c.lv === 0).sort((a, b) => (a.pred || 0) - (b.pred || 0));
@@ -905,25 +936,36 @@
     const activeRisk = pickActiveRisk(payload);
 
     const cards = [];
-    let startIdx = forecast.startIndex;
-    let endIdx = forecast.endIndex;
+    // ── Determine forecast window ──
+    // Use the server-provided endIndex as the anchor, but override with the
+    // latest index that has ANY prediction (champion > runner > third).
+    // This fixes the case where champion (Seq2Seq) only reaches 2/24 but
+    // runner/third (GRU/LSTM) extend to 4/2.
+    const h = forecast.h || 7;
 
-    // FIX 6: if champion preds are null in the forecast window, scan backwards for last h non-null
-    if (series.champion[startIdx] === null && series.champion[endIdx] === null) {
-      console.warn('renderForecastStrip: champion preds null in forecast window, scanning backwards');
-      const nonNullIndices = [];
-      for (let i = series.champion.length - 1; i >= 0 && nonNullIndices.length < forecast.h; i--) {
-        if (series.champion[i] !== null) nonNullIndices.unshift(i);
+    function latestNonNullEnd(arr) {
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (arr[i] !== null) return i;
       }
-      if (nonNullIndices.length > 0) {
-        startIdx = nonNullIndices[0];
-        endIdx = nonNullIndices[nonNullIndices.length - 1];
-      }
+      return -1;
     }
+
+    const champEnd = latestNonNullEnd(series.champion);
+    const runnerEnd = latestNonNullEnd(series.runner);
+    const thirdEnd = latestNonNullEnd(series.third);
+    const anyEnd = Math.max(champEnd, runnerEnd, thirdEnd);
+
+    // Use whichever end is latest (server endIndex is also a candidate)
+    let endIdx = Math.max(forecast.endIndex, anyEnd);
+    let startIdx = Math.max(0, endIdx - h + 1);
 
     for (let i = startIdx; i <= endIdx; i++) {
       const date = timeAxis[i] || '';
-      const pred = safeNum(series.champion[i]);
+      // Show best available prediction: champion → runner → third
+      const predVal = series.champion[i] !== null ? series.champion[i]
+                    : series.runner[i] !== null ? series.runner[i]
+                    : series.third[i];
+      const pred = safeNum(predVal);
       const code = weather.weatherCodeEn[i];
       const tempHigh = safeNum(weather.tempHighC[i]);
       const lv = activeRisk && Array.isArray(activeRisk.risk_level) ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
@@ -1003,7 +1045,15 @@
     renderForecastStrip(payload);
     renderReco(payload);
     updateCurveToggleLabels(payload);
-    const defaultIdx = payload.forecast.endIndex;
+    // Default selection: latest index with any prediction (champion→runner→third)
+    const { series } = payload;
+    let defaultIdx = payload.forecast.endIndex;
+    for (let i = series.champion.length - 1; i >= 0; i--) {
+      const v = series.champion[i] !== null ? series.champion[i]
+              : series.runner[i] !== null ? series.runner[i]
+              : series.third[i];
+      if (v !== null && v !== undefined) { defaultIdx = i; break; }
+    }
     updateSelection(defaultIdx);
   }
 
@@ -1342,10 +1392,11 @@
   function setModelView(view) {
     const valid = ['both', 'champion', 'runner', 'third'];
     state.modelView = valid.includes(view) ? view : 'both';
-    $$('[data-model]').forEach((btn) => {
+    // Only update buttons in the chart-head seg group (not curve toggles)
+    $$('.v3-card__head [data-model]').forEach((btn) => {
       btn.classList.toggle('v3-seg__btn--active', btn.getAttribute('data-model') === state.modelView);
     });
-    if (state.payload) {
+    if (state.payload && state.payload.timeAxis && state.payload.timeAxis.length > 0) {
       renderChart(state.payload);
       if (state.selectedIdx !== null) renderRisk(state.payload, state.selectedIdx);
       renderReco(state.payload);
@@ -1366,8 +1417,8 @@
       btn.addEventListener('click', () => setH(btn.getAttribute('data-h')));
     });
 
-    // Model view
-    $$('.v3-seg [data-model]').forEach((btn) => {
+    // Model view — only bind buttons in the chart card header seg group
+    $$('.v3-card__head [data-model]').forEach((btn) => {
       btn.addEventListener('click', () => setModelView(btn.getAttribute('data-model')));
     });
 
@@ -1433,6 +1484,7 @@
     console.log('dashboard_v3.js loaded');
     applyI18n();
     bindEvents();
+    startClock();
     loadForecast();
   }
 

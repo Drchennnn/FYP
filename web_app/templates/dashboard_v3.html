@@ -84,20 +84,14 @@
       <span class="v3-kpi__unit" id="kpiLatestDate"></span>
     </div>
     <div class="v3-kpi-divider"></div>
-    <div class="v3-kpi" id="kpiPeak">
-      <span class="v3-kpi__label" data-i18n="kpi_peak">预测峰值</span>
-      <span class="v3-kpi__value" id="kpiPeakVal">—</span>
-      <span class="v3-kpi__unit" data-i18n="kpi_unit">人</span>
-    </div>
-    <div class="v3-kpi-divider"></div>
     <div class="v3-kpi" id="kpiRisk">
       <span class="v3-kpi__label" data-i18n="kpi_risk">综合风险</span>
       <span class="v3-kpi__value v3-kpi__value--risk" id="kpiRiskVal">—</span>
     </div>
     <div class="v3-kpi-divider"></div>
-    <div class="v3-kpi" id="kpiModel">
-      <span class="v3-kpi__label" data-i18n="kpi_model">冠军模型</span>
-      <span class="v3-kpi__value v3-kpi__value--sm" id="kpiModelVal">—</span>
+    <div class="v3-kpi" id="kpiClock">
+      <span class="v3-kpi__label" data-i18n="kpi_clock">当前时间</span>
+      <span class="v3-kpi__value v3-kpi__value--mono" id="kpiClockVal">—</span>
     </div>
   </section>
 
@@ -121,26 +115,10 @@
       </div>
       <div class="v3-chart-box" id="v3Chart"></div>
 
-      <!-- Weather sub-chart toggle -->
-      <div class="v3-subchart-toggle">
-        <label class="v3-subchart-label">
-          <input type="checkbox" id="v3ShowPrecip" checked />
-          <span data-i18n="show_precip">降水</span>
-        </label>
-        <label class="v3-subchart-label">
-          <input type="checkbox" id="v3ShowTemp" checked />
-          <span data-i18n="show_temp">温度</span>
-        </label>
-      </div>
-      <div class="v3-chart-box v3-chart-box--sub" id="v3WeatherChart"></div>
-
       <!-- Chart bottom toolbar -->
       <div class="v3-chart-toolbar">
         <div class="v3-curve-toggles">
           <label class="v3-curve-toggle"><input type="checkbox" data-curve="actual" checked /><span data-i18n="curve_actual">实际</span></label>
-          <label class="v3-curve-toggle"><input type="checkbox" data-curve="champion" checked /><span data-i18n="curve_champ">冠军</span></label>
-          <label class="v3-curve-toggle"><input type="checkbox" data-curve="runner" checked /><span data-i18n="curve_runner">亚军</span></label>
-          <label class="v3-curve-toggle"><input type="checkbox" data-curve="third" checked /><span data-i18n="curve_third">第三</span></label>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <div class="v3-seg v3-seg--sm" role="group" aria-label="horizon">
@@ -154,8 +132,26 @@
       </div>
     </div>
 
-    <!-- Right: side panel -->
-    <aside class="v3-side">
+    <!-- Weather sub-chart card (below main chart, full-width in grid) -->
+    <div class="v3-card v3-card--weather-sub">
+      <div class="v3-card__head">
+        <h3 class="v3-card__title" data-i18n="weather_sub_title">降水 / 温度</h3>
+        <div class="v3-subchart-toggle">
+          <label class="v3-subchart-label">
+            <input type="checkbox" id="v3ShowPrecip" checked />
+            <span data-i18n="show_precip">降水</span>
+          </label>
+          <label class="v3-subchart-label">
+            <input type="checkbox" id="v3ShowTemp" checked />
+            <span data-i18n="show_temp">温度</span>
+          </label>
+        </div>
+      </div>
+      <div class="v3-chart-box v3-chart-box--sub" id="v3WeatherChart"></div>
+    </div>
+
+    <!-- Right: side panel (spans both chart row and weather-sub row) -->
+    <aside class="v3-side v3-side--sticky">
 
       <!-- Weather card -->
       <div class="v3-card v3-card--weather" id="v3WeatherCard">

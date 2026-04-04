@@ -1,0 +1,334 @@
+/* uiw_components.css
+   Namespaced component styles for dashboard_v2.
+   Goal: extract the usable parts from legacy static/css/1.css (weather card, spinner, toggles)
+   without leaking global selectors.
+*/
+
+:root {
+  --uiw-font-sans: 'Noto Sans SC', system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  --uiw-font-mono: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  --uiw-bg: #0b1020;
+  --uiw-panel: rgba(255, 255, 255, 0.06);
+  --uiw-panel-2: rgba(255, 255, 255, 0.08);
+  --uiw-text: rgba(255, 255, 255, 0.92);
+  --uiw-muted: rgba(255, 255, 255, 0.65);
+  --uiw-border: rgba(255, 255, 255, 0.14);
+  --uiw-accent: #7c5cff;
+  --uiw-accent-2: #22c55e;
+  --uiw-danger: #ff4d4f;
+}
+
+/* Bootstrap theme switch uses [data-bs-theme]. Keep component colors compatible. */
+html[data-bs-theme='light'] {
+  --uiw-bg: #f7f8fb;
+  --uiw-panel: rgba(0, 0, 0, 0.04);
+  --uiw-panel-2: rgba(0, 0, 0, 0.06);
+  --uiw-text: rgba(0, 0, 0, 0.88);
+  --uiw-muted: rgba(0, 0, 0, 0.56);
+  --uiw-border: rgba(0, 0, 0, 0.10);
+}
+
+/* ---------------- Spinner ---------------- */
+.uiw-spinner {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+}
+
+.uiw-spinner__inner {
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  border: 4px solid rgba(255, 255, 255, 0.18);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  animation: uiw-spin 0.85s linear infinite;
+}
+
+@keyframes uiw-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------------- Buttons / Chips ---------------- */
+.uiw-btn,
+.uiw-btn-primary {
+  font-family: var(--uiw-font-sans);
+  border-radius: 10px;
+  border: 1px solid var(--uiw-border);
+  padding: 8px 12px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--uiw-text);
+  background: var(--uiw-panel);
+  cursor: pointer;
+  transition: transform 0.05s ease, background 0.2s ease, border-color 0.2s ease;
+  user-select: none;
+}
+
+.uiw-btn:hover { background: var(--uiw-panel-2); }
+.uiw-btn:active { transform: translateY(1px); }
+
+.uiw-btn-primary {
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.95), rgba(34, 197, 94, 0.85));
+  border-color: rgba(255, 255, 255, 0.20);
+}
+
+.uiw-btn-primary:hover {
+  filter: brightness(1.06);
+}
+
+.uiw-chip-group {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.uiw-chip {
+  font-family: var(--uiw-font-sans);
+  border-radius: 999px;
+  border: 1px solid var(--uiw-border);
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--uiw-text);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  user-select: none;
+}
+
+.uiw-chip--active {
+  border-color: rgba(124, 92, 255, 0.65);
+  background: rgba(124, 92, 255, 0.18);
+}
+
+.uiw-sep {
+  width: 1px;
+  height: 26px;
+  background: var(--uiw-border);
+  display: inline-block;
+}
+
+/* ---------------- Mini Toggle ---------------- */
+.uiw-mini-toggle {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-family: var(--uiw-font-sans);
+  font-size: 13px;
+  color: var(--uiw-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.uiw-mini-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.uiw-mini-toggle__ui {
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--uiw-border);
+  background: rgba(255, 255, 255, 0.06);
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.uiw-mini-toggle__ui::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.uiw-mini-toggle input:checked + .uiw-mini-toggle__ui::after {
+  transform: translateX(16px);
+  background: rgba(34, 197, 94, 0.92);
+}
+
+.uiw-mini-toggle__label { color: var(--uiw-muted); }
+
+/* ---------------- Weather card (adapted from static/css/1.css, no global selectors) ---------------- */
+.uiw-weather-card {
+  width: 100%;
+  padding: 16px;
+  border-radius: 18px;
+  background: radial-gradient(178.94% 106.41% at 26.42% 106.41%, rgba(255, 247, 177, 0.55) 0%, rgba(255, 255, 255, 0) 72%), rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--uiw-border);
+  box-shadow: 0 24px 34px rgba(0, 0, 0, 0.12);
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+html[data-bs-theme='light'] .uiw-weather-card {
+  box-shadow: 0 18px 30px rgba(0, 0, 0, 0.08);
+}
+
+.uiw-weather-card:hover { transform: translateY(-1px); }
+
+.uiw-weather-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.uiw-weather-card__place {
+  font-weight: 700;
+  color: var(--uiw-text);
+  font-size: 16px;
+}
+
+.uiw-weather-card__date {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--uiw-muted);
+}
+
+.uiw-weather-card__temp {
+  font-family: var(--uiw-font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--uiw-text);
+}
+
+.uiw-weather-card__meta {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--uiw-muted);
+}
+
+.uiw-weather-card__flags {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.uiw-weather-flag {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--uiw-border);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--uiw-text);
+}
+
+.uiw-weather-card__grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.uiw-weather-kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+html[data-bs-theme='light'] .uiw-weather-kv {
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+.uiw-weather-k {
+  font-size: 13px;
+  color: var(--uiw-muted);
+}
+
+.uiw-weather-v {
+  font-size: 13px;
+  color: var(--uiw-text);
+  font-family: var(--uiw-font-mono);
+}
+
+/* ---------------- Thermometer (minimal) ---------------- */
+.uiw-thermo {
+  width: 100%;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--uiw-border);
+}
+
+.uiw-thermo__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.uiw-thermo__title {
+  font-weight: 700;
+  color: var(--uiw-text);
+  font-size: 14px;
+}
+
+.uiw-thermo__subtitle {
+  font-size: 12px;
+  color: var(--uiw-muted);
+}
+
+.uiw-thermo__body {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.uiw-thermo__tube {
+  width: 18px;
+  height: 92px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  overflow: hidden;
+  position: relative;
+}
+
+.uiw-thermo__fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(180deg, rgba(255, 77, 79, 0.9), rgba(124, 92, 255, 0.9));
+  height: 12%;
+  transition: height 0.25s ease;
+}
+
+.uiw-thermo__value {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.uiw-thermo__score {
+  font-family: var(--uiw-font-mono);
+  font-weight: 800;
+  font-size: 24px;
+  color: var(--uiw-text);
+}
+
+.uiw-thermo__level {
+  font-size: 13px;
+  color: var(--uiw-muted);
+}
+
+.uiw-thermo__foot {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--uiw-muted);
+}

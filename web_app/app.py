@@ -1226,11 +1226,24 @@ def api_forecast():
         forecast_start_idx = max(0, forecast_end_idx - h + 1)
         forecast_mode = 'online_future'
     else:
-        # Offline artifacts: treat latest predicted window as the forecast segment.
-        pred_series = df_merge['champion_pred'].astype(float)
-        has_pred = ~(pred_series.isna())
-        if has_pred.any():
-            forecast_end_idx = int(np.where(has_pred.values)[0].max())
+        # Offline artifacts: anchor the forecast window to the latest date
+        # covered by ANY prediction column (champion/runner/third).
+        # This handles the case where the champion model (e.g. Seq2Seq) has a
+        # shorter test CSV than runner/third (GRU/LSTM), so the window is
+        # determined by whichever model extends furthest into the future.
+        pred_cols = ['champion_pred', 'runner_pred', 'third_pred']
+        overall_end_idx = 0
+        for col in pred_cols:
+            if col in df_merge.columns:
+                col_series = df_merge[col].astype(float)
+                has_col = ~col_series.isna()
+                if has_col.any():
+                    col_end = int(np.where(has_col.values)[0].max())
+                    if col_end > overall_end_idx:
+                        overall_end_idx = col_end
+
+        if overall_end_idx > 0:
+            forecast_end_idx = overall_end_idx
         else:
             forecast_end_idx = len(time_axis) - 1
         forecast_start_idx = max(0, forecast_end_idx - h + 1)

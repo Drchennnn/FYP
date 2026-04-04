@@ -125,7 +125,7 @@ def run_lstm(
     cmd = [
         sys.executable,
         f"models/lstm/train_lstm_{features}features.py",
-        "--input-csv", f"data/processed/jiuzhaigou_{features}features_latest.csv",
+        "--input-csv", "data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
         "--epochs", str(epochs),
         "--look-back", str(look_back),
         "--save-plots" if save_plots else "--no-save-plots",
@@ -154,7 +154,7 @@ def run_gru(
     cmd = [
         sys.executable,
         f"models/gru/train_gru_{features}features.py",
-        "--input-csv", f"data/processed/jiuzhaigou_{features}features_latest.csv",
+        "--input-csv", "data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
         "--epochs", str(epochs),
         "--look-back", str(look_back),
         "--save-plots" if save_plots else "--no-save-plots",
@@ -185,7 +185,7 @@ def run_seq2seq_attention(
     cmd = [
         sys.executable,
         "models/lstm/train_seq2seq_attention_8features.py",
-        "--input-csv", "data/processed/jiuzhaigou_8features_latest.csv",
+        "--input-csv", "data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
         "--epochs", str(epochs),
         "--look-back", str(look_back),
         "--save-plots" if save_plots else "--no-save-plots",

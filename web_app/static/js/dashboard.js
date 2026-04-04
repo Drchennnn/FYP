@@ -304,6 +304,37 @@ function initCharts() {
     UIW.state.selectedDate = date;
     syncSideCards();
   });
+
+  // Fallback: click anywhere on the plot area to select nearest x-axis date.
+  // (Line series may not emit a point click when symbols are hidden.)
+  try {
+    const zr = UIW.state.visitorChart.getZr();
+    zr.off('click');
+    zr.on('click', (ev) => {
+      const chart = UIW.state.visitorChart;
+      if (!chart) return;
+
+      // Only react to clicks inside the main plotting grid (avoid dataZoom slider clicks).
+      try {
+        if (!chart.containPixel('grid', [ev.offsetX, ev.offsetY])) return;
+      } catch (_) {}
+
+      const payload = UIW.state.payload;
+      const x = payload?.time_axis || chart.getOption?.()?.xAxis?.[0]?.data || [];
+      if (!x || !x.length) return;
+
+      // Convert pixel -> xAxis value. For category axis this is usually an index.
+      const v = chart.convertFromPixel({ xAxisIndex: 0 }, [ev.offsetX, ev.offsetY]);
+      const xi = Array.isArray(v) ? v[0] : v;
+      let idx = -1;
+      if (typeof xi === 'number' && Number.isFinite(xi)) idx = Math.round(xi);
+      else if (typeof xi === 'string') idx = x.indexOf(xi);
+      if (idx < 0 || idx >= x.length) return;
+
+      UIW.state.selectedDate = x[idx];
+      syncSideCards();
+    });
+  } catch (_) {}
 }
 
 function setMainPanel(panel) {
@@ -397,12 +428,29 @@ function renderVisitorChart(payload) {
 
   UIW.state.visitorChart.setOption({
     animationDuration: 450,
-    // Use item tooltip to keep the hover line on series only.
-    // This avoids crosshair flicker when hovering the bottom dataZoom slider.
     tooltip: {
-      trigger: 'item',
-      valueFormatter: (v) => (v === null || v === undefined ? '--' : fmtInt(v))
+      // Restore axis tooltip for hover readout (actual passenger value per day).
+      // Disable axisPointer visuals to avoid the annoying crosshair effect,
+      // especially when hovering the dataZoom slider.
+      trigger: 'axis',
+      axisPointer: { type: 'none' },
+      confine: true,
+      formatter: (items) => {
+        const arr = Array.isArray(items) ? items : (items ? [items] : []);
+        if (!arr.length) return '';
+        const date = arr[0]?.axisValueLabel || arr[0]?.name || '';
+        const rows = arr
+          .filter(it => it && it.seriesName)
+          .map(it => {
+            const v = Array.isArray(it.value) ? it.value?.[1] : it.value;
+            const val = (v === null || v === undefined || v === '-') ? '--' : fmtInt(v);
+            return `${it.marker}${it.seriesName}: ${val}`;
+          });
+        return `${date}<br/>${rows.join('<br/>')}`;
+      }
     },
+    // Extra guard: ensure no global axisPointer is rendered.
+    axisPointer: { show: false },
     legend: {
       data: [LEG_ACT, LEG_C, LEG_R, LEG_T],
       top: 6,

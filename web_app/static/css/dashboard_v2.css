@@ -1,0 +1,127 @@
+/* dashboard_v2.css - page layout only (no global component pollution) */
+
+.dv2 {
+  font-family: var(--uiw-font-sans);
+  color: var(--uiw-text);
+}
+
+.dv2__bar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--uiw-border);
+  background: rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(10px);
+}
+
+html[data-bs-theme='light'] .dv2__bar {
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.dv2__title { display: flex; flex-direction: column; gap: 2px; }
+.dv2__h1 { font-size: 16px; font-weight: 800; letter-spacing: 0.2px; }
+.dv2__sub { font-size: 12px; color: var(--uiw-muted); font-family: var(--uiw-font-mono); }
+
+.dv2__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.dv2__main {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 12px;
+}
+
+@media (max-width: 1180px) {
+  .dv2__main { grid-template-columns: 1fr; }
+}
+
+.dv2__chart {
+  border-radius: 18px;
+  border: 1px solid var(--uiw-border);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+  min-height: 520px;
+}
+
+.dv2__chartHead {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.dv2__chartTitle { font-size: 14px; font-weight: 800; }
+.dv2__chartHint { font-size: 12px; color: var(--uiw-muted); }
+
+.dv2__chartBox {
+  width: 100%;
+  height: 470px;
+}
+
+.dv2__side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dv2__card {
+  border-radius: 18px;
+  border: 1px solid var(--uiw-border);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+}
+
+.dv2__cardTitle {
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.dv2__reco {
+  min-height: 48px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--uiw-muted);
+  font-size: 13px;
+}
+
+/* Tiny local alert component (no Tailwind) */
+.uiw-alert {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  top: 82px;
+  z-index: 2100;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.62);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 13px;
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.25);
+}
+
+html[data-bs-theme='light'] .uiw-alert {
+  background: rgba(255, 255, 255, 0.86);
+  color: rgba(0, 0, 0, 0.86);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+.uiw-alert--warn { border-color: rgba(255, 215, 64, 0.55); }
+.uiw-alert--error { border-color: rgba(255, 77, 79, 0.55); }
+.uiw-alert--ok { border-color: rgba(34, 197, 94, 0.55); }

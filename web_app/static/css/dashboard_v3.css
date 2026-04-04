@@ -184,6 +184,7 @@ body{
 .v3-kpi__value{font-size:1.9rem;font-weight:700;font-family:var(--font-mono);letter-spacing:-0.02em;line-height:1}
 .v3-kpi__value--risk{color:var(--accent-3)}
 .v3-kpi__value--sm{font-size:1rem;font-family:var(--font-sans);font-weight:600}
+.v3-kpi__value--mono{font-family:var(--font-mono);letter-spacing:0.04em}
 .v3-kpi__unit{font-size:0.72rem;color:var(--text-2)}
 .v3-kpi-divider{width:1px;height:40px;background:var(--border);margin:0 24px;flex-shrink:0}
 
@@ -207,12 +208,20 @@ body{
 .v3-chart-box{width:100%;height:420px}
 .v3-chart-box--md{height:320px}
 .v3-chart-box--sm{height:220px}
-.v3-chart-box--sub{height:180px;margin-top:4px}
+.v3-chart-box--sub{height:210px;margin-top:4px}
 
 /* ── Sub-chart toggle ── */
 .v3-subchart-toggle{display:flex;gap:16px;padding:4px 0}
 .v3-subchart-label{display:flex;align-items:center;gap:6px;font-size:0.78rem;color:var(--text-2);cursor:pointer}
 .v3-subchart-label input{accent-color:var(--accent)}
+
+/* ── Weather sub-chart card (independent card below main chart) ── */
+.v3-card--weather-sub{grid-column:1/2;grid-row:2;padding:20px 24px}
+.v3-card--weather-sub .v3-card__head{margin-bottom:8px}
+.v3-card--weather-sub .v3-subchart-toggle{padding:0}
+
+/* ── Side panel spans rows 1+2 so it aligns with both chart cards ── */
+.v3-side--sticky{grid-column:2/3;grid-row:1/3;align-self:start}
 
 /* ── Chart toolbar ── */
 .v3-chart-toolbar{
