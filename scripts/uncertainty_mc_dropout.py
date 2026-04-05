@@ -278,9 +278,9 @@ def _plot(df: pd.DataFrame, metrics: dict, out_dir: Path, alpha: float):
         # 下图：预测标准差（动态不确定性）
         ax2 = axes[1]
         ax2.fill_between(dates, 0, df['std'], alpha=0.5, color='darkorange')
-        ax2.set_ylabel('Prediction Std (人)')
+        ax2.set_ylabel('Prediction Std (visitors)')
         ax2.set_xlabel('Date')
-        ax2.set_title('MC Dropout 预测标准差（高峰期不确定性更高）')
+        ax2.set_title('MC Dropout Prediction Std (wider during peak seasons)')
         ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
         ax2.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
         plt.xticks(rotation=30)
