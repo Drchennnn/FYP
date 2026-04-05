@@ -763,42 +763,137 @@ output/runs/<run_name>/
 
 ---
 
-## 13. 待完成事项
+## 13. 当前进度总结（2026-04-05）
 
-以下内容已有代码框架，但需要实际运行或进一步完善后才能作为最终结果使用。
+### 13.1 已完成项
 
-### 13.1 Ablation Study 实验结果
+#### 模型训练与评估
 
-`scripts/ablation_study.py` 已实现，但尚未实际运行获取图表。需要执行：
+| 模型 | MAE (人次) | RMSE | F1 (预警) | Recall (预警) | Brier |
+|------|-----------|------|-----------|--------------|-------|
+| GRU 单步 (champion) | **2,809** | 3,993 | 0.971 | 0.964 | 0.036 |
+| GRU MIMO | 2,941 | 3,902 | 0.967 | 0.986 | 0.038 |
+| LSTM 单步 | 3,881 | 5,104 | 0.966 | 0.945 | 0.043 |
+| LSTM MIMO | 5,014 | 6,496 | 0.974 | 0.976 | 0.032 |
+| Seq2Seq+Attention | 3,846 | 5,326 | 0.964 | 0.952 | 0.042 |
 
+> 注：MAPE 因数据中包含景区关闭日（客流=0）导致分母为零，指标不可信，论文中应替换为 sMAPE 或仅报告非零日 MAPE。
+
+#### 不确定性区间评估（90% CI，GRU 基座）
+
+| 方法 | PICP | MPIW | Winkler | 备注 |
+|------|------|------|---------|------|
+| P1 残差分位数 | 0.843 | 9,098 | 19,545 | 固定宽度，无步长感知 |
+| P2 MC Dropout | 0.731 | 8,165 | 21,980 | 覆盖率不足，TF2.15 CuDNN 限制 |
+| P3 Split Conformal | 0.970 | 18,918 | 20,405 | 有限样本覆盖保证，宽度偏大 |
+| **P4 Ensemble+Conformal** | **0.948** | 22,070 | 24,127 | 自适应宽度，步长感知，**推荐** |
+
+#### 前端可视化系统（已完成）
+- Apple 风格仪表盘 v3（ECharts + Flask API）
+- 三段时间轴标注（历史/数据滞后推演区/未来预测区）
+- 90% 步长感知置信区间扇形图（橙色）
+- 适宜性预警概率曲线（紫色，副 Y 轴）
+- 专业名词解释手风琴组件（互斥展开）
+- 图例面板 + 所有视觉元素颜色标注
+- 开发者模式（5 条模型对比线）
+- 校准引擎说明卡（Conformal Prediction + 5-Member GRU Ensemble）
+
+#### 可解释性（框架已就绪）
+- SHAP 分析脚本 `scripts/shap_analysis.py` —— **未运行**
+- 归因驱动因素面板（规则引擎近似，已在前端展示）
+
+### 13.2 待完成事项（论文关键缺口）
+
+#### 🔴 必须完成（结果章节所需）
+
+**A. Ablation Study（消融实验）**
 ```bash
 python scripts/ablation_study.py --epochs 80
 ```
+输出：`output/ablation/<timestamp>/ablation_study.png` + `ablation_results.csv`  
+论文用途：Chapter 4 — 证明 8 特征选择的合理性，量化每个特征的贡献。
 
-运行后将在 `output/ablation/<timestamp>/` 生成 `ablation_study.png` 和 `ablation_results.csv`，可直接用于论文图表。
-
-### 13.2 SHAP 特征重要性结果
-
-`scripts/shap_analysis.py` 已实现，但尚未实际运行。需要执行：
-
+**B. SHAP 特征重要性**
 ```bash
 pip install shap
-python scripts/shap_analysis.py --model all
+python scripts/shap_analysis.py --model gru
 ```
+输出：`output/shap/<timestamp>/` — 特征重要性柱状图  
+论文用途：Chapter 4 可解释性分析，替代当前规则引擎近似。
 
-运行后将在 `output/shap/<timestamp>/` 生成特征重要性柱状图。
+**C. Walk-forward 评估（时序交叉验证）**
+```bash
+python scripts/walk_forward_eval.py --model gru --folds 4
+```
+输出：`metrics.json` 新增 `walk_forward` 键，仪表盘模型分析页填充  
+论文用途：Chapter 4 — 证明模型在不同季节的稳健性，而非测试集单次评估。
 
-### 13.3 校准问题（论文说明）
+**D. Attention 热力图（Seq2Seq）**
+需要对 Seq2Seq 测试集运行推理并保存 attention 权重。  
+论文用途：Chapter 4 — 可视化模型关注的历史时间步，支撑可解释性叙事。
 
-当前预警概率通过 logistic 变换（temperature=1000）从点预测转换而来，本质上是**确定性分类器的概率近似**，而非真正的概率输出。Reliability diagram 呈现双峰分布（大量样本集中在 0 和 1 附近）是这一设计的直接结果。
+#### 🟡 建议完成（增强论文深度）
 
-**论文中需要明确说明**：
-- Brier Score 和 ECE 用于衡量这一近似的质量，不应与真正概率模型（如 MC Dropout、Conformal Prediction）的校准指标直接比较
-- 如需真正的概率输出，可考虑 Platt Scaling 或 Isotonic Regression 后校准（`scripts/calibrate_model.py` 有框架）
+**E. MAPE 修复**：替换为 sMAPE 或仅报告非零日 MAPE（当前 MAPE=0.0% 是计算 bug）。
+
+**F. 预警概率校准说明**：当前 p_warn 为规则触发式二值概率（0.15/0.85），Reliability diagram 呈双峰分布，在论文中需明确说明这是设计决策而非校准失败。Brier Score 和 ECE 仍有效（衡量二值近似质量），但不应与 MC Dropout 等真正概率模型的校准指标直接比较。
+
+**G. 不确定性区间论文图**：绘制 4 种方法的 PICP vs MPIW 权衡散点图（效率-覆盖率曲线），直观展示 P4 的优势。
+
+### 13.3 论文各章准备状态
+
+| 章节 | 状态 | 缺口 |
+|------|------|------|
+| Ch.3 Design & Implementation | ✅ 代码/架构全部完成 | 需整理系统架构图、数据流图 |
+| Ch.4 Results & Discussion | 🟡 核心指标齐全 | 缺 Ablation / SHAP / Walk-forward / Attention 热力图 |
+| Ch.5 Conclusion & Further Work | 🔲 待写 | 依赖 Ch.4 结论 |
 
 ---
 
-## 14. 项目维护信息
+## 14. 下一步行动计划
+
+### 优先级 P0 — 本周内完成（论文硬依赖）
+
+```bash
+# 1. 消融实验（约 30 分钟）
+python scripts/ablation_study.py --epochs 80
+
+# 2. SHAP 分析（约 10 分钟）
+pip install shap
+python scripts/shap_analysis.py --model gru
+
+# 3. Walk-forward（约 2 小时，4 折 × 3 模型）
+python scripts/walk_forward_eval.py --model gru --folds 4
+python scripts/walk_forward_eval.py --model lstm --folds 4
+python scripts/walk_forward_eval.py --model seq2seq_attention --folds 4
+
+# 4. 修复 MAPE 计算
+# 在 models/common/core_evaluation.py 中改用 sMAPE
+```
+
+### 优先级 P1 — 开始论文写作
+
+**Chapter 3 Design and Implementation**（可立即开始）
+- 3.1 数据集描述：九寨沟 2016–2026 日均客流，8 特征，数据预处理流程
+- 3.2 模型架构：GRU/LSTM 单步 vs MIMO，Seq2Seq+Attention，超参数设置
+- 3.3 不确定性区间框架：P1–P4 四种方法，重点描述 P4（Ensemble+Conformal）
+- 3.4 系统实现：Flask API，在线/离线模式，延迟感知推演，APScheduler
+
+**Chapter 4 Results and Discussion**（等 A/B/C 完成后）
+- 4.1 回归性能比较表（MAE/RMSE/F1 五模型对比）
+- 4.2 不确定性区间评估（PICP/MPIW/Winkler 四方法对比）
+- 4.3 消融实验（特征重要性）
+- 4.4 Walk-forward 稳健性
+- 4.5 可解释性分析（SHAP + Attention 热力图）
+
+**Chapter 5 Conclusion**（最后写）
+- 主要贡献总结
+- 局限性：p_warn 二值近似、MAPE 不可靠、Walk-forward 尚未覆盖 2026 年
+- 未来工作：Transformer 替代、在线学习、更细粒度（小时级）预测
+
+---
+
+## 15. 项目维护信息
 
 **技术栈**：Python 3.10+, TensorFlow 2.15, Flask 3.0, ECharts 5, SQLite, APScheduler, SHAP
 
