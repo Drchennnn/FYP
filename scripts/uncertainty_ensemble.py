@@ -1,29 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Part 4: Deep Ensemble Uncertainty Interval
+Part 4: Deep Ensemble + Conformal Calibration Interval
 
 Principle:
-  Load N independently trained GRU models (different random seeds).
-  For each test sample, collect N predictions and compute:
-    - mean   = ensemble mean prediction
-    - std    = standard deviation across members (epistemic uncertainty)
-    - lower  = alpha/2 quantile of member predictions
-    - upper  = 1 - alpha/2 quantile of member predictions
+  Combines two methods:
+  1. Deep Ensemble: N independently trained GRU models capture epistemic
+     uncertainty via member disagreement (std).
+  2. Conformal Calibration: The ensemble std alone is too narrow to cover
+     the actual prediction error (std << MAE). To fix this, we use the
+     validation set to calibrate a scale factor q_hat such that:
 
-  Deep Ensembles (Lakshminarayanan et al., 2017) consistently outperform
-  MC Dropout for uncertainty quantification in practice.
+       nonconformity score: s_i = |y_i - mean_i| / (std_i + eps)
+       q_hat = ceil((n+1)(1-alpha))/n quantile of {s_1,...,s_n}
+       test interval: [mean - q_hat * (std + eps), mean + q_hat * (std + eps)]
+
+  This gives a coverage guarantee IF the val/test distributions are similar,
+  AND produces ADAPTIVE intervals: high-uncertainty samples (large std) get
+  wider intervals, low-uncertainty samples get narrower ones.
+
+  If val/test have distribution shift, use --cal-source recent (splits test
+  set in half: first half calibrates, second half evaluates).
 
 Output:
   output/uncertainty/ensemble_<timestamp>/
-    ensemble_interval.csv    -- date, y_true, y_pred_mean, lower, upper, std
-    ensemble_metrics.json    -- PICP, MPIW, Winkler Score, per-member MAE
-    ensemble_interval.png    -- visualization
+    ensemble_interval.csv    -- date, y_true, y_pred_mean, lower, upper, std, q_hat_scaled
+    ensemble_metrics.json    -- PICP, MPIW, Winkler Score, q_hat, per-member MAE
+    ensemble_interval.png    -- visualization (top: interval, bottom: adaptive width)
 
 Usage:
   python scripts/uncertainty_ensemble.py
   python scripts/uncertainty_ensemble.py --alpha 0.10
-  python scripts/uncertainty_ensemble.py --ensemble-dir output/runs/gru_ensemble_20260405_XXXXXX
+  python scripts/uncertainty_ensemble.py --cal-source recent
+  python scripts/uncertainty_ensemble.py --ensemble-dir output/runs/gru_ensemble_XXXXXXXX
 """
 
 from __future__ import annotations
@@ -43,6 +52,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 OUTPUT_DIR = PROJECT_ROOT / 'output' / 'uncertainty'
+EPS = 1.0  # prevent division by zero in std normalisation (1 visitor floor)
 
 
 # ─────────────────────────────────────────────
@@ -50,14 +60,13 @@ OUTPUT_DIR = PROJECT_ROOT / 'output' / 'uncertainty'
 # ─────────────────────────────────────────────
 
 def find_latest_ensemble() -> Path | None:
-    """Find the most recently modified gru_ensemble_* run directory."""
     pattern = str(PROJECT_ROOT / 'output' / 'runs' / 'gru_ensemble_*')
     dirs = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
     return Path(dirs[0]) if dirs else None
 
 
-def load_ensemble_members(ensemble_dir: Path) -> list:
-    """Load all member models from ensemble directory. Returns list of keras models."""
+def load_ensemble_members(ensemble_dir: Path):
+    """Load all member models. Returns (list_of_models, ensemble_info_dict)."""
     import tensorflow as tf
 
     info_path = ensemble_dir / 'ensemble_info.json'
@@ -70,21 +79,31 @@ def load_ensemble_members(ensemble_dir: Path) -> list:
     for m in info['members']:
         weight_path = m['weight_path']
         if not Path(weight_path).exists():
-            # Try relative path fallback
-            weight_path = str(ensemble_dir / f"member_{m['member_idx']}" / 'weights' / 'gru_jiuzhaigou.h5')
+            weight_path = str(
+                ensemble_dir / f"member_{m['member_idx']}" / 'weights' / 'gru_jiuzhaigou.h5'
+            )
         model = tf.keras.models.load_model(weight_path, compile=False)
         models.append(model)
-        print(f"  Loaded member_{m['member_idx']} (seed={m['seed']}, val_loss={m['val_loss']:.6f})")
+        print(f"  member_{m['member_idx']} (seed={m['seed']}, val_loss={m['val_loss']:.6f})")
 
     return models, info
 
 
 # ─────────────────────────────────────────────
-# Data loading
+# Data loading — returns cal + test sets
 # ─────────────────────────────────────────────
 
-def load_test_data():
-    """Load test set. Returns (x_test, y_test, d_test, scaler)"""
+def load_cal_and_test_data(cal_source: str = 'val'):
+    """
+    Load calibration and test data.
+
+    cal_source:
+      'val'    -- calibration = validation set (standard split conformal)
+      'recent' -- calibration = first half of test set; evaluation = second half
+                  (reduces temporal distribution shift at the cost of test size)
+
+    Returns: (x_cal, y_cal, x_test, y_test, d_test, scaler)
+    """
     from sklearn.preprocessing import MinMaxScaler
 
     csv_files = sorted(glob.glob(str(PROJECT_ROOT / 'data' / 'processed' / '*.csv')))
@@ -133,8 +152,42 @@ def load_test_data():
     n = len(X)
     test_size = int(n * 0.10)
     trainval_size = n - test_size
+    val_size = int(trainval_size * 0.111)
+    train_size = trainval_size - val_size
 
-    return X[trainval_size:], Y[trainval_size:], D[trainval_size:], scaler
+    if cal_source == 'recent':
+        full_test = X[trainval_size:]
+        full_y = Y[trainval_size:]
+        full_d = D[trainval_size:]
+        mid = len(full_test) // 2
+        x_cal, y_cal = full_test[:mid], full_y[:mid]
+        x_test, y_test, d_test = full_test[mid:], full_y[mid:], full_d[mid:]
+    else:
+        x_cal = X[train_size:train_size + val_size]
+        y_cal = Y[train_size:train_size + val_size]
+        x_test = X[trainval_size:]
+        y_test = Y[trainval_size:]
+        d_test = D[trainval_size:]
+
+    return x_cal, y_cal, x_test, y_test, d_test, scaler
+
+
+# ─────────────────────────────────────────────
+# Ensemble inference helper
+# ─────────────────────────────────────────────
+
+def ensemble_predict(models, X: np.ndarray, scaler) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Run all members on X. Returns (mean_raw, std_raw) in original visitor units.
+    """
+    n_members = len(models)
+    preds_scaled = np.array([
+        m.predict(X, verbose=0).flatten() for m in models
+    ])  # (N_members, N)
+    preds_raw = scaler.inverse_transform(
+        preds_scaled.reshape(-1, 1)
+    ).reshape(n_members, -1)
+    return preds_raw.mean(axis=0), preds_raw.std(axis=0)
 
 
 # ─────────────────────────────────────────────
@@ -158,7 +211,7 @@ def compute_winkler(y_true, lower, upper, alpha):
 # Main
 # ─────────────────────────────────────────────
 
-def run(ensemble_dir: Path | None = None, alpha: float = 0.10):
+def run(ensemble_dir: Path | None = None, alpha: float = 0.10, cal_source: str = 'val'):
     if ensemble_dir is None:
         ensemble_dir = find_latest_ensemble()
     if ensemble_dir is None:
@@ -167,7 +220,8 @@ def run(ensemble_dir: Path | None = None, alpha: float = 0.10):
         )
 
     print(f'\n{"="*60}')
-    print(f'Deep Ensemble Interval  alpha={alpha}  CI={(1-alpha)*100:.0f}%')
+    print(f'Deep Ensemble + Conformal Calibration  alpha={alpha}  CI={(1-alpha)*100:.0f}%')
+    print(f'Calibration source: {cal_source}')
     print(f'Ensemble dir: {ensemble_dir}')
     print(f'{"="*60}')
 
@@ -177,54 +231,52 @@ def run(ensemble_dir: Path | None = None, alpha: float = 0.10):
     n_members = len(models)
     print(f'Loaded {n_members} members')
 
-    # ── 2. Load test data ──
-    x_test, y_test, d_test, scaler = load_test_data()
-    print(f'Test size: {len(x_test)}')
+    # ── 2. Load data ──
+    x_cal, y_cal, x_test, y_test, d_test, scaler = load_cal_and_test_data(cal_source)
+    print(f'Calibration size: {len(x_cal)}, Test size: {len(x_test)}')
 
-    # ── 3. Predict with each member (deterministic, training=False) ──
-    print('Running inference for each member...')
-    preds_scaled = []
-    for i, model in enumerate(models):
-        pred = model.predict(x_test, verbose=0).flatten()
-        preds_scaled.append(pred)
-        print(f'  Member {i} done')
-
-    preds_scaled = np.array(preds_scaled)  # (N_members, N_test)
-
-    # Inverse transform each member's predictions
-    preds_raw = scaler.inverse_transform(
-        preds_scaled.reshape(-1, 1)
-    ).reshape(n_members, -1)  # (N_members, N_test)
-
+    y_cal_raw = scaler.inverse_transform(y_cal.reshape(-1, 1)).flatten()
     y_test_raw = scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
 
-    # ── 4. Compute ensemble statistics ──
-    y_pred_mean = preds_raw.mean(axis=0)
-    y_pred_std = preds_raw.std(axis=0)
-    lower = np.quantile(preds_raw, alpha / 2, axis=0)
-    upper = np.quantile(preds_raw, 1 - alpha / 2, axis=0)
+    # ── 3. Calibration: compute normalised nonconformity scores ──
+    print('Calibration inference (all members)...')
+    cal_mean, cal_std = ensemble_predict(models, x_cal, scaler)
+
+    # Normalised nonconformity score: |residual| / (std + eps)
+    # Captures "how many std-widths does the true error span?"
+    scores = np.abs(y_cal_raw - cal_mean) / (cal_std + EPS)
+
+    n_cal = len(scores)
+    level = min(np.ceil((n_cal + 1) * (1 - alpha)) / n_cal, 1.0)
+    q_hat = float(np.quantile(scores, level))
+
+    print(f'Normalised scores: mean={scores.mean():.2f}, p90={np.quantile(scores, 0.9):.2f}, max={scores.max():.2f}')
+    print(f'q_hat = {q_hat:.4f}  (conformal scale factor,  n={n_cal}, alpha={alpha})')
+
+    # ── 4. Test set: adaptive conformal interval ──
+    print('Test set inference (all members)...')
+    test_mean, test_std = ensemble_predict(models, x_test, scaler)
+
+    half_width = q_hat * (test_std + EPS)
+    lower = test_mean - half_width
+    upper = test_mean + half_width
 
     # ── 5. Metrics ──
     picp = compute_picp(y_test_raw, lower, upper)
     mpiw = compute_mpiw(lower, upper)
     winkler = compute_winkler(y_test_raw, lower, upper, alpha)
-
-    # Per-member MAE for diagnostics
-    member_maes = [
-        round(float(np.mean(np.abs(preds_raw[i] - y_test_raw))), 1)
-        for i in range(n_members)
-    ]
-    ensemble_mae = float(np.mean(np.abs(y_pred_mean - y_test_raw)))
+    ensemble_mae = float(np.mean(np.abs(test_mean - y_test_raw)))
 
     print(f'\nEvaluation (test set):')
     print(f'  PICP  = {picp:.4f}  (target >= {1-alpha:.2f})')
     print(f'  MPIW  = {mpiw:.1f} visitors')
     print(f'  Winkler Score = {winkler:.1f}')
     print(f'  Ensemble mean MAE = {ensemble_mae:.1f} visitors')
-    print(f'  Std mean = {y_pred_std.mean():.1f}, Std max = {y_pred_std.max():.1f}')
-    print(f'  Per-member MAE: {member_maes}')
+    print(f'  Member std mean = {test_std.mean():.1f},  max = {test_std.max():.1f}')
+    print(f'  Half-width mean = {half_width.mean():.1f},  max = {half_width.max():.1f}')
+    print(f'  q_hat = {q_hat:.4f}  (std multiplier from conformal calibration)')
 
-    # ── 6. Save results ──
+    # ── 6. Save ──
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     out_dir = OUTPUT_DIR / f'ensemble_{timestamp}'
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -232,28 +284,33 @@ def run(ensemble_dir: Path | None = None, alpha: float = 0.10):
     df_out = pd.DataFrame({
         'date': d_test,
         'y_true': y_test_raw.round(1),
-        'y_pred_mean': y_pred_mean.round(1),
+        'y_pred_mean': test_mean.round(1),
         'lower': lower.round(1),
         'upper': upper.round(1),
-        'std': y_pred_std.round(1),
+        'std': test_std.round(1),
+        'half_width': half_width.round(1),
     })
     df_out.to_csv(out_dir / 'ensemble_interval.csv', index=False)
 
     metrics = {
-        'method': 'deep_ensemble',
+        'method': 'deep_ensemble_conformal',
+        'cal_source': cal_source,
         'n_members': n_members,
         'seeds': ensemble_info['seeds'],
         'alpha': alpha,
         'confidence_level': 1 - alpha,
+        'cal_size': int(n_cal),
         'test_size': int(len(x_test)),
+        'q_hat': round(q_hat, 4),
+        'eps': EPS,
         'picp': round(picp, 4),
         'mpiw': round(mpiw, 1),
         'winkler_score': round(winkler, 1),
         'ensemble_mae': round(ensemble_mae, 1),
-        'std_mean': round(float(y_pred_std.mean()), 1),
-        'std_max': round(float(y_pred_std.max()), 1),
-        'std_min': round(float(y_pred_std.min()), 1),
-        'member_maes': member_maes,
+        'std_mean': round(float(test_std.mean()), 1),
+        'std_max': round(float(test_std.max()), 1),
+        'half_width_mean': round(float(half_width.mean()), 1),
+        'half_width_max': round(float(half_width.max()), 1),
         'ensemble_dir': str(ensemble_dir),
         'generated_at': datetime.now().isoformat(),
     }
@@ -280,28 +337,35 @@ def _plot(df: pd.DataFrame, metrics: dict, out_dir: Path, alpha: float):
         ax = axes[0]
         ax.fill_between(dates, df['lower'], df['upper'],
                         alpha=0.25, color='seagreen',
-                        label=f'{(1-alpha)*100:.0f}% Deep Ensemble Interval')
+                        label=f'{(1-alpha)*100:.0f}% Ensemble+Conformal Interval')
         ax.plot(dates, df['y_true'], color='black', linewidth=1.2, label='Actual')
         ax.plot(dates, df['y_pred_mean'], color='seagreen', linewidth=1.0,
                 linestyle='--', label='Ensemble Mean Pred')
         ax.set_title(
-            f'Deep Ensemble ({metrics["n_members"]} members)  |  '
+            f'Deep Ensemble + Conformal ({metrics["n_members"]} members)  |  '
             f'PICP={metrics["picp"]:.3f}  MPIW={metrics["mpiw"]:.0f}  '
-            f'Winkler={metrics["winkler_score"]:.0f}  MAE={metrics["ensemble_mae"]:.0f}'
+            f'Winkler={metrics["winkler_score"]:.0f}  q_hat={metrics["q_hat"]:.2f}'
         )
         ax.set_ylabel('Visitor Count')
         ax.legend()
         ax.grid(alpha=0.3)
 
-        # Bottom: ensemble std (disagreement between members)
+        # Bottom: adaptive half-width (shows where model is more/less uncertain)
         ax2 = axes[1]
-        ax2.fill_between(dates, 0, df['std'], alpha=0.5, color='seagreen')
-        ax2.set_ylabel('Ensemble Std (visitors)')
+        ax2.fill_between(dates, 0, df['half_width'], alpha=0.5, color='seagreen',
+                         label='Conformal half-width')
+        ax2.plot(dates, df['std'], color='darkgreen', linewidth=0.8,
+                 linestyle='--', label='Raw ensemble std')
+        ax2.set_ylabel('Interval Half-Width (visitors)')
         ax2.set_xlabel('Date')
-        ax2.set_title('Ensemble Member Disagreement (epistemic uncertainty)')
+        ax2.set_title(
+            f'Adaptive Interval Width  |  '
+            f'half-width = q_hat({metrics["q_hat"]:.2f}) × (ensemble_std + {metrics["eps"]})'
+        )
         ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
         ax2.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
         plt.xticks(rotation=30)
+        ax2.legend()
         ax2.grid(alpha=0.3)
 
         plt.tight_layout()
@@ -313,11 +377,14 @@ def _plot(df: pd.DataFrame, metrics: dict, out_dir: Path, alpha: float):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Deep Ensemble Uncertainty Interval')
+    parser = argparse.ArgumentParser(description='Deep Ensemble + Conformal Calibration Interval')
     parser.add_argument('--ensemble-dir', default=None,
                         help='Path to gru_ensemble_* directory. Default: latest.')
     parser.add_argument('--alpha', type=float, default=0.10,
                         help='Significance level, default 0.10 (90%% CI)')
+    parser.add_argument('--cal-source', default='val', choices=['val', 'recent'],
+                        help='Calibration source: val (validation set) or '
+                             'recent (first half of test set, reduces distribution shift)')
     args = parser.parse_args()
     ensemble_dir = Path(args.ensemble_dir) if args.ensemble_dir else None
-    run(ensemble_dir=ensemble_dir, alpha=args.alpha)
+    run(ensemble_dir=ensemble_dir, alpha=args.alpha, cal_source=args.cal_source)
