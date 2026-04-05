@@ -115,33 +115,20 @@ def load_model_and_data(run_dir: Path, model_key: str):
 
 def mc_dropout_predict(model, X: np.ndarray, T: int, batch_size: int = 64) -> np.ndarray:
     """
-    对输入 X 进行 T 次 MC Dropout 采样。
-    GRU/LSTM 层保持 training=False（避免 recurrent_dropout 触发 NaN），
-    独立 Dropout 层保持 training=True（产生随机性）。
+    标准 MC Dropout 推理：training=True 保持 GRU 内置 dropout 激活。
+    要求模型使用 GRU(dropout=0.2, implementation=1) 而非独立 Dropout 层。
     返回 shape (T, N) 的预测矩阵（scaled 空间）。
     """
-    rnn_layer_names = {l.name for l in model.layers
-                       if any(t in l.name.lower() for t in ('gru', 'lstm', 'rnn'))}
-
-    def single_forward(batch):
-        x = batch
-        for layer in model.layers:
-            if layer.name in rnn_layer_names:
-                x = layer(x, training=False)
-            elif 'dropout' in layer.name.lower():
-                x = layer(x, training=True)
-            else:
-                x = layer(x)
-        return x.numpy().flatten()
-
     all_preds = []
     for t in range(T):
         preds = []
         for i in range(0, len(X), batch_size):
-            preds.append(single_forward(X[i:i + batch_size]))
+            batch = X[i:i + batch_size]
+            out = model(batch, training=True).numpy().flatten()
+            preds.append(out)
         all_preds.append(np.concatenate(preds))
         if (t + 1) % 10 == 0:
-            print(f'  采样进度: {t+1}/{T}', end='\r')
+            print(f'  Sampling: {t+1}/{T}', end='\r')
     print()
     return np.array(all_preds)  # (T, N)
 
