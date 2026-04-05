@@ -957,29 +957,39 @@ def api_forecast():
             y_cal_raw = _scaler.inverse_transform(Y_cal_e.reshape(-1, 1)).flatten()
 
             cal_mean = preds_raw.mean(axis=0)
-            cal_std = preds_raw.std(axis=0)
-            EPS = 1.0
 
-            # Step-wise q̂_h: approximate h-step error by scaling residuals
-            # Rationale: for single samples we don't have multi-step rollouts on val set,
-            # so we use residual * sqrt(h) as a conservative estimate of h-step error spread.
-            # This produces the "fan" effect: wider intervals for larger h.
-            base_scores = np.abs(y_cal_raw - cal_mean) / (cal_std + EPS)
-            n_c = len(base_scores)
+            # Step-wise q̂_h using DIRECT absolute residuals (not normalised by std).
+            # Root cause of previous ±44k bug: normalising by std (mean=637) then
+            # multiplying back by std amplifies extreme outlier scores (max=87) into
+            # q̂×std = 26×637 = 16,651 — absurd for a ≤41k-max park.
+            #
+            # Fix: use raw |residual| as nonconformity score directly.
+            # This gives q̂_h in visitor units, interpretable and bounded.
+            # h-step scaling: q̂_h = q̂_1 × sqrt(h) — standard random walk growth.
+            # Physical cap: half-width ≤ max_capacity (41,000 visitors).
+            MAX_CAPACITY = float(_visitor_vals.max())  # physical upper bound
+
+            abs_residuals = np.abs(y_cal_raw - cal_mean)  # in visitor units
+            n_c = len(abs_residuals)
+
+            # Winsorize at 95th percentile to remove extreme outlier influence
+            # (e.g. park closure events with residual >> normal range)
+            p95 = float(np.percentile(abs_residuals, 95))
+            abs_residuals_w = np.clip(abs_residuals, 0, p95)
+
+            level = min(np.ceil((n_c + 1) * (1 - alpha)) / n_c, 1.0)
+            q_base = float(np.quantile(abs_residuals_w, level))  # h=1 half-width in visitors
+
             qhat_by_horizon = {}
+            half_widths = {}
             for h_step in range(1, max_horizon + 1):
-                # Scale nonconformity by sqrt(h) to model error accumulation
-                scaled_scores = base_scores * np.sqrt(h_step)
-                level = min(np.ceil((n_c + 1) * (1 - alpha)) / n_c, 1.0)
-                qhat_by_horizon[h_step] = round(float(np.quantile(scaled_scores, level)), 4)
+                # sqrt(h) growth models random-walk error accumulation over horizons
+                hw = min(q_base * np.sqrt(h_step), MAX_CAPACITY)
+                qhat_by_horizon[h_step] = round(hw, 1)   # directly in visitor units
+                half_widths[h_step] = round(hw, 1)
 
             n_members_loaded = len(members)
-            # Compute half-widths for each horizon (mean std as representative)
-            mean_std = float(cal_std.mean())
-            half_widths = {
-                h_step: round(qhat_by_horizon[h_step] * (mean_std + EPS), 1)
-                for h_step in qhat_by_horizon
-            }
+            mean_std = float(preds_raw.std(axis=0).mean())
 
             return {
                 'available': True,
@@ -1438,9 +1448,10 @@ def api_forecast():
         print(f'[uncertainty] stepwise qhat failed: {_ue}')
 
     # Build uncertainty series aligned to time_axis (non-null only in forecast window)
-    # We use gru_mimo_pred as the center prediction for the uncertainty band.
-    def _build_unc_series(center_col: str, qhat_by_h: dict, mean_std: float):
-        """Build lower/upper arrays over time_axis. Only forecast window has values."""
+    # qhat_by_h values are NOW directly in visitor units (post-fix), no mean_std multiply needed.
+    def _build_unc_series(center_col: str, qhat_by_h: dict):
+        """Build lower/upper arrays over time_axis. Only forecast window has values.
+        lower is clamped to 0 (visitor count cannot be negative)."""
         n = len(df_merge)
         lower_arr = [None] * n
         upper_arr = [None] * n
@@ -1458,13 +1469,19 @@ def api_forecast():
             if _d < _today:
                 continue
             _step = (_d - _today).days + 1  # h=1 for today, h=7 for today+6
-            _q = qhat_by_h.get(_step)
+            _hw = qhat_by_h.get(_step) or qhat_by_h.get(str(_step))
             _center = _row.get(center_col)
-            if _q is None or _center is None or (isinstance(_center, float) and np.isnan(_center)):
+            if _hw is None or _center is None or (isinstance(_center, float) and np.isnan(_center)):
                 continue
-            _hw = _q * (mean_std + 1.0)
-            lower_arr[_i] = round(float(_center) - _hw, 1)
-            upper_arr[_i] = round(float(_center) + _hw, 1)
+            _hw = float(_hw)
+            _center_f = float(_center)
+            # Cap half-width at 40% of centre value (same rule shown in calib card)
+            if _center_f > 0:
+                _hw = min(_hw, _center_f * 0.40)
+            _lo = max(0.0, _center_f - _hw)   # clamp: visitors >= 0
+            _hi = _center_f + _hw
+            lower_arr[_i] = round(_lo, 1)
+            upper_arr[_i] = round(_hi, 1)
             half_w_arr[_i] = round(_hw, 1)
         return lower_arr, upper_arr, half_w_arr
 
@@ -1473,7 +1490,6 @@ def api_forecast():
         unc_lower, unc_upper, unc_half_w = _build_unc_series(
             'gru_mimo_pred',
             unc_meta['qhat_by_horizon'],
-            unc_meta.get('mean_ensemble_std', 529.0),
         )
 
     # Thresholds — 从任意有数据的模型 metrics 里取，优先 gru

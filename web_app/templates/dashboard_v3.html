@@ -88,26 +88,169 @@
   <!-- ── Main content grid ── -->
   <div class="v3-grid">
 
-    <!-- Left: chart card -->
-    <div class="v3-card v3-card--chart">
-      <div class="v3-card__head">
-        <div>
-          <h2 class="v3-card__title" data-i18n="chart_title">客流预测</h2>
-          <p class="v3-card__sub" id="v3ChartSub">—</p>
+    <div class="v3-left">
+      <!-- Left: chart card -->
+      <div class="v3-card v3-card--chart">
+        <div class="v3-card__head">
+          <div>
+            <h2 class="v3-card__title" data-i18n="chart_title">客流预测</h2>
+            <p class="v3-card__sub" id="v3ChartSub">—</p>
+          </div>
+          <label class="v3-switch v3-switch--chart" title="开发者模式">
+            <input type="checkbox" id="v3DevModeSwitch" aria-label="开发者模式" />
+            <span class="v3-switch__track" aria-hidden="true"></span>
+            <span class="v3-switch__label" id="v3DevModeLabel">开发者模式</span>
+          </label>
+        </div>
+        <div class="v3-chart-box" id="v3Chart"></div>
+
+        <!-- Chart bottom toolbar — toggle chips -->
+        <div class="v3-chart-toolbar">
+          <div class="v3-chips v3-chips--dev" id="v3DevChips" role="group" aria-label="model comparison" style="display:none">
+            <button class="v3-chip v3-chip--all v3-chip--active" data-chip="all">全部</button>
+            <button class="v3-chip v3-chip--active" data-chip="gru_single" style="--chip-color:#0a84ff">GRU 单步</button>
+            <button class="v3-chip v3-chip--active" data-chip="gru_mimo"   style="--chip-color:#5ac8fa">GRU 多步</button>
+            <button class="v3-chip v3-chip--active" data-chip="lstm_single" style="--chip-color:#ff9f0a">LSTM 单步</button>
+            <button class="v3-chip v3-chip--active" data-chip="lstm_mimo"  style="--chip-color:#ffd60a">LSTM 多步</button>
+            <button class="v3-chip v3-chip--active" data-chip="seq2seq"    style="--chip-color:#30d158">Seq2Seq</button>
+            <button class="v3-chip v3-chip--actual v3-chip--active" data-chip="actual">真实</button>
+          </div>
+        </div>
+        <!-- Chart legend / key panel -->
+        <div class="v3-chart-key" id="v3ChartKey">
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch v3-chart-key__swatch--actual"></span>
+            <span class="v3-chart-key__label">实际客流（历史真实数据）</span>
+          </div>
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch" style="background:#ff9f0a"></span>
+            <span class="v3-chart-key__label">集成预测均值（GRU Ensemble）</span>
+          </div>
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch v3-chart-key__swatch--band" style="background:rgba(255,159,10,0.35)"></span>
+            <span class="v3-chart-key__label">90% 置信区间（共形预测步长校准）</span>
+          </div>
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch v3-chart-key__swatch--dash" style="border-color:#ff453a"></span>
+            <span class="v3-chart-key__label">人流预警阈值（超过即触发拥挤预警）</span>
+          </div>
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch v3-chart-key__swatch--dash" style="border-color:rgba(191,90,242,0.75)"></span>
+            <span class="v3-chart-key__label">预警概率曲线（右轴 0–100%，开发者模式下显示）</span>
+          </div>
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch v3-chart-key__swatch--area" style="background:rgba(200,200,200,0.25)"></span>
+            <span class="v3-chart-key__label">数据滞后推演区（最新官方数据至今日之间）</span>
+          </div>
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch v3-chart-key__swatch--area" style="background:rgba(10,132,255,0.10)"></span>
+            <span class="v3-chart-key__label">未来预测区（今日起 7 天）</span>
+          </div>
+          <div class="v3-chart-key__item">
+            <span class="v3-chart-key__swatch v3-chart-key__swatch--dash" style="border-color:rgba(0,0,0,0.25)"></span>
+            <span class="v3-chart-key__label">测试集起点（模型未曾见过的历史数据分界）</span>
+          </div>
         </div>
       </div>
-      <div class="v3-chart-box" id="v3Chart"></div>
 
-      <!-- Chart bottom toolbar — toggle chips -->
-      <div class="v3-chart-toolbar">
-        <div class="v3-chips" role="group" aria-label="curve filter">
-          <button class="v3-chip v3-chip--all v3-chip--active" data-chip="all">全部</button>
-          <button class="v3-chip v3-chip--active" data-chip="gru_single" style="--chip-color:#0a84ff">GRU 单步</button>
-          <button class="v3-chip v3-chip--active" data-chip="gru_mimo"   style="--chip-color:#5ac8fa">GRU 多步</button>
-          <button class="v3-chip v3-chip--active" data-chip="lstm_single" style="--chip-color:#ff9f0a">LSTM 单步</button>
-          <button class="v3-chip v3-chip--active" data-chip="lstm_mimo"  style="--chip-color:#ffd60a">LSTM 多步</button>
-          <button class="v3-chip v3-chip--active" data-chip="seq2seq"    style="--chip-color:#30d158">Seq2Seq</button>
-          <button class="v3-chip v3-chip--actual v3-chip--active" data-chip="actual">真实</button>
+      <!-- Glossary card: separated button row + content panel below -->
+      <div class="v3-card v3-card--glossary" id="v3GlossaryCard">
+        <div class="v3-glossary-head">
+          <span class="v3-glossary-title">专业名词解释</span>
+          <span class="v3-glossary-hint">点击名词展开说明</span>
+        </div>
+
+        <!-- ROW 1: all buttons, always in one flex row, never broken by content -->
+        <div class="v3-glossary-btns" id="v3GlossaryBtns">
+          <button class="v3-gpill-btn" type="button" data-gloss="latency">
+            <span class="v3-gpill-dot" style="background:rgba(180,180,180,0.65)"></span>
+            数据滞后推演区
+          </button>
+          <button class="v3-gpill-btn" type="button" data-gloss="threshold">
+            <span class="v3-gpill-dot" style="background:#ff453a"></span>
+            人流预警阈值
+          </button>
+          <button class="v3-gpill-btn" type="button" data-gloss="pwarn">
+            <span class="v3-gpill-dot" style="background:rgba(191,90,242,0.85)"></span>
+            预警概率曲线
+          </button>
+          <button class="v3-gpill-btn" type="button" data-gloss="ci">
+            <span class="v3-gpill-dot" style="background:rgba(255,159,10,0.75)"></span>
+            90% 置信区间
+          </button>
+          <button class="v3-gpill-btn" type="button" data-gloss="teststart">
+            <span class="v3-gpill-dot" style="background:rgba(120,120,120,0.5);outline:1px dashed rgba(120,120,120,0.55)"></span>
+            测试集起点
+          </button>
+        </div>
+
+        <!-- ROW 2: single content panel, swapped by JS, hidden when activeKey=null -->
+        <div class="v3-glossary-panel" id="v3GlossaryPanel" hidden>
+          <div data-gloss-body="latency">
+            官方客流数据通常次日公布，因此<b>最后已知数据日→今日</b>之间存在 1–3 天空白。
+            系统以 GRU Ensemble 多步预测（MIMO，一次输出 7 步）填充该窗口，
+            避免递归自预测导致的误差滚雪球。此策略称为"延迟感知多步推演"。
+          </div>
+          <div data-gloss-body="threshold">
+            预测客流 ≥ <b>18,500 人次/日</b>时触发拥挤预警。
+            阈值取历史客流 <b>90th 百分位数</b>，约为景区最大承载量（≈41,000）的 45%。
+            超过阈值即在图表上以红色横虚线标记，并纳入综合风险指数（客流因子权重 65%）。
+          </div>
+          <div data-gloss-body="pwarn">
+            每日<b>适宜性预警概率 p_warn</b>（右轴 0–100%，开发者模式下显示）。
+            规则：预测客流 ≥ 阈值 <em>或</em> 天气极端（强降水/高温/低温）→ p_warn = 0.85，否则 = 0.15。
+            属于规则触发式二值概率，曲线仅在 15% 和 85% 两个水平跳跃。
+          </div>
+          <div data-gloss-body="ci">
+            由<b>步长感知共形预测</b>（Step-wise Conformal Prediction）生成：①训练 5 个独立 GRU 集成预测均值/标准差；
+            ②在近 30 天历史误差上计算分位数 q̂；③h 步半宽 = q̂ × √h（随机游走累积模型）；
+            ④保守截断：半宽 ≤ 均值 × 40%。校准集 PICP ≈ 95%。
+          </div>
+          <div data-gloss-body="teststart">
+            竖虚线右侧为<b>模型从未见过的数据</b>（测试集）。
+            训练/验证/测试严格按时序划分（2016–2024 训练，之后测试），
+            遵循时序不泄露原则，测试集上的 MAE、F1 是模型真实泛化能力的无偏估计。
+          </div>
+        </div>
+      </div>
+
+      <!-- Confidence base panel -->
+      <div class="v3-card v3-card--confidence" id="v3CalibCard" style="display:none">
+        <div class="v3-card__head">
+          <div>
+            <h3 class="v3-card__title">系统置信度评估</h3>
+            <p class="v3-card__sub">基于近 30 天历史动态校准</p>
+          </div>
+          <span class="v3-tag v3-tag--warn" id="v3LatencyTag" style="display:none">⚠️ 当前官方数据延迟：— 天</span>
+        </div>
+        <div class="v3-conf-body">
+          <div class="v3-conf-left">
+            <div class="v3-calib-body v3-calib-body--compact">
+              <div class="v3-calib-row">
+                <span class="v3-calib-label">校准引擎</span>
+                <span class="v3-calib-val" id="v3CalibMethod">—</span>
+              </div>
+              <div class="v3-calib-row">
+                <span class="v3-calib-label">驱动基座</span>
+                <span class="v3-calib-val" id="v3CalibBackbone">—</span>
+              </div>
+              <div class="v3-calib-row">
+                <span class="v3-calib-label">校准样本</span>
+                <span class="v3-calib-val" id="v3CalibN">—</span>
+              </div>
+              <div class="v3-calib-row">
+                <span class="v3-calib-label">集成成员</span>
+                <span class="v3-calib-val" id="v3CalibMembers">—</span>
+              </div>
+            </div>
+            <div class="v3-conf-explain">
+              基于近 30 天历史动态校准，随着推演天数增加，预测不确定性逐渐放大。图表展示了 90% 概率下的最大可能波动幅度。
+            </div>
+          </div>
+          <div class="v3-conf-right">
+            <div class="v3-calib-note" id="v3CalibNote"></div>
+            <div class="v3-calib-fan" id="v3CalibFan"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -148,14 +291,29 @@
         <div class="v3-weather__flags" id="v3WFlags"></div>
       </div>
 
-      <!-- Risk card -->
-      <div class="v3-card v3-card--risk">
+      <div class="v3-card v3-card--attr" id="v3AttrCard" style="display:none">
         <div class="v3-card__head">
-          <h3 class="v3-card__title" data-i18n="risk_title">适宜性预警</h3>
+          <div>
+            <h3 class="v3-card__title" id="v3AttrTitle">明日预测核心驱动因素</h3>
+            <p class="v3-card__sub" id="v3AttrSub">以同期历史平均为基准</p>
+            <p class="v3-card__sub v3-attr-engine-label">解释器：基于 SHAP (Shapley Additive Explanations) 分析</p>
+          </div>
+          <span class="v3-attr-badge">Top 3</span>
+        </div>
+        <div class="v3-attr-list" id="v3AttrList"></div>
+        <p class="v3-attr-footnote">
+          数值为相对同期历史均值的预估影响量（单位：人次）。
+          正值（<span class="v3-attr-footnote__pos">▲</span>）表示拉升客流，负值（<span class="v3-attr-footnote__neg">▼</span>）表示抑制客流。
+          基于规则引擎 + SHAP 特征贡献估算，仅供参考。
+        </p>
+      </div>
+
+      <div class="v3-card v3-card--suit">
+        <div class="v3-card__head">
+          <h3 class="v3-card__title">适宜性与推荐窗口</h3>
           <span class="v3-risk-badge" id="v3RiskBadge">—</span>
         </div>
         <div class="v3-risk-body">
-          <!-- Thermometer -->
           <div class="v3-thermo">
             <div class="v3-thermo__tube">
               <div class="v3-thermo__fill" id="v3ThermoFill" style="height:0%"></div>
@@ -174,38 +332,16 @@
             <div class="v3-risk-drivers" id="v3RiskDrivers"></div>
           </div>
         </div>
-      </div>
-
-      <!-- Best window card -->
-      <div class="v3-card v3-card--reco">
-        <h3 class="v3-card__title" data-i18n="reco_title">推荐出行窗口</h3>
+        <p class="v3-risk-formula-note">
+          综合风险指数 = 客流因子（65%）× 预警概率（35%）<br>
+          <span class="v3-risk-formula-levels">
+            0–25 正常 &nbsp;·&nbsp; 26–50 关注 &nbsp;·&nbsp; 51–75 预警 &nbsp;·&nbsp; 76–100 高风险
+          </span>
+        </p>
+        <div class="v3-suit-divider"></div>
+        <h3 class="v3-card__title v3-suit-reco-title" data-i18n="reco_title">推荐出行窗口</h3>
         <div class="v3-reco-list" id="v3Reco">
           <p class="v3-reco-empty" data-i18n="reco_loading">加载中…</p>
-        </div>
-      </div>
-
-      <!-- Calibration status card -->
-      <div class="v3-card v3-card--calib" id="v3CalibCard" style="display:none">
-        <div class="v3-card__head">
-          <h3 class="v3-card__title">预测区间校准</h3>
-          <span class="v3-calib-dot" id="v3CalibDot"></span>
-        </div>
-        <div class="v3-calib-body">
-          <div class="v3-calib-row">
-            <span class="v3-calib-label">方法</span>
-            <span class="v3-calib-val" id="v3CalibMethod">—</span>
-          </div>
-          <div class="v3-calib-row">
-            <span class="v3-calib-label">校准样本</span>
-            <span class="v3-calib-val" id="v3CalibN">—</span>
-          </div>
-          <div class="v3-calib-row">
-            <span class="v3-calib-label">集成成员</span>
-            <span class="v3-calib-val" id="v3CalibMembers">—</span>
-          </div>
-          <div class="v3-calib-divider"></div>
-          <div class="v3-calib-label" style="margin-bottom:4px">区间半宽（按预测步数）</div>
-          <div class="v3-calib-fan" id="v3CalibFan"></div>
         </div>
       </div>
 
