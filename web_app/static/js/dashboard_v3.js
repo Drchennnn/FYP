@@ -285,6 +285,20 @@
     const r = raw.risk || {};
     out.risk = r;  // 直接存整个 risk 对象
     out.warning = raw.warning || null;
+
+    // Uncertainty interval (step-wise conformal from Deep Ensemble)
+    const unc = raw.uncertainty || {};
+    out.uncertainty = {
+      available: !!unc.available,
+      nMembers: safeNum(unc.n_members) || 0,
+      calSize: safeNum(unc.cal_size) || 0,
+      alpha: safeNum(unc.alpha) || 0.10,
+      qhatByHorizon: unc.qhat_by_horizon || {},
+      halfWidthByHorizon: unc.half_width_by_horizon || {},
+      lower: safeArr(unc.lower || [], n, safeNum),
+      upper: safeArr(unc.upper || [], n, safeNum),
+      halfWidth: safeArr(unc.half_width || [], n, safeNum),
+    };
     return out;
   }
 
@@ -678,7 +692,47 @@
         symbol: 'none', showSymbol: false, connectNulls: false,
         lineStyle: { color, width: 2 },
         itemStyle: { color }
-      }))
+      })),
+      // ── Uncertainty fan chart (Deep Ensemble + Conformal step-wise q̂_h) ──
+      // Rendered as two boundary lines with areaStyle between them.
+      // Only visible in the forecast window (today ~ today+6), non-null elsewhere.
+      ...(payload.uncertainty && payload.uncertainty.available ? (() => {
+        const unc = payload.uncertainty;
+        const bandColor = isDark ? 'rgba(255,159,10,0.18)' : 'rgba(255,159,10,0.15)';
+        const lineColor = isDark ? 'rgba(255,159,10,0.55)' : 'rgba(255,159,10,0.50)';
+        return [
+          // Lower bound (invisible line, anchor for areaStyle stack)
+          {
+            name: '_unc_lower',
+            type: 'line',
+            data: unc.lower,
+            symbol: 'none', showSymbol: false, connectNulls: false,
+            lineStyle: { color: 'transparent', width: 0 },
+            itemStyle: { color: 'transparent' },
+            stack: 'unc_band',
+            areaStyle: { color: 'transparent' },
+            tooltip: { show: false },
+            silent: true,
+            legendHoverLink: false,
+          },
+          // Upper bound — stacks on lower, fills the fan area
+          {
+            name: state.lang === 'zh' ? '90% 置信区间' : '90% CI (Ensemble+Conformal)',
+            type: 'line',
+            data: unc.upper.map((v, i) => {
+              // For stacked area: value = upper - lower
+              const lo = unc.lower[i];
+              return (v !== null && lo !== null) ? (v - lo) : null;
+            }),
+            symbol: 'none', showSymbol: false, connectNulls: false,
+            lineStyle: { color: lineColor, width: 1, type: 'dotted' },
+            itemStyle: { color: lineColor },
+            stack: 'unc_band',
+            areaStyle: { color: bandColor },
+            legendHoverLink: false,
+          }
+        ];
+      })() : [])
     ];
 
     return {
@@ -712,12 +766,45 @@
         formatter: (params) => {
           if (!params || !params.length) return '';
           const date = params[0].axisValue || '';
-          let html = `<div style="font-weight:600;margin-bottom:4px">${date}</div>`;
+          const unc = payload && payload.uncertainty;
+          const si = payload && payload.forecast ? payload.forecast.startIndex : -1;
+          const dateIdx = payload && payload.timeAxis ? payload.timeAxis.indexOf(date) : -1;
+          // Determine prediction horizon step (h=1 for today, h=7 for today+6)
+          const hStep = (si >= 0 && dateIdx >= si) ? (dateIdx - si + 1) : null;
+          const isForecastZone = hStep !== null && hStep >= 1 && hStep <= 7;
+
+          let html = `<div style="font-weight:600;margin-bottom:4px">${date}`;
+          if (isForecastZone) {
+            html += ` <span style="font-size:10px;opacity:0.6;font-weight:400">${state.lang === 'zh' ? `预测第${hStep}步` : `Forecast h=${hStep}`}</span>`;
+          }
+          html += `</div>`;
+
           params.forEach((p) => {
+            // Skip internal stacking series
+            if (!p.seriesName || p.seriesName.startsWith('_unc_')) return;
             if (p.value === null || p.value === undefined) return;
+            // For the CI band series, skip display value (shown separately below)
+            if (p.seriesName === '90% 置信区间' || p.seriesName === '90% CI (Ensemble+Conformal)') return;
             const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px"></span>`;
             html += `<div>${dot}${p.seriesName}: <b>${fmtVisitors(p.value)}</b></div>`;
           });
+
+          // Append uncertainty interval info for forecast zone
+          if (isForecastZone && unc && unc.available && dateIdx >= 0) {
+            const lo = unc.lower[dateIdx];
+            const hi = unc.upper[dateIdx];
+            const hw = unc.halfWidth[dateIdx];
+            if (lo !== null && hi !== null) {
+              const ciLabel = state.lang === 'zh' ? '90% 置信区间' : '90% Conf. Interval';
+              const srcLabel = state.lang === 'zh'
+                ? `基于 ${unc.calSize} 条误差校准 (${unc.nMembers} 成员集成)`
+                : `Based on ${unc.calSize} calibration errors (${unc.nMembers}-member ensemble)`;
+              html += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.12)">`;
+              html += `<div style="color:rgba(255,159,10,0.9)">■ ${ciLabel}: <b>[${fmtVisitors(lo)}, ${fmtVisitors(hi)}]</b></div>`;
+              html += `<div style="font-size:10px;opacity:0.55;margin-top:2px">${srcLabel}</div>`;
+              html += `</div>`;
+            }
+          }
           return html;
         }
       },
@@ -1113,6 +1200,51 @@
   }
 
   // ─────────────────────────────────────────────
+  // Calibration status card
+  // ─────────────────────────────────────────────
+  function renderCalibCard(payload) {
+    const card = $('v3CalibCard');
+    if (!card) return;
+    const unc = payload && payload.uncertainty;
+    if (!unc || !unc.available) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+
+    // Dot color: green if ensemble available
+    const dot = $('v3CalibDot');
+    if (dot) { dot.className = 'v3-calib-dot'; }
+
+    const setEl = (id, val) => { const el = $(id); if (el) el.textContent = val; };
+    setEl('v3CalibMethod', `${unc.nMembers}-member Ensemble+CP`);
+    setEl('v3CalibN', `${unc.calSize} 条`);
+    setEl('v3CalibMembers', `${unc.nMembers} 个`);
+
+    // Fan bars: h=1..7 half-widths
+    const fanEl = $('v3CalibFan');
+    if (fanEl) {
+      const hw = unc.halfWidthByHorizon || {};
+      const maxHw = Math.max(...Object.values(hw).filter(v => v != null), 1);
+      let fanHtml = '';
+      for (let h = 1; h <= 7; h++) {
+        const val = hw[String(h)] || hw[h];
+        if (val == null) continue;
+        const pct = Math.min(100, (val / maxHw) * 100).toFixed(1);
+        const valStr = val >= 10000
+          ? (val / 10000).toFixed(1) + 'w'
+          : Math.round(val).toLocaleString();
+        fanHtml += `<div class="v3-calib-fan-row">
+          <span class="v3-calib-fan-label">h=${h}</span>
+          <div class="v3-calib-fan-bar" style="width:${pct}%"></div>
+          <span class="v3-calib-fan-val">±${valStr}</span>
+        </div>`;
+      }
+      fanEl.innerHTML = fanHtml;
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // Render all forecast page components
   // ─────────────────────────────────────────────
   function renderAll(payload) {
@@ -1123,6 +1255,7 @@
     renderWeatherChart(payload);
     renderForecastStrip(payload);
     renderReco(payload);
+    renderCalibCard(payload);
     updateCurveToggleLabels(payload);
     // 默认选中今天（forecast.startIndex），等 wxData 拉到后会自动刷新
     const defaultIdx = payload.forecast.startIndex;

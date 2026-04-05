@@ -394,6 +394,26 @@ body{
 .v3-reco-item__val{font-size:0.78rem;color:var(--text-2);font-family:var(--font-mono)}
 .v3-reco-item__badge{font-size:0.68rem;font-weight:600;padding:2px 8px;border-radius:20px;background:rgba(52,199,89,0.15);color:var(--accent-2)}
 
+/* ── Calibration status card ── */
+.v3-card--calib{padding:20px}
+.v3-calib-dot{
+  display:inline-block;width:10px;height:10px;border-radius:50%;
+  flex-shrink:0;margin-top:3px;
+  background:var(--accent-2);box-shadow:0 0 6px var(--accent-2);
+}
+.v3-calib-dot--warn{background:#ff9f0a;box-shadow:0 0 6px rgba(255,159,10,0.6)}
+.v3-calib-dot--off{background:var(--text-3);box-shadow:none}
+.v3-calib-body{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.v3-calib-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.v3-calib-label{font-size:0.76rem;color:var(--text-2)}
+.v3-calib-val{font-size:0.78rem;font-weight:500;font-family:var(--font-mono)}
+.v3-calib-divider{height:1px;background:var(--border);margin:4px 0}
+.v3-calib-fan{display:flex;flex-direction:column;gap:3px}
+.v3-calib-fan-row{display:flex;align-items:center;gap:8px}
+.v3-calib-fan-label{font-size:0.68rem;color:var(--text-3);width:28px;flex-shrink:0}
+.v3-calib-fan-bar{height:6px;border-radius:3px;background:rgba(255,159,10,0.55);flex-shrink:0;transition:width 0.3s ease}
+.v3-calib-fan-val{font-size:0.68rem;color:var(--text-2);font-family:var(--font-mono)}
+
 /* ── 7-day strip ── */
 .v3-forecast-strip{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-top:20px}
 .v3-day-card{

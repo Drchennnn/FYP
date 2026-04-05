@@ -184,6 +184,31 @@
         </div>
       </div>
 
+      <!-- Calibration status card -->
+      <div class="v3-card v3-card--calib" id="v3CalibCard" style="display:none">
+        <div class="v3-card__head">
+          <h3 class="v3-card__title">预测区间校准</h3>
+          <span class="v3-calib-dot" id="v3CalibDot"></span>
+        </div>
+        <div class="v3-calib-body">
+          <div class="v3-calib-row">
+            <span class="v3-calib-label">方法</span>
+            <span class="v3-calib-val" id="v3CalibMethod">—</span>
+          </div>
+          <div class="v3-calib-row">
+            <span class="v3-calib-label">校准样本</span>
+            <span class="v3-calib-val" id="v3CalibN">—</span>
+          </div>
+          <div class="v3-calib-row">
+            <span class="v3-calib-label">集成成员</span>
+            <span class="v3-calib-val" id="v3CalibMembers">—</span>
+          </div>
+          <div class="v3-calib-divider"></div>
+          <div class="v3-calib-label" style="margin-bottom:4px">区间半宽（按预测步数）</div>
+          <div class="v3-calib-fan" id="v3CalibFan"></div>
+        </div>
+      </div>
+
     </aside>
   </div>
 
