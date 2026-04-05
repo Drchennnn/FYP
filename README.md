@@ -328,6 +328,176 @@ python scripts/ablation_study.py --epochs 80
 
 ---
 
+## 6.4 不确定性区间评估（Uncertainty Interval Evaluation）
+
+<a name="不确定性区间"></a>
+
+> 分支：`feature/uncertainty-intervals`
+>
+> 所有脚本位于 `scripts/uncertainty_*.py`，输出写入 `output/uncertainty/<method>_<timestamp>/`
+
+### 背景与动机
+
+GRU / LSTM 等确定性点预测模型输出单一预测值，无法量化预测的可信范围。九寨沟客流具有明显的节假日峰值和季节性波动，峰谷差可达数万人，点预测的误差在旺季会显著放大。为支撑运营决策（如峰值应急预案），需要给出**预测区间**而非单一数值。
+
+评估三个核心指标：
+- **PICP**（Prediction Interval Coverage Probability）：实际值落入区间的比例，目标 ≥ 1−α
+- **MPIW**（Mean Prediction Interval Width）：区间平均宽度，越窄越好（在满足 PICP 前提下）
+- **Winkler Score**：综合惩罚宽度与未覆盖误差，越低越好
+
+本系统实现四种方法，形成从简单到复杂、从固定区间到自适应区间的完整对比体系。
+
+---
+
+### 方法一：残差分位数区间（Residual Quantile）
+
+**脚本**：`scripts/uncertainty_residual.py`
+
+**原理**：
+在验证集上计算 GRU 点预测的残差分布，提取 α/2 和 1−α/2 分位数作为固定偏移量，叠加到测试集点预测上：
+
+```
+lower_i = ŷ_i + Q_{α/2}(residuals_val)
+upper_i = ŷ_i + Q_{1-α/2}(residuals_val)
+```
+
+**特点**：零计算开销，无需重训；区间宽度**固定不变**，不能反映峰值期的更高不确定性；覆盖率依赖验证集与测试集残差分布的相似性。
+
+**结果**（α=0.10，90% CI）：PICP=0.843，MPIW=9098，Winkler=19545
+
+**局限性**：测试集含国庆、春节旺季（2025/07~2026/04），验证集（2024/10~2025/07）残差分布无法代表旺季极端值，PICP 低于目标 0.90。
+
+---
+
+### 方法二：MC Dropout 区间（Monte Carlo Dropout）
+
+**脚本**：`scripts/uncertainty_mc_dropout.py`
+
+**原理**：
+推理阶段保持 GRU 内部 Dropout 开启（`model(x, training=True)`），对同一输入重复采样 T 次，取均值为中心预测，分位数为区间边界：
+
+```
+preds = [model(x, training=True) for _ in range(T)]   # T × N 矩阵
+ŷ_mean = mean(preds, axis=0)
+lower  = quantile(preds, α/2,   axis=0)
+upper  = quantile(preds, 1-α/2, axis=0)
+```
+
+**实现要点**：模型必须使用 GRU 内置 `dropout` 参数并设置 `implementation=1`（非 CuDNN 路径）。TF 2.15 的 CuDNN GRU kernel 在 `training=True` 时产生 NaN，`implementation=1` 绕开此 bug。无需重训推理逻辑，但 GRU 本身需以此参数重训。
+
+**结果**（T=50，α=0.10）：PICP=0.731，MPIW=8165，std_mean=2721，std_max=8406
+
+**局限性**：MC Dropout 量化的是**参数不确定性**（epistemic uncertainty）。客流预测误差主要来自数据本身的随机波动（aleatoric uncertainty），Dropout 扰动产生的成员分歧远小于实际预测误差（std_mean=2721 vs MAE=4209），区间偏窄，覆盖率不足。
+
+---
+
+### 方法三：Split Conformal Prediction（分裂保形预测）
+
+**脚本**：`scripts/uncertainty_conformal.py`
+
+**原理**：
+Conformal Prediction 提供有限样本边际覆盖保证（Venn & Shafer, 2005）。使用留出的校准集计算非一致性得分，找到满足覆盖要求的最小区间半径：
+
+```
+scores_cal = |y_i - ŷ_i|,   i ∈ 校准集
+q_hat = quantile(scores_cal, ⌈(n+1)(1-α)⌉ / n)    # 有限样本修正分位数
+lower_i = ŷ_i − q_hat
+upper_i = ŷ_i + q_hat
+```
+
+理论保证：`P(y_test ∈ [ŷ − q_hat, ŷ + q_hat]) ≥ 1 − α`（在 i.i.d. 假设下严格成立）。
+
+**时序数据的分布偏移问题**：标准 Split Conformal 假设校准集与测试集 i.i.d.，但时序数据存在季节性分布偏移。使用验证集校准（跨不同季节）时覆盖保证失效；使用时序邻近的校准集（测试集前半段）可恢复覆盖率，但测试集规模减半。**这一现象本身具有论文价值**，说明时序场景下需要时序感知的校准集选择策略。
+
+| `--cal-source` | 校准期 | PICP | MPIW |
+|---|---|---|---|
+| `val`（默认） | 2024/10~2025/07（验证集） | 0.720 | 12564 |
+| `recent` | 2025/07~2025/11（测试集前半） | 0.970 | 18918 |
+
+---
+
+### 方法四：Deep Ensemble + Conformal 校准（自适应动态区间）
+
+**脚本**：`scripts/train_gru_ensemble.py`（训练）+ `scripts/uncertainty_ensemble.py`（推理）
+
+**本系统推荐方法，用于前端展示。**
+
+#### 第一阶段：Deep Ensemble
+
+训练 5 个独立 GRU（相同架构，种子分别为 42 / 7 / 13 / 99 / 2024），输出集成均值与成员间标准差：
+
+```
+mean_i = mean({member_k(x_i)})      # 集成点预测
+std_i  = std ({member_k(x_i)})      # 成员分歧（参数不确定性代理）
+```
+
+集成均值 MAE=4143，与单模型相当（集成的价值在不确定性量化，而非精度提升）。
+
+#### 第二阶段：Conformal 校准（解决成员分歧不足问题）
+
+**问题**：成员分歧（std_mean=529）远小于实际误差（MAE=4143），直接用成员分位数作区间 PICP 仅 0.12。
+
+**解决**：将残差按成员分歧归一化，得到可校准的非一致性得分：
+
+```
+# 校准阶段
+scores_i = |y_i − mean_i| / (std_i + ε),   ε = 1（防除零）
+q_hat = conformal_quantile(scores, 1−α)
+
+# 测试阶段（自适应区间）
+half_width_i = q_hat × (std_i + ε)
+lower_i = mean_i − half_width_i
+upper_i = mean_i + half_width_i
+```
+
+`q_hat` 表示"实际残差是成员分歧的多少倍"（本系统约 17~26 倍）。区间宽度与成员分歧成正比：**峰值期成员分歧更大，区间自动变宽，体现更高的不确定性**。
+
+#### 结果（α=0.10）
+
+| `--cal-source` | PICP | MPIW | Winkler | q_hat |
+|---|---|---|---|---|
+| `val` | 0.843 | 18651 | 27083 | 17.59 |
+| `recent`（推荐） | **0.948** | 22070 | 24127 | 26.10 |
+
+---
+
+### 四方法对比总结
+
+```
+方法                     PICP    MPIW    自适应宽度  训练开销    覆盖保证
+────────────────────────────────────────────────────────────────────────
+P1 残差分位数            0.843    9,098   否（固定）  无          无
+P2 MC Dropout            0.731    8,165   是（有限）  重训 GRU    无
+P3 Conformal (recent)    0.970   18,918   否（固定）  无          理论保证†
+P4 Ensemble+Conf (rec.)  0.948   22,070   是（自适应）训练×5模型  理论保证†
+────────────────────────────────────────────────────────────────────────
+† 在校准集与测试集 i.i.d. 假设成立时
+```
+
+- **论文实验**：四种方法均报告；P1/P2 作为基线；P3 用于论证时序分布偏移发现；P4 作为最终推荐
+- **前端展示**：使用 P4（`--cal-source recent`），自适应宽度视觉效果最好，PICP 达标
+- **计算资源有限时**：P3（`recent`）是零训练成本替代，PICP 更高，区间固定宽度
+
+### 运行命令
+
+```bash
+# P1 残差分位数
+python scripts/uncertainty_residual.py
+
+# P2 MC Dropout
+python scripts/uncertainty_mc_dropout.py --T 50
+
+# P3 Split Conformal
+python scripts/uncertainty_conformal.py                      # val 校准
+python scripts/uncertainty_conformal.py --cal-source recent  # 时序邻近校准
+
+# P4 Deep Ensemble + Conformal
+python scripts/train_gru_ensemble.py --epochs 120 --members 5
+python scripts/uncertainty_ensemble.py --cal-source recent
+```
+
+---
+
 ## 7. 预警定义与风险等级
 
 ### 动态峰值阈值
