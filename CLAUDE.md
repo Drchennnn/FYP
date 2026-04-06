@@ -33,7 +33,7 @@ python scripts/backfill_predictions.py                 # fill historical predict
 **Evaluation:**
 ```bash
 python scripts/walk_forward_eval.py --model gru --folds 4
-python scripts/ablation_study.py --epochs 80
+python scripts/ablation_study.py                    # feature-masking, loads trained GRU weights (~30s)
 python scripts/shap_analysis.py --model gru
 ```
 

@@ -85,8 +85,8 @@ def build_feature_df(df_raw: pd.DataFrame, scalers: dict) -> pd.DataFrame:
     df['visitor_count_scaled'] = vc_scaler.transform(
         df[['tourism_num']].fillna(0).values).flatten()
 
-    df['month_norm']       = df['month'] / 12.0
-    df['day_of_week_norm'] = df['day_of_week'] / 7.0
+    df['month_norm']       = (df['month'] - 1) / 11.0
+    df['day_of_week_norm'] = df['day_of_week'] / 6.0
 
     # recalculate lag_7_scaled with scaler (CSV may already have it, but recalculate to be safe)
     lag7 = df['tourism_num_lag_7'].fillna(0).values.reshape(-1, 1)

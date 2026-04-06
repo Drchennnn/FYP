@@ -217,6 +217,7 @@
   function normalizeForecastPayload(raw) {
     const out = {
       timeAxis: [], forecast: { h: state.h, startIndex: 0, endIndex: 0 },
+      zones: { historyEnd: null, gapEnd: null, forecastStart: null, forecastEnd: null },
       meta: {}, series: {
         actual: [],
         gru_single: [], gru_mimo: [],
@@ -244,6 +245,14 @@
     out.forecast.h = safeNum(fc.h) || state.h;
     out.forecast.startIndex = Math.max(0, safeNum(fc.start_index) ?? safeNum(fc.startIndex) ?? 0);
     out.forecast.endIndex = Math.max(0, safeNum(fc.end_index) ?? safeNum(fc.endIndex) ?? Math.max(0, n - 1));
+
+    const z = raw.zones || {};
+    out.zones = {
+      historyEnd: z.history_end || null,
+      gapEnd: z.gap_end || null,
+      forecastStart: z.forecast_start || null,
+      forecastEnd: z.forecast_end || null,
+    };
 
     const s = raw.series || {};
     out.series.actual      = safeArr(s.actual || [], n, safeNum);
@@ -620,7 +629,7 @@
   // Main ECharts chart (FIX 1,3,5,9)
   // ─────────────────────────────────────────────
   function buildChartOption(payload) {
-    const { timeAxis, series, thresholds, holidays, forecast } = payload;
+    const { timeAxis, series, thresholds, holidays, forecast, zones } = payload;
     const isDark = state.theme === 'dark';
     const textColor = isDark ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.85)';
     const mutedColor = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)';
@@ -661,26 +670,29 @@
     // Zone 2: Gap zone (last_real + 1 → today - 1): data latency, grey hatched
     // Zone 3: Forecast zone (today → today+6): future prediction, light blue
     const todayStr = new Date().toISOString().slice(0, 10);
-    // Find last non-null actual date
-    let lastRealDate = null;
-    for (let i = series.actual.length - 1; i >= 0; i--) {
-      if (series.actual[i] !== null && series.actual[i] !== undefined) {
-        lastRealDate = timeAxis[i]; break;
+    // Prefer backend-provided zones; fall back to scanning actual series for lastRealDate
+    let lastRealDate = (zones && zones.historyEnd) || null;
+    if (!lastRealDate) {
+      for (let i = series.actual.length - 1; i >= 0; i--) {
+        if (series.actual[i] !== null && series.actual[i] !== undefined) {
+          lastRealDate = timeAxis[i]; break;
+        }
       }
     }
+    // Use backend gap_end if available; otherwise derive from todayStr
+    const gapEndStr = (zones && zones.gapEnd) || (() => {
+      const d = new Date(todayStr); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10);
+    })();
     let gapStartIdx = -1;
     let gapEndIdx = -1;
-    // Gap zone: day after lastRealDate up to (not including) today
+    // Gap zone: day after lastRealDate up to gapEnd (inclusive)
     if (lastRealDate && lastRealDate < todayStr) {
       const dayAfterLast = new Date(lastRealDate);
       dayAfterLast.setDate(dayAfterLast.getDate() + 1);
       const gapStart = dayAfterLast.toISOString().slice(0, 10);
       if (gapStart < todayStr) {
-        const gapEndDate = new Date(todayStr);
-        gapEndDate.setDate(gapEndDate.getDate() - 1);
-        const gapEnd = gapEndDate.toISOString().slice(0, 10);
         gapStartIdx = timeAxis.indexOf(gapStart);
-        gapEndIdx = timeAxis.indexOf(gapEnd);
+        gapEndIdx = timeAxis.indexOf(gapEndStr);
         markAreaData.push([
           {
             xAxis: gapStart,

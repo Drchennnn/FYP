@@ -3,13 +3,16 @@
 """
 SHAP 特征重要性分析（GRU / LSTM）
 
-方法：使用 shap.GradientExplainer（适用于 TensorFlow/Keras 模型）
-     对测试集样本计算 SHAP 值，生成特征重要性图。
+方法：特征消融 SHAP（Feature Ablation，model-agnostic）
+     对每个特征，将测试集输入中该特征的所有时间步替换为训练集均值，
+     计算模型输出变化量作为该特征的贡献值。
+     保留 GRU 的完整时序结构，避免 tile/flatten 技巧破坏时序动态。
+     计算复杂度 O(n_explain × n_features)，约 1-3 分钟。
 
 输出：
-  - shap_summary_bar.png    : 全局特征重要性柱状图（均值绝对 SHAP 值）
-  - shap_beeswarm.png       : Beeswarm 图（每个样本的 SHAP 分布）
-  - shap_values.npy         : 原始 SHAP 值矩阵（供后续分析）
+  - shap_summary_bar_<model>.png  : 全局特征重要性柱状图（均值绝对 SHAP 值）
+  - shap_importance_<model>.csv   : 特征重要性数值
+  - shap_values_<model>.npy       : 原始 SHAP 值矩阵（供后续分析）
 
 用法：
   python scripts/shap_analysis.py --model gru
@@ -73,6 +76,12 @@ def load_data(csv_path: Path) -> pd.DataFrame:
     if 'tourism_num' in df.columns:
         df['visitor_count'] = pd.to_numeric(df['tourism_num'], errors='coerce')
     df = df.dropna(subset=['visitor_count']).reset_index(drop=True)
+    # Recompute month_norm and day_of_week_norm from raw columns (same as training script).
+    # The CSV stores these as NaN for most rows; the raw integer columns are always valid.
+    if 'month' in df.columns:
+        df['month_norm'] = (df['month'] - 1) / 11.0
+    if 'day_of_week' in df.columns:
+        df['day_of_week_norm'] = df['day_of_week'] / 6.0
     return df
 
 
@@ -156,48 +165,43 @@ def run_shap_analysis(
         return
 
     # 3. 计算 SHAP 值
-    # GradientExplainer 适用于 TF/Keras 模型
-    # background: 随机抽取训练集样本作为基准
+    # 方法：特征消融 SHAP（Feature Ablation）
+    #
+    # 对每个特征 f，将测试集中该特征的所有时间步替换为训练集均值，
+    # 计算模型输出变化量作为该特征的 SHAP 贡献。
+    # 这与 KernelExplainer 的 mean-baseline 等价，但直接在 3D 序列上操作，
+    # 保留了 GRU 的时序动态，避免了 tile 技巧破坏时序结构的问题。
+    # 计算复杂度：O(n_explain × n_features)，约 1-3 分钟。
     np.random.seed(42)
-    bg_idx = np.random.choice(len(X_train), min(n_background, len(X_train)), replace=False)
-    background = X_train[bg_idx]
-
     exp_idx = np.random.choice(len(X_test), min(n_explain, len(X_test)), replace=False)
-    X_explain = X_test[exp_idx]
+    X_explain = X_test[exp_idx]  # (n_explain, look_back, n_features)
 
-    print(f"  计算 SHAP 值（background={len(background)}, explain={len(X_explain)}）...")
-    try:
-        explainer = shap.GradientExplainer(model, background)
-        shap_values = explainer.shap_values(X_explain)
-        # shap_values shape: (n_explain, look_back, 8) or list
-        if isinstance(shap_values, list):
-            shap_values = shap_values[0]
-        shap_values = np.array(shap_values)
-        if shap_values.ndim == 4:
-            shap_values = shap_values[0]  # 取第一个输出
-    except Exception as e:
-        print(f"  SHAP 计算失败: {e}")
-        print("  尝试使用 DeepExplainer...")
-        try:
-            explainer = shap.DeepExplainer(model, background)
-            shap_values = explainer.shap_values(X_explain)
-            if isinstance(shap_values, list):
-                shap_values = shap_values[0]
-            shap_values = np.array(shap_values)
-            if shap_values.ndim == 4:
-                shap_values = shap_values[0]
-        except Exception as e2:
-            print(f"  DeepExplainer 也失败: {e2}")
-            return
+    n_features = len(FEATURE_NAMES)
 
-    print(f"  SHAP 值形状: {shap_values.shape}")
+    # 训练集各特征的时间步均值 → (n_features,)，用作遮蔽基准
+    train_feature_means = X_train.mean(axis=(0, 1))  # (n_features,)
 
-    # 4. 聚合：对 look_back 维度取均值绝对值 → (n_explain, 8)
-    # shap_values: (n_explain, look_back, 8)
-    if shap_values.ndim == 3:
-        shap_agg = np.mean(np.abs(shap_values), axis=1)  # (n_explain, 8)
-    else:
-        shap_agg = np.abs(shap_values)
+    print(f"  计算 SHAP 值（特征消融法, explain={len(X_explain)}, features={n_features}）...")
+    print("  提示：逐特征消融，预计 1-3 分钟...")
+
+    # 基准预测（完整特征）
+    baseline_preds = model.predict(X_explain, verbose=0).flatten()  # (n_explain,)
+
+    shap_values = np.zeros((len(X_explain), n_features), dtype=np.float32)
+
+    for feat_idx in range(n_features):
+        X_masked = X_explain.copy()
+        X_masked[:, :, feat_idx] = train_feature_means[feat_idx]
+        masked_preds = model.predict(X_masked, verbose=0).flatten()
+        # SHAP contribution = baseline - masked (positive = feature increases prediction)
+        shap_values[:, feat_idx] = baseline_preds - masked_preds
+        print(f"    特征 {feat_idx+1}/{n_features} ({FEATURE_NAMES[feat_idx]}): "
+              f"mean|SHAP|={np.abs(shap_values[:, feat_idx]).mean():.5f}")
+
+    print(f"  SHAP 值形状: {shap_values.shape}")  # (n_explain, n_features)
+
+    # 4. 聚合：已是 (n_explain, n_features)，直接取绝对值
+    shap_agg = np.abs(shap_values)  # (n_explain, n_features)
 
     # 5. 保存原始值
     out_dir.mkdir(parents=True, exist_ok=True)

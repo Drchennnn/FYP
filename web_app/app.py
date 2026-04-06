@@ -1397,6 +1397,15 @@ def api_forecast():
             out_rows.append(row)
         return pd.DataFrame(out_rows)
 
+    # ── 计算 zones 所需的边界日期（供 payload 和内部逻辑共用）──
+    from datetime import date as _outer_date_cls
+    _outer_today = _outer_date_cls.today()
+    _actual_s_outer = pd.to_numeric(df_master['actual'], errors='coerce')
+    _last_date_outer = df_master.loc[_actual_s_outer.notna(), 'date'].max()
+    if hasattr(_last_date_outer, 'date'):
+        _last_date_outer = _last_date_outer.date()
+    _gap_days_outer = max(0, (_outer_today - _last_date_outer).days - 1) if _last_date_outer else 0
+
     # ── MIMO + Seq2Seq 始终触发在线推理，单步只读 CSV ──
     # 设计说明：
     #   单步（GRU/LSTM）：从 last_date+1 滚动推理到 today+horizon-1，只展示 today 起的部分
@@ -1451,13 +1460,15 @@ def api_forecast():
     # qhat_by_h values are NOW directly in visitor units (post-fix), no mean_std multiply needed.
     def _build_unc_series(center_col: str, qhat_by_h: dict):
         """Build lower/upper arrays over time_axis. Only forecast window has values.
-        lower is clamped to 0 (visitor count cannot be negative)."""
+        lower is clamped to 0 (visitor count cannot be negative).
+        Also returns capped_by_h dict {h: capped_half_width} for payload."""
         n = len(df_merge)
         lower_arr = [None] * n
         upper_arr = [None] * n
         half_w_arr = [None] * n
+        capped_by_h = {}
         if not qhat_by_h:
-            return lower_arr, upper_arr, half_w_arr
+            return lower_arr, upper_arr, half_w_arr, capped_by_h
         from datetime import date as _dc
         _today = _dc.today()
         for _i, _row in df_merge.iterrows():
@@ -1483,11 +1494,13 @@ def api_forecast():
             lower_arr[_i] = round(_lo, 1)
             upper_arr[_i] = round(_hi, 1)
             half_w_arr[_i] = round(_hw, 1)
-        return lower_arr, upper_arr, half_w_arr
+            capped_by_h[_step] = round(_hw, 1)
+        return lower_arr, upper_arr, half_w_arr, capped_by_h
 
     unc_lower, unc_upper, unc_half_w = [None]*len(df_merge), [None]*len(df_merge), [None]*len(df_merge)
+    unc_capped_by_h = {}
     if unc_meta and unc_meta.get('available'):
-        unc_lower, unc_upper, unc_half_w = _build_unc_series(
+        unc_lower, unc_upper, unc_half_w, unc_capped_by_h = _build_unc_series(
             'gru_mimo_pred',
             unc_meta['qhat_by_horizon'],
         )
@@ -1669,11 +1682,19 @@ def api_forecast():
             'n_members': (unc_meta or {}).get('n_members', 0),
             'cal_size': (unc_meta or {}).get('cal_size', 0),
             'qhat_by_horizon': (unc_meta or {}).get('qhat_by_horizon', {}),
-            'half_width_by_horizon': (unc_meta or {}).get('half_width_by_horizon', {}),
+            # half_width_by_horizon now returns capped values (40% of centre prediction)
+            # so renderCalibCard reads the same values used in the ECharts band
+            'half_width_by_horizon': unc_capped_by_h if unc_capped_by_h else (unc_meta or {}).get('half_width_by_horizon', {}),
             # Aligned to time_axis, non-null only in forecast window
             'lower': unc_lower,
             'upper': unc_upper,
             'half_width': unc_half_w,
+        },
+        'zones': {
+            'history_end': _last_date_outer.isoformat() if _last_date_outer else None,
+            'gap_end': (_outer_today - timedelta(days=1)).isoformat() if _gap_days_outer > 0 else None,
+            'forecast_start': _outer_today.isoformat(),
+            'forecast_end': (_outer_today + timedelta(days=h - 1)).isoformat(),
         },
         'warning': warning
     })
