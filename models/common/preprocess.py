@@ -501,12 +501,19 @@ def preprocess(input_csv: Path, raw_output_csv: Path, output_csv: Optional[Path]
         "tourism_num_rolling_mean_7",
         "tourism_num_rolling_std_7",
         "tourism_num_rolling_mean_14",
-        # 新增标准化特征（共8个新特征）
+        # 标准化特征（共8个新特征）
         "tourism_num_lag_7_scaled",    # 标准化滞后7天客流
         "meteo_precip_sum_scaled",     # 标准化降水量
         "temp_high_scaled",            # 标准化最高温度
         "temp_low_scaled",             # 标准化最低温度
+        # 线性归一化时间特征（与训练脚本 train_gru_8features.py 保持一致）
+        "month_norm",                  # (month - 1) / 11.0，范围 [0, 1]
+        "day_of_week_norm",            # day_of_week / 6.0，范围 [0, 1]
     ]
+
+    # Compute month_norm and day_of_week_norm from raw integer columns
+    df["month_norm"] = (df["month"] - 1) / 11.0
+    df["day_of_week_norm"] = df["day_of_week"] / 6.0
     
     # Ensure all columns exist before selecting
     for col in processed_cols:

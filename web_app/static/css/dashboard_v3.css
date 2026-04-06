@@ -213,7 +213,8 @@ body{
 
 
 /* ── Main grid ── */
-.v3-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
+.v3-grid{display:grid;grid-template-columns:minmax(0,7fr) minmax(320px,3fr);gap:20px;align-items:start}
+.v3-left{display:flex;flex-direction:column;gap:16px;min-width:0}
 
 /* ── Card ── */
 .v3-card{
@@ -247,6 +248,108 @@ body{
   display:flex;justify-content:flex-start;align-items:center;
   padding:8px 0;flex-wrap:wrap;gap:12px;
 }
+/* Chart key / legend panel */
+.v3-chart-key{
+  display:flex;flex-wrap:wrap;gap:6px 16px;
+  padding:10px 0 4px;
+  border-top:1px solid var(--border);
+  margin-top:4px;
+}
+.v3-chart-key__item{display:flex;align-items:center;gap:5px}
+.v3-chart-key__label{font-size:0.67rem;color:var(--text-3);white-space:nowrap}
+.v3-chart-key__swatch{
+  width:14px;height:4px;border-radius:2px;flex-shrink:0;display:inline-block;
+}
+.v3-chart-key__swatch--actual{
+  background:var(--text-1);width:14px;height:4px;border-radius:2px;flex-shrink:0;display:inline-block;
+}
+.v3-chart-key__swatch--dash{
+  width:14px;height:0;border-top:2px dashed;flex-shrink:0;display:inline-block;background:transparent;
+}
+.v3-chart-key__swatch--band{
+  width:14px;height:8px;border-radius:2px;flex-shrink:0;display:inline-block;
+}
+.v3-chart-key__swatch--area{
+  width:14px;height:10px;border-radius:2px;flex-shrink:0;display:inline-block;
+}
+/* ── Glossary card: separated button row + content panel ── */
+.v3-card--glossary{padding:14px 18px}
+.v3-glossary-head{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+.v3-glossary-title{font-size:0.72rem;font-weight:600;color:var(--text-2);letter-spacing:0.02em}
+.v3-glossary-hint{font-size:0.65rem;color:var(--text-3)}
+
+/* ROW 1: button strip — wraps freely, never broken by content */
+.v3-glossary-btns{
+  display:flex;flex-wrap:wrap;gap:6px;
+  /* self-contained: content panel lives outside this flex context */
+}
+
+/* Individual pill button */
+.v3-gpill-btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:4px 11px;
+  background:var(--bg-card-2);
+  border:1px solid var(--border);
+  border-radius:999px;
+  cursor:pointer;
+  font-size:0.70rem;font-weight:500;color:var(--text-2);
+  white-space:nowrap;user-select:none;
+  transition:color var(--ease), background var(--ease), border-color var(--ease);
+}
+.v3-gpill-btn:hover{color:var(--text-1);background:var(--bg-card)}
+/* Active/selected state */
+.v3-gpill-btn--active{
+  background:var(--bg-card);
+  border-color:rgba(255,255,255,0.18);
+  color:var(--text-1);
+  box-shadow:0 0 0 1.5px rgba(255,255,255,0.08);
+}
+[data-theme="light"] .v3-gpill-btn--active{
+  border-color:rgba(0,0,0,0.18);
+  box-shadow:0 0 0 1.5px rgba(0,0,0,0.06);
+}
+.v3-gpill-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;display:inline-block}
+
+/* ROW 2: content panel below buttons, hidden until a key is active */
+.v3-glossary-panel{
+  margin-top:8px;
+  padding:9px 12px 10px;
+  border-radius:10px;
+  background:var(--bg-card-2);
+  border:1px solid var(--border);
+  font-size:0.73rem;line-height:1.56;color:var(--text-2);
+}
+[data-theme="light"] .v3-glossary-panel{background:rgba(0,0,0,0.025)}
+/* All content divs hidden by default; JS shows only the matching one */
+.v3-glossary-panel [data-gloss-body]{display:none}
+.v3-glossary-panel [data-gloss-body].v3-gloss-active{display:block}
+.v3-glossary-panel b{color:var(--text-1);font-weight:600}
+.v3-glossary-panel em{font-style:normal}
+
+/* Dev mode switch */
+.v3-devmode-wrap{display:flex;align-items:center;margin-left:auto}
+.v3-switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none;position:relative}
+.v3-switch input{position:absolute;opacity:0;width:1px;height:1px;overflow:hidden}
+.v3-switch__track{
+  width:42px;height:24px;border-radius:999px;
+  background:rgba(255,255,255,0.10);
+  border:1px solid var(--border);
+  position:relative;transition:all 0.15s ease;
+}
+[data-theme="light"] .v3-switch__track{background:rgba(0,0,0,0.06)}
+.v3-switch__track::after{
+  content:'';position:absolute;top:3px;left:3px;
+  width:18px;height:18px;border-radius:50%;
+  background:var(--bg-card);box-shadow:0 6px 14px rgba(0,0,0,0.12);
+  transition:transform 0.15s ease;
+}
+.v3-switch input:checked + .v3-switch__track{
+  background:rgba(10,132,255,0.22);
+  border-color:rgba(10,132,255,0.45);
+}
+.v3-switch input:checked + .v3-switch__track::after{transform:translateX(18px)}
+.v3-switch__label{font-size:0.78rem;font-weight:500;color:var(--text-2)}
+.v3-switch--chart .v3-switch__label{font-size:0.76rem}
 
 /* ── Toggle chips ── */
 .v3-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
@@ -276,6 +379,25 @@ body{
 .v3-chip--all::before{display:none}
 .v3-chip--actual{--chip-color:#ffffff}
 [data-theme="light"] .v3-chip--actual{--chip-color:#1c1c1e}
+
+/* ── Small tags ── */
+.v3-tag{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 10px;border-radius:999px;
+  font-size:0.72rem;font-weight:600;
+  border:1px solid var(--border);
+  color:var(--text-2);background:rgba(255,255,255,0.06);
+}
+[data-theme="light"] .v3-tag{background:rgba(0,0,0,0.04)}
+.v3-tag--warn{
+  border-color:rgba(255,159,10,0.35);
+  background:rgba(255,159,10,0.10);
+  color:color-mix(in srgb, var(--accent-3) 90%, var(--text) 10%);
+  max-width:100%;white-space:normal;line-height:1.4;
+}
+.v3-latency-note{
+  display:block;font-size:0.68rem;opacity:0.75;margin-top:2px;font-weight:400;
+}
 
 /* ── Reset button ── */
 .v3-btn-reset{
@@ -394,6 +516,97 @@ body{
 .v3-reco-item__val{font-size:0.78rem;color:var(--text-2);font-family:var(--font-mono)}
 .v3-reco-item__badge{font-size:0.68rem;font-weight:600;padding:2px 8px;border-radius:20px;background:rgba(52,199,89,0.15);color:var(--accent-2)}
 
+/* ── Calibration status card ── */
+.v3-card--calib{padding:20px}
+.v3-calib-dot--off{background:var(--text-3);box-shadow:none}
+.v3-calib-body{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+.v3-calib-body--compact{margin-top:0}
+.v3-calib-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.v3-calib-label{font-size:0.76rem;color:var(--text-2)}
+.v3-calib-val{font-size:0.78rem;font-weight:500;font-family:var(--font-mono)}
+.v3-calib-note{
+  font-size:0.76rem;line-height:1.35;color:var(--text-2);
+  padding:10px 12px;border-radius:12px;
+  background:rgba(255,255,255,0.06);
+  border:1px solid var(--border);
+  margin-bottom:4px;
+}
+[data-theme="light"] .v3-calib-note{background:rgba(0,0,0,0.03)}
+.v3-calib-divider{height:1px;background:var(--border);margin:4px 0}
+.v3-calib-fan{display:flex;flex-direction:column;gap:4px}
+.v3-calib-fan-hint{font-size:0.65rem;color:var(--text-3);margin-bottom:2px;line-height:1.3}
+.v3-calib-fan-row{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden}
+.v3-calib-fan-label{font-size:0.68rem;color:var(--text-3);width:26px;flex-shrink:0}
+.v3-calib-fan-track{flex:1 1 0;min-width:0;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.v3-calib-fan-bar{height:6px;border-radius:3px;background:rgba(255,159,10,0.55);transition:width 0.3s ease}
+.v3-calib-fan-val{font-size:0.68rem;color:var(--text-2);font-family:var(--font-mono);flex-shrink:0;width:56px;text-align:right}
+
+/* ── Confidence base panel layout ── */
+.v3-card--confidence{padding:20px}
+.v3-conf-body{display:grid;grid-template-columns:1.1fr 1fr;gap:16px;align-items:start}
+.v3-conf-left{display:flex;flex-direction:column;gap:12px;min-width:0}
+.v3-conf-right{display:flex;flex-direction:column;gap:10px;min-width:0}
+.v3-conf-explain{
+  font-size:0.80rem;line-height:1.45;color:var(--text-2);
+  padding:12px 14px;border-radius:14px;
+  background:rgba(255,255,255,0.05);
+  border:1px solid var(--border);
+}
+[data-theme="light"] .v3-conf-explain{background:rgba(0,0,0,0.03)}
+
+/* ── Attribution card ── */
+.v3-card--attr{padding:16px}
+.v3-attr-engine-label{font-size:0.62rem!important;color:var(--text-3)!important;margin-top:2px;line-height:1.3}
+.v3-attr-badge{
+  padding:4px 10px;border-radius:999px;
+  font-size:0.72rem;font-weight:600;
+  border:1px solid rgba(48,209,88,0.22);
+  background:rgba(48,209,88,0.10);
+  color:rgba(48,209,88,0.95);
+}
+.v3-attr-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.v3-attr-footnote{
+  font-size:0.63rem;color:var(--text-3);line-height:1.4;
+  margin-top:8px;padding-top:8px;border-top:1px solid var(--border);
+}
+.v3-attr-footnote__pos{color:rgba(48,209,88,0.85);font-size:0.65rem}
+.v3-attr-footnote__neg{color:rgba(255,69,58,0.85);font-size:0.65rem}
+.v3-attr-item{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:10px 12px;border-radius:12px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,0.06);
+}
+[data-theme="light"] .v3-attr-item{background:rgba(0,0,0,0.03)}
+.v3-attr-text{font-size:0.80rem;color:var(--text);line-height:1.25}
+.v3-attr-delta{font-size:0.80rem;font-weight:650;font-family:var(--font-mono)}
+.v3-attr-delta--pos{color:rgba(48,209,88,0.95)}
+.v3-attr-delta--neg{color:rgba(255,69,58,0.92)}
+.v3-attr-empty{
+  font-size:0.78rem;color:var(--text-2);
+  padding:10px 12px;border-radius:12px;
+  border:1px dashed var(--border);
+  background:rgba(255,255,255,0.04);
+}
+[data-theme="light"] .v3-attr-empty{background:rgba(0,0,0,0.02)}
+
+/* ── Suitability + reco combined card ── */
+.v3-card--suit{padding:16px}
+.v3-risk-formula-note{
+  font-size:0.63rem;color:var(--text-3);line-height:1.5;
+  margin:8px 0 0;padding:6px 10px;
+  border-radius:8px;
+  background:rgba(255,255,255,0.03);
+  border:1px solid var(--border);
+}
+[data-theme="light"] .v3-risk-formula-note{background:rgba(0,0,0,0.02)}
+.v3-risk-formula-levels{
+  display:block;margin-top:3px;
+  font-size:0.61rem;color:var(--text-3);letter-spacing:0.01em;
+}
+.v3-suit-divider{height:1px;background:var(--border);margin:12px 0 12px}
+.v3-suit-reco-title{margin-top:0}
+
 /* ── 7-day strip ── */
 .v3-forecast-strip{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-top:20px}
 .v3-day-card{
@@ -478,10 +691,11 @@ body{
 .v3-status-dot--err{background:var(--danger)}
 
 /* ── Responsive ── */
-@media(max-width:1100px){
+@media(max-width:900px){
   .v3-grid{grid-template-columns:1fr}
   .v3-side{flex-direction:row;flex-wrap:wrap}
   .v3-side>*{flex:1;min-width:260px}
+  .v3-conf-body{grid-template-columns:1fr}
   .v3-forecast-strip{grid-template-columns:repeat(4,1fr)}
   .v3-models-grid{grid-template-columns:1fr 1fr}
 }

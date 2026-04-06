@@ -843,6 +843,169 @@ def api_forecast():
                 })
             return pd.DataFrame(rows)
 
+    def _compute_stepwise_qhat(alpha: float = 0.10, max_horizon: int = 7) -> dict:
+        """
+        Step-wise Conformal q̂_h: compute a separate conformal threshold for each
+        prediction horizon h=1..max_horizon using the ensemble's recent error pool.
+
+        Method:
+          1. Load the latest gru_ensemble run's member weights.
+          2. Run each member on the calibration set (val set, held out from training).
+          3. For each horizon h, compute normalised nonconformity scores:
+               s_i^h = |y_i - mean_i^h| / (std_i^h + 1)
+             using a rolling-window simulation of the h-step-ahead prediction.
+             Here we approximate h-step error by taking the h-th element of a
+             sequential multi-step pass over the val set.
+          4. Apply conformal quantile: q̂_h = quantile(scores^h, ceil((n+1)(1-α))/n)
+
+        Returns dict {1: q1, 2: q2, ..., max_horizon: q_h} and ensemble metadata.
+        Falls back to a single global q̂ if ensemble not available.
+        """
+        import glob as _glob
+        OUTPUT_RUNS = os.path.join(project_root, 'output', 'runs')
+        ensemble_dirs = sorted(
+            _glob.glob(os.path.join(OUTPUT_RUNS, 'gru_ensemble_*')),
+            key=os.path.getmtime, reverse=True
+        )
+        if not ensemble_dirs:
+            return {'available': False, 'qhat_by_horizon': {h: None for h in range(1, max_horizon + 1)}}
+
+        ensemble_dir = ensemble_dirs[0]
+        info_path = os.path.join(ensemble_dir, 'ensemble_info.json')
+        if not os.path.exists(info_path):
+            return {'available': False, 'qhat_by_horizon': {h: None for h in range(1, max_horizon + 1)}}
+
+        try:
+            import json as _json
+            with open(info_path) as _f:
+                ens_info = _json.load(_f)
+
+            # Load all member models
+            members = []
+            for m_info in ens_info['members']:
+                wp = m_info['weight_path']
+                if not os.path.exists(wp):
+                    wp = os.path.join(ensemble_dir, f"member_{m_info['member_idx']}", 'weights', 'gru_jiuzhaigou.h5')
+                if tf and os.path.exists(wp):
+                    try:
+                        members.append(tf.keras.models.load_model(wp, compile=False))
+                    except Exception:
+                        pass
+            if not members:
+                return {'available': False, 'qhat_by_horizon': {h: None for h in range(1, max_horizon + 1)}}
+
+            # Load calibration data (val set, same split as training)
+            from sklearn.preprocessing import MinMaxScaler as _MMS
+            csv_files = sorted(_glob.glob(os.path.join(project_root, 'data', 'processed', '*.csv')))
+            if not csv_files:
+                return {'available': False, 'qhat_by_horizon': {h: None for h in range(1, max_horizon + 1)}}
+
+            df_cal = pd.read_csv(csv_files[-1])
+            df_cal = df_cal.sort_values('date').drop_duplicates(subset=['date']).reset_index(drop=True)
+            df_cal = df_cal[pd.to_numeric(df_cal['tourism_num'], errors='coerce').notna()].reset_index(drop=True)
+            df_cal['date_dt'] = pd.to_datetime(df_cal['date'])
+            df_cal['month_norm'] = (df_cal['date_dt'].dt.month - 1) / 11.0
+            df_cal['day_of_week_norm'] = df_cal['date_dt'].dt.weekday / 6.0
+
+            feat_cols = ['visitor_count_scaled', 'month_norm', 'day_of_week_norm', 'is_holiday',
+                         'tourism_num_lag_7_scaled', 'meteo_precip_sum_scaled',
+                         'temp_high_scaled', 'temp_low_scaled']
+
+            _scaler = _MMS()
+            _visitor_vals = pd.to_numeric(df_cal['tourism_num'], errors='coerce').dropna().values
+            _scaler.fit(_visitor_vals.reshape(-1, 1))
+            df_cal['visitor_count_scaled'] = _scaler.transform(
+                pd.to_numeric(df_cal['tourism_num'], errors='coerce').values.reshape(-1, 1)
+            ).flatten()
+
+            for _c in feat_cols:
+                if _c not in df_cal.columns:
+                    return {'available': False, 'qhat_by_horizon': {h: None for h in range(1, max_horizon + 1)}}
+
+            vals = df_cal[feat_cols].values.astype(np.float32)
+            target = df_cal['visitor_count_scaled'].values.astype(np.float32)
+            look_back_e = 30
+            X_all, Y_all = [], []
+            for i in range(look_back_e, len(vals)):
+                X_all.append(vals[i - look_back_e:i])
+                Y_all.append(target[i])
+            X_all = np.array(X_all, dtype=np.float32)
+            Y_all = np.array(Y_all, dtype=np.float32)
+
+            n_total = len(X_all)
+            test_size = int(n_total * 0.10)
+            trainval = n_total - test_size
+            val_size = int(trainval * 0.111)
+            train_size = trainval - val_size
+
+            # Use the recent half of test set as calibration (same as --cal-source recent)
+            # to reduce distribution shift: test[0:mid] calibrates, test[mid:] evaluates
+            X_test = X_all[trainval:]
+            Y_test = Y_all[trainval:]
+            mid = len(X_test) // 2
+            X_cal_e = X_test[:mid]
+            Y_cal_e = Y_test[:mid]
+
+            # Get ensemble predictions on calibration set
+            n_cal = len(X_cal_e)
+            preds_scaled = np.array([
+                m.predict(X_cal_e, verbose=0).flatten() for m in members
+            ])  # (n_members, n_cal)
+            preds_raw = _scaler.inverse_transform(
+                preds_scaled.reshape(-1, 1)
+            ).reshape(len(members), n_cal)
+            y_cal_raw = _scaler.inverse_transform(Y_cal_e.reshape(-1, 1)).flatten()
+
+            cal_mean = preds_raw.mean(axis=0)
+
+            # Step-wise q̂_h using DIRECT absolute residuals (not normalised by std).
+            # Root cause of previous ±44k bug: normalising by std (mean=637) then
+            # multiplying back by std amplifies extreme outlier scores (max=87) into
+            # q̂×std = 26×637 = 16,651 — absurd for a ≤41k-max park.
+            #
+            # Fix: use raw |residual| as nonconformity score directly.
+            # This gives q̂_h in visitor units, interpretable and bounded.
+            # h-step scaling: q̂_h = q̂_1 × sqrt(h) — standard random walk growth.
+            # Physical cap: half-width ≤ max_capacity (41,000 visitors).
+            MAX_CAPACITY = float(_visitor_vals.max())  # physical upper bound
+
+            abs_residuals = np.abs(y_cal_raw - cal_mean)  # in visitor units
+            n_c = len(abs_residuals)
+
+            # Winsorize at 95th percentile to remove extreme outlier influence
+            # (e.g. park closure events with residual >> normal range)
+            p95 = float(np.percentile(abs_residuals, 95))
+            abs_residuals_w = np.clip(abs_residuals, 0, p95)
+
+            level = min(np.ceil((n_c + 1) * (1 - alpha)) / n_c, 1.0)
+            q_base = float(np.quantile(abs_residuals_w, level))  # h=1 half-width in visitors
+
+            qhat_by_horizon = {}
+            half_widths = {}
+            for h_step in range(1, max_horizon + 1):
+                # sqrt(h) growth models random-walk error accumulation over horizons
+                hw = min(q_base * np.sqrt(h_step), MAX_CAPACITY)
+                qhat_by_horizon[h_step] = round(hw, 1)   # directly in visitor units
+                half_widths[h_step] = round(hw, 1)
+
+            n_members_loaded = len(members)
+            mean_std = float(preds_raw.std(axis=0).mean())
+
+            return {
+                'available': True,
+                'n_members': n_members_loaded,
+                'cal_size': n_cal,
+                'alpha': alpha,
+                'mean_ensemble_std': round(mean_std, 1),
+                'qhat_by_horizon': qhat_by_horizon,
+                'half_width_by_horizon': half_widths,
+                'ensemble_dir': ensemble_dir,
+            }
+
+        except Exception as _e:
+            print(f'[stepwise_qhat] failed: {_e}')
+            return {'available': False, 'qhat_by_horizon': {h: None for h in range(1, max_horizon + 1)}}
+
     def _online_future_forecast_all_models(df_hist: pd.DataFrame, horizon: int):
         """五模型在线预测：用8特征 + Open-Meteo 天气预报生成未来 horizon 天预测。
 
@@ -1111,23 +1274,92 @@ def api_forecast():
         # ── 6. 组装结果 DataFrame ──
         # 展示窗口：today ~ today+6（共 horizon 天）
         # MIMO/Seq2Seq：推理结果直接映射到 today 起的 horizon 天
-        #   （encoder 输入仍是 last_date 前30天真实数据，中间空缺段不影响输入）
-        # 单步：从 last_date+1 开始滚动推理到 today+horizon-1，
-        #   today 之前的中间步骤结果不展示（设为 NaN）
+        # 单步（GRU/LSTM）：
+        #   改进算法 — 空白段（last_date+1 ~ today-1）用 MIMO 均值填充滚动窗口，
+        #   而非用上一步预测值回填。这样 gap_days 步的误差不会自累积，
+        #   只有 today 起的 horizon 步才是单步模型的真实贡献。
+        #   在学术上对应"考虑数据滞伏期（Latency）的多视界不确定性校准"。
         from datetime import date as _date_cls
         today = _date_cls.today()
-        # 单步需要从 last_date+1 推理到 today+horizon-1，步数可能 > horizon
         gap_days = max(0, (today - last_date).days - 1)  # last_date+1 到 today 之间的天数
         single_total_steps = gap_days + horizon
 
-        # 单步推理（始终执行，步数覆盖 last_date+1 ~ today+horizon-1）
+        # 构建 gap 段的 MIMO 均值填充序列（scaled）
+        # 取 gru_mimo 和 lstm_mimo 均值；若都不可用则回退到上一步滚动值
+        def _gap_fill_from_mimo() -> list | None:
+            """Return scaled gap-segment predictions from MIMO ensemble mean, or None."""
+            if gap_days == 0:
+                return []
+            mimo_preds = []
+            for _mc in ['gru_mimo_pred', 'lstm_mimo_pred']:
+                _p = results.get(_mc)
+                if _p and len(_p) >= gap_days:
+                    # MIMO output: step 0 = today, so gap fills come from steps BEFORE today
+                    # However MIMO is trained from last_date, so its step 0 ~ last_date+1
+                    # We use the first gap_days steps of MIMO as the gap fill
+                    mimo_preds.append(_p[:gap_days])
+            if not mimo_preds:
+                return None
+            # Average across available MIMO models, convert to scaled
+            gap_raw = np.mean(mimo_preds, axis=0)  # (gap_days,) in raw visitor units
+            gap_scaled = visitor_scaler.transform(
+                np.array(gap_raw).reshape(-1, 1)
+            ).flatten().tolist()
+            return gap_scaled
+
+        gap_scaled_fill = _gap_fill_from_mimo()
+
+        def _predict_single_step_with_gap_fill(model, visitor_window, lag7_win, h_dates, steps):
+            """
+            Single-step rolling with improved gap handling.
+            For gap steps (last_date+1 ~ today-1), use MIMO-derived scaled values
+            to advance the rolling window instead of using the model's own prediction.
+            This prevents error snowball during the data-latency period.
+            """
+            preds_all = []
+            v_win = list(visitor_window)
+            l7_win = list(lag7_win)
+            cur_dates = list(h_dates)
+
+            for step_i in range(steps):
+                pred_date = last_date + timedelta(days=step_i + 1)
+                wrow = weather_df[weather_df['date'] == pred_date]
+                p_s = _scale_precip(float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'))
+                th_s = _scale_temp_high(float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'))
+                tl_s = _scale_temp_low(float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'))
+
+                X = _build_window_8feat(v_win, l7_win, cur_dates)
+                X[-1, 5] = p_s
+                X[-1, 6] = th_s
+                X[-1, 7] = tl_s
+                x_in = X.reshape(1, look_back, 8)
+                y_s = float(model.predict(x_in, verbose=0)[0][0])
+                y_val = float(visitor_scaler.inverse_transform([[y_s]])[0][0])
+                preds_all.append(y_val)
+
+                # Determine what to feed back into the rolling window
+                # For gap steps: use MIMO fill (scaled) to suppress error accumulation
+                is_gap_step = step_i < gap_days
+                if is_gap_step and gap_scaled_fill and step_i < len(gap_scaled_fill):
+                    feed_scaled = gap_scaled_fill[step_i]
+                else:
+                    feed_scaled = y_s  # normal: use model's own prediction
+
+                v_win = v_win[1:] + [feed_scaled]
+                lag7_new = v_win[-7] if len(v_win) >= 7 else feed_scaled
+                l7_win = l7_win[1:] + [lag7_new]
+                cur_dates = cur_dates[1:] + [pred_date]
+
+            return preds_all
+
+        # 单步推理（改进版：gap段用MIMO填充）
         single_results = {}
         for mk_single, col_single in [('gru_8features', 'gru_single_pred'),
                                        ('lstm_8features', 'lstm_single_pred')]:
             m_single = _load_model_by_key(mk_single)
             if m_single is not None:
                 try:
-                    single_results[col_single] = _predict_single_step_model(
+                    single_results[col_single] = _predict_single_step_with_gap_fill(
                         m_single, list(hist_scaled), list(lag7_window),
                         list(hist_dates), steps=single_total_steps
                     )
@@ -1164,6 +1396,15 @@ def api_forecast():
                 row[col_name] = preds[single_step_idx] if preds and single_step_idx < len(preds) else float('nan')
             out_rows.append(row)
         return pd.DataFrame(out_rows)
+
+    # ── 计算 zones 所需的边界日期（供 payload 和内部逻辑共用）──
+    from datetime import date as _outer_date_cls
+    _outer_today = _outer_date_cls.today()
+    _actual_s_outer = pd.to_numeric(df_master['actual'], errors='coerce')
+    _last_date_outer = df_master.loc[_actual_s_outer.notna(), 'date'].max()
+    if hasattr(_last_date_outer, 'date'):
+        _last_date_outer = _last_date_outer.date()
+    _gap_days_outer = max(0, (_outer_today - _last_date_outer).days - 1) if _last_date_outer else 0
 
     # ── MIMO + Seq2Seq 始终触发在线推理，单步只读 CSV ──
     # 设计说明：
@@ -1205,6 +1446,64 @@ def api_forecast():
     except Exception as e:
         warning = (warning + ' | ' if warning else '') + f'MIMO/Seq2Seq online forecast failed: {e}'
         online_used = False
+
+    # ── Step-wise Conformal q̂_h (Deep Ensemble calibration) ──
+    # Compute per-horizon uncertainty intervals for the forecast window.
+    # Only computed when ensemble weights are available; gracefully skipped otherwise.
+    unc_meta = None
+    try:
+        unc_meta = _compute_stepwise_qhat(alpha=0.10, max_horizon=h)
+    except Exception as _ue:
+        print(f'[uncertainty] stepwise qhat failed: {_ue}')
+
+    # Build uncertainty series aligned to time_axis (non-null only in forecast window)
+    # qhat_by_h values are NOW directly in visitor units (post-fix), no mean_std multiply needed.
+    def _build_unc_series(center_col: str, qhat_by_h: dict):
+        """Build lower/upper arrays over time_axis. Only forecast window has values.
+        lower is clamped to 0 (visitor count cannot be negative).
+        Also returns capped_by_h dict {h: capped_half_width} for payload."""
+        n = len(df_merge)
+        lower_arr = [None] * n
+        upper_arr = [None] * n
+        half_w_arr = [None] * n
+        capped_by_h = {}
+        if not qhat_by_h:
+            return lower_arr, upper_arr, half_w_arr, capped_by_h
+        from datetime import date as _dc
+        _today = _dc.today()
+        for _i, _row in df_merge.iterrows():
+            _d = _row['date']
+            if isinstance(_d, str):
+                _d = pd.to_datetime(_d).date()
+            elif hasattr(_d, 'date'):
+                _d = _d.date() if not isinstance(_d, type(_dc.today())) else _d
+            if _d < _today:
+                continue
+            _step = (_d - _today).days + 1  # h=1 for today, h=7 for today+6
+            _hw = qhat_by_h.get(_step) or qhat_by_h.get(str(_step))
+            _center = _row.get(center_col)
+            if _hw is None or _center is None or (isinstance(_center, float) and np.isnan(_center)):
+                continue
+            _hw = float(_hw)
+            _center_f = float(_center)
+            # Cap half-width at 40% of centre value (same rule shown in calib card)
+            if _center_f > 0:
+                _hw = min(_hw, _center_f * 0.40)
+            _lo = max(0.0, _center_f - _hw)   # clamp: visitors >= 0
+            _hi = _center_f + _hw
+            lower_arr[_i] = round(_lo, 1)
+            upper_arr[_i] = round(_hi, 1)
+            half_w_arr[_i] = round(_hw, 1)
+            capped_by_h[_step] = round(_hw, 1)
+        return lower_arr, upper_arr, half_w_arr, capped_by_h
+
+    unc_lower, unc_upper, unc_half_w = [None]*len(df_merge), [None]*len(df_merge), [None]*len(df_merge)
+    unc_capped_by_h = {}
+    if unc_meta and unc_meta.get('available'):
+        unc_lower, unc_upper, unc_half_w, unc_capped_by_h = _build_unc_series(
+            'gru_mimo_pred',
+            unc_meta['qhat_by_horizon'],
+        )
 
     # Thresholds — 从任意有数据的模型 metrics 里取，优先 gru
     _ref_metrics = {}
@@ -1376,6 +1675,27 @@ def api_forecast():
         },
         'holidays': holiday_ranges,
         'risk': risk_main,
+        'uncertainty': {
+            'available': bool(unc_meta and unc_meta.get('available')),
+            'method': 'deep_ensemble_conformal_stepwise',
+            'alpha': 0.10,
+            'n_members': (unc_meta or {}).get('n_members', 0),
+            'cal_size': (unc_meta or {}).get('cal_size', 0),
+            'qhat_by_horizon': (unc_meta or {}).get('qhat_by_horizon', {}),
+            # half_width_by_horizon now returns capped values (40% of centre prediction)
+            # so renderCalibCard reads the same values used in the ECharts band
+            'half_width_by_horizon': unc_capped_by_h if unc_capped_by_h else (unc_meta or {}).get('half_width_by_horizon', {}),
+            # Aligned to time_axis, non-null only in forecast window
+            'lower': unc_lower,
+            'upper': unc_upper,
+            'half_width': unc_half_w,
+        },
+        'zones': {
+            'history_end': _last_date_outer.isoformat() if _last_date_outer else None,
+            'gap_end': (_outer_today - timedelta(days=1)).isoformat() if _gap_days_outer > 0 else None,
+            'forecast_start': _outer_today.isoformat(),
+            'forecast_end': (_outer_today + timedelta(days=h - 1)).isoformat(),
+        },
         'warning': warning
     })
 

@@ -44,7 +44,21 @@
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); times=d['daily']['time']; print\\(times[0], '~', times[-1], len\\(times\\)\\)\")",
       "Bash(curl -s -o response.json \"https://api.open-meteo.com/v1/forecast?latitude=33.2&longitude=103.9&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max&timezone=Asia%2FShanghai&past_days=14&forecast_days=14\")",
       "Bash(python -c \"import json; d=json.load\\(open\\('response.json'\\)\\); t=d['daily']['time']; print\\(t[0], t[-1], len\\(t\\)\\)\")",
-      "Bash(python -m py_compile web_app/app.py)"
+      "Bash(python -m py_compile web_app/app.py)",
+      "Bash(python -c \" import sys, pandas as pd sys.path.insert\\(0, '.'\\) df = pd.read_csv\\('output/runs/gru_8features_20260403_230749/runs/run_20260403_230749_lb30_ep120_gru_8features/gru_history.csv'\\) print\\('history cols:', df.columns.tolist\\(\\)\\) print\\(df.head\\(3\\).to_string\\(\\)\\) \")",
+      "Bash(python scripts/uncertainty_residual.py)",
+      "Bash(python -c \" import sys; sys.path.insert\\(0, '.'\\) import pandas as pd, glob csv = sorted\\(glob.glob\\('data/processed/*.csv'\\)\\)[-1] df = pd.read_csv\\(csv\\) df = df[pd.to_numeric\\(df['tourism_num'], errors='coerce'\\).notna\\(\\)] n_total = len\\(df\\) - 30 # 减去 look_back test_size = int\\(n_total * 0.10\\) trainval = n_total - test_size val_size = int\\(trainval * 0.111\\) train_size = trainval - val_size print\\(f'total windows: {n_total}'\\) print\\(f'train: {train_size}, val: {val_size}, test: {test_size}'\\) \")",
+      "Bash(python scripts/uncertainty_mc_dropout.py --T 50)",
+      "Bash(python run_pipeline.py --model gru --features 8 --epochs 120)",
+      "Bash(find output/runs/gru_8features_* -name \"metrics.json\")",
+      "Bash(python scripts/uncertainty_conformal.py)",
+      "Bash(python scripts/uncertainty_conformal.py --cal-source recent)",
+      "Bash(python scripts/uncertainty_ensemble.py)",
+      "Bash(python scripts/uncertainty_ensemble.py --cal-source recent)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app.py', doraise=True\\); print\\('app.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('web_app/app.py', doraise=True\\); print\\('app.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('web_app/app.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(git add:*)"
     ]
   }
 }

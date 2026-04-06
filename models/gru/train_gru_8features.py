@@ -234,10 +234,8 @@ def create_gru_model(look_back: int) -> tf.keras.Model:
     model = tf.keras.Sequential(
         [
             tf.keras.layers.Input(shape=(look_back, 8)),
-            tf.keras.layers.GRU(128, return_sequences=True),
-            tf.keras.layers.Dropout(0.2),
-            tf.keras.layers.GRU(64),
-            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.GRU(128, return_sequences=True, dropout=0.2, implementation=1),
+            tf.keras.layers.GRU(64, dropout=0.2, implementation=1),
             tf.keras.layers.Dense(32, activation="relu"),
             tf.keras.layers.Dense(1),
         ]

@@ -5,10 +5,10 @@ Walk-forward Evaluation（滚动窗口评估）
 
 方法论：
   使用 expanding window（扩展窗口）策略，模拟真实部署场景：
-  - 每个 fold 的训练集从数据起点扩展到切割点
-  - 测试集为切割点后的固定窗口（默认 90 天）
-  - 每个 fold 独立训练模型，记录回归指标与预警指标
-  - 汇总跨 fold 的均值与标准差，作为模型泛化能力的无偏估计
+  - GRU / LSTM：每个 fold 独立从头训练，评估模型在不同时间段的泛化能力
+  - Seq2Seq+Attention：加载已训练权重，在各 fold 测试集上直接推理（不重训）
+    原因：Seq2Seq 训练时间长（>30分钟/fold），且其多步直接输出特性使其
+    在不同时间段的泛化能力评估更适合用固定权重推理。
 
 与固定切分的区别：
   固定切分只在一个时间段（最后10%）测试，无法反映模型在不同季节、
@@ -18,6 +18,7 @@ Walk-forward Evaluation（滚动窗口评估）
 用法：
   python scripts/walk_forward_eval.py --model gru --folds 4
   python scripts/walk_forward_eval.py --model lstm --folds 4
+  python scripts/walk_forward_eval.py --model seq2seq_attention --folds 4
   python scripts/walk_forward_eval.py --model all --folds 4
 """
 
@@ -40,6 +41,20 @@ if str(PROJECT_ROOT) not in sys.path:
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# CJK 字体配置
+def _setup_cjk_font():
+    candidates = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS',
+                  'WenQuanYi Micro Hei', 'Noto Sans CJK SC']
+    for name in candidates:
+        if any(name.lower() in f.name.lower() for f in fm.fontManager.ttflist):
+            plt.rcParams['font.family'] = name
+            plt.rcParams['axes.unicode_minus'] = False
+            return
+    plt.rcParams['axes.unicode_minus'] = False
+
+_setup_cjk_font()
 
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
@@ -64,6 +79,12 @@ def load_data(csv_path: Path) -> pd.DataFrame:
     elif "visitor_count" not in df.columns:
         raise ValueError("CSV 中未找到 tourism_num 或 visitor_count 列")
     df = df.dropna(subset=["visitor_count"]).reset_index(drop=True)
+    # Recompute month_norm and day_of_week_norm from raw columns (same as training script).
+    # The CSV stores these as NaN for most rows; the raw integer columns are always valid.
+    if "month" in df.columns:
+        df["month_norm"] = (df["month"] - 1) / 11.0
+    if "day_of_week" in df.columns:
+        df["day_of_week_norm"] = df["day_of_week"] / 6.0
     return df
 
 
@@ -77,6 +98,20 @@ FEATURE_COLS = [
     "temp_high_scaled",
     "temp_low_scaled",
 ]
+
+# Seq2Seq decoder features (7 external features, no visitor_count)
+DECODER_FEATURE_COLS = [
+    "month_norm",
+    "day_of_week_norm",
+    "is_holiday",
+    "tourism_num_lag_7_scaled",
+    "meteo_precip_sum_scaled",
+    "temp_high_scaled",
+    "temp_low_scaled",
+]
+
+ENCODER_STEPS = 30
+DECODER_STEPS = 7  # Seq2Seq predicts 7 days at once
 
 WEATHER_COLS_RAW = ["meteo_precip_sum", "meteo_temp_max", "meteo_temp_min"]
 
@@ -107,6 +142,61 @@ def build_sequences(
         y.append(target[i])
         d.append(dates[i])
     return np.array(X), np.array(y), np.array(d)
+
+
+def build_seq2seq_sequences(df: pd.DataFrame) -> tuple:
+    """构建 Seq2Seq 序列。
+    Returns:
+        X_enc: (N, 30, 8)
+        X_dec: (N, 7, 7)
+        y:     (N, 7)   — 未来7天 visitor_count_scaled
+        d:     (N,)     — 每个样本对应的预测起始日期
+    """
+    _check_features(df)
+    enc_vals = df[FEATURE_COLS].values.astype(np.float32)
+    dec_vals = df[DECODER_FEATURE_COLS].values.astype(np.float32)
+    target = df["visitor_count_scaled"].values.astype(np.float32)
+    dates = df["date"].values
+
+    total = ENCODER_STEPS + DECODER_STEPS
+    X_enc, X_dec, y, d = [], [], [], []
+    for i in range(total, len(df)):
+        X_enc.append(enc_vals[i - total: i - DECODER_STEPS])   # (30, 8)
+        X_dec.append(dec_vals[i - DECODER_STEPS: i])           # (7, 7)
+        y.append(target[i - DECODER_STEPS: i])                 # (7,)
+        d.append(dates[i - DECODER_STEPS])                     # start of forecast window
+    return (np.array(X_enc), np.array(X_dec),
+            np.array(y), np.array(d))
+
+
+def find_seq2seq_weights() -> Optional[Path]:
+    """找最新的 seq2seq_attention_8features 权重文件。"""
+    runs_dir = PROJECT_ROOT / "output" / "runs"
+    candidates = sorted(
+        runs_dir.glob("seq2seq_attention_8features_*"),
+        key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    for top_dir in candidates:
+        for f in top_dir.rglob("weights/*.keras"):
+            return f
+        for f in top_dir.rglob("weights/*.h5"):
+            return f
+    return None
+
+
+def load_seq2seq_model(weights_path: Path) -> tf.keras.Model:
+    """加载 Seq2Seq+Attention 模型（需要注册自定义层）。"""
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from models.lstm.train_seq2seq_attention_8features import (
+        AttentionLayer, Seq2SeqWithAttention
+    )
+    custom_objects = {
+        "AttentionLayer": AttentionLayer,
+        "Seq2SeqWithAttention": Seq2SeqWithAttention,
+    }
+    return tf.keras.models.load_model(str(weights_path),
+                                      custom_objects=custom_objects,
+                                      compile=False)
 
 
 # ─────────────────────────────────────────────
@@ -231,10 +321,9 @@ def run_fold(
         weather_temp_low[:n] = test_weather["meteo_temp_min"].values[:n]
 
     # 核心指标
-    metrics = compute_core_metrics(
+    metrics, _by_h = compute_core_metrics(
         y_true=y_true,
         y_pred=y_pred,
-        dates=d_test,
         peak_threshold=peak_threshold,
         weather_precip=weather_precip,
         weather_temp_high=weather_temp_high,
@@ -270,6 +359,95 @@ def run_fold(
     return result
 
 
+def run_fold_seq2seq(
+    df_test: pd.DataFrame,
+    model: tf.keras.Model,
+    scaler: MinMaxScaler,
+    fold_idx: int,
+    peak_threshold: float,
+    weather_thresholds,
+) -> Dict:
+    """Seq2Seq fold 评估（固定权重推理，不重训）。
+    df_test 包含 look_back 前缀行（用于构建 encoder 窗口）。
+    """
+    df_test = df_test.copy()
+    df_test["visitor_count_scaled"] = scaler.transform(
+        df_test["visitor_count"].values.reshape(-1, 1)
+    ).flatten()
+
+    X_enc, X_dec, y_seq, d_seq = build_seq2seq_sequences(df_test)
+    if len(X_enc) == 0:
+        print(f"  Fold {fold_idx}: Seq2Seq 数据不足，跳过")
+        return {}
+
+    # Predict: output shape (N, 7, 1) or (N, 7)
+    raw_out = model.predict([X_enc, X_dec], verbose=0)
+    if raw_out.ndim == 3:
+        raw_out = raw_out[:, :, 0]   # (N, 7)
+
+    # Flatten 7-step predictions and targets for single-step metric computation
+    y_pred_flat = scaler.inverse_transform(
+        raw_out.reshape(-1, 1)
+    ).flatten()
+    y_true_flat = scaler.inverse_transform(
+        y_seq.reshape(-1, 1)
+    ).flatten()
+
+    # Dates: repeat each start date 7 times to align with flattened arrays
+    d_test_start = str(pd.Timestamp(d_seq[0]).date()) if len(d_seq) > 0 else "?"
+    d_test_end   = str(pd.Timestamp(d_seq[-1]).date()) if len(d_seq) > 0 else "?"
+
+    # Weather (align to flattened test window)
+    n_flat = len(y_true_flat)
+    weather_precip   = np.full(n_flat, np.nan)
+    weather_temp_high = np.full(n_flat, np.nan)
+    weather_temp_low  = np.full(n_flat, np.nan)
+    wx_cols = ["meteo_precip_sum", "meteo_temp_max", "meteo_temp_min"]
+    if all(c in df_test.columns for c in wx_cols):
+        # Skip the encoder prefix rows
+        wx_df = df_test.iloc[ENCODER_STEPS:].reset_index(drop=True)
+        n_w = min(len(wx_df), n_flat)
+        weather_precip[:n_w]    = wx_df["meteo_precip_sum"].values[:n_w]
+        weather_temp_high[:n_w] = wx_df["meteo_temp_max"].values[:n_w]
+        weather_temp_low[:n_w]  = wx_df["meteo_temp_min"].values[:n_w]
+
+    metrics, _ = compute_core_metrics(
+        y_true=y_true_flat,
+        y_pred=y_pred_flat,
+        peak_threshold=peak_threshold,
+        weather_precip=weather_precip,
+        weather_temp_high=weather_temp_high,
+        weather_temp_low=weather_temp_low,
+        weather_thresholds=weather_thresholds,
+    )
+
+    result = {
+        "fold": fold_idx,
+        "train_size": 0,   # no retraining
+        "test_size": len(y_true_flat),
+        "test_start": d_test_start,
+        "test_end": d_test_end,
+        "mae": metrics["regression"]["mae"],
+        "rmse": metrics["regression"]["rmse"],
+        "smape": metrics["regression"]["smape"],
+        "crowd_f1": metrics["crowd_alert"]["f1"],
+        "crowd_recall": metrics["crowd_alert"]["recall"],
+        "crowd_precision": metrics["crowd_alert"]["precision"],
+        "suitability_f1": metrics["suitability_warning"]["f1"],
+        "suitability_recall": metrics["suitability_warning"]["recall"],
+        "suitability_precision": metrics["suitability_warning"]["precision"],
+        "brier": metrics["suitability_warning"]["brier"],
+        "ece": metrics["suitability_warning"]["ece"],
+        "expected_cost": metrics["suitability_warning"]["expected_cost"],
+    }
+    print(
+        f"  Fold {fold_idx} [{result['test_start']} ~ {result['test_end']}] "
+        f"MAE={result['mae']:.0f}  SMAPE={result['smape']:.1f}%  "
+        f"Suit-F1={result['suitability_f1']:.3f}  Suit-Recall={result['suitability_recall']:.3f}"
+    )
+    return result
+
+
 # ─────────────────────────────────────────────
 # Walk-forward 主逻辑
 # ─────────────────────────────────────────────
@@ -297,6 +475,31 @@ def walk_forward_eval(
     n = len(df)
     min_train = look_back + 200  # 最少训练样本
 
+    # Seq2Seq: load pre-trained weights once, reuse across all folds
+    seq2seq_model = None
+    seq2seq_scaler = None
+    if model_type == "seq2seq_attention":
+        weights_path = find_seq2seq_weights()
+        if weights_path is None:
+            print("错误：找不到 Seq2Seq 模型权重，请先运行训练")
+            return pd.DataFrame()
+        print(f"  加载 Seq2Seq 权重: {weights_path}")
+        seq2seq_model = load_seq2seq_model(weights_path)
+        # Fit scaler on full training portion (first 90% of data)
+        train_end = n - n_folds * test_window
+        seq2seq_scaler = MinMaxScaler()
+        seq2seq_scaler.fit(df["visitor_count"].values[:train_end].reshape(-1, 1))
+        # Compute weather thresholds from training portion
+        seq2seq_weather_thr = None
+        wx_cols = ["meteo_precip_sum", "meteo_temp_max", "meteo_temp_min"]
+        if all(c in df.columns for c in wx_cols):
+            from models.common.core_evaluation import compute_weather_thresholds_quantile
+            seq2seq_weather_thr = compute_weather_thresholds_quantile(
+                train_precip=df["meteo_precip_sum"].values[:train_end],
+                train_temp_high=df["meteo_temp_max"].values[:train_end],
+                train_temp_low=df["meteo_temp_min"].values[:train_end],
+            )
+
     results = []
     for fold in range(n_folds):
         # 从后往前切割
@@ -307,21 +510,34 @@ def walk_forward_eval(
             break
 
         df_train = df.iloc[:test_start].copy()
-        df_test = df.iloc[test_start - look_back: test_end].copy()  # 包含 look_back 前缀
+        # For Seq2Seq, include encoder prefix before test window
+        prefix = ENCODER_STEPS + DECODER_STEPS
+        df_test = df.iloc[max(0, test_start - prefix): test_end].copy()
 
         fold_idx = n_folds - fold  # 从小到大编号
         print(f"\nFold {fold_idx}/{n_folds}  train=[0, {test_start})  test=[{test_start}, {test_end})")
 
-        r = run_fold(
-            df_train=df_train,
-            df_test=df_test,
-            model_type=model_type,
-            look_back=look_back,
-            epochs=epochs,
-            batch_size=batch_size,
-            fold_idx=fold_idx,
-            peak_threshold=peak_threshold,
-        )
+        if model_type == "seq2seq_attention":
+            r = run_fold_seq2seq(
+                df_test=df_test,
+                model=seq2seq_model,
+                scaler=seq2seq_scaler,
+                fold_idx=fold_idx,
+                peak_threshold=peak_threshold,
+                weather_thresholds=seq2seq_weather_thr,
+            )
+        else:
+            df_test_gru = df.iloc[test_start - look_back: test_end].copy()
+            r = run_fold(
+                df_train=df_train,
+                df_test=df_test_gru,
+                model_type=model_type,
+                look_back=look_back,
+                epochs=epochs,
+                batch_size=batch_size,
+                fold_idx=fold_idx,
+                peak_threshold=peak_threshold,
+            )
         if r:
             results.append(r)
 
@@ -401,7 +617,8 @@ def _plot_walk_forward(df_res: pd.DataFrame, out_dir: Path, model_type: str) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="Walk-forward Evaluation")
-    parser.add_argument("--model", default="gru", choices=["gru", "lstm", "all"],
+    parser.add_argument("--model", default="gru",
+                        choices=["gru", "lstm", "seq2seq_attention", "all"],
                         help="模型类型（默认 gru）")
     parser.add_argument("--input-csv",
                         default="data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
@@ -429,7 +646,7 @@ def main():
     df = load_data(csv_path)
     print(f"数据范围: {df['date'].min().date()} ~ {df['date'].max().date()}，共 {len(df)} 行")
 
-    models_to_run = ["gru", "lstm"] if args.model == "all" else [args.model]
+    models_to_run = ["gru", "lstm", "seq2seq_attention"] if args.model == "all" else [args.model]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     for model_type in models_to_run:
