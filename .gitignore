@@ -15,6 +15,7 @@ data/processed/
 # 4. IDE 与 Agent 私有配置（严格屏蔽）
 .vscode/
 .openclaw/
+.claude/
 memory/
 AGENTS.md
 HEARTBEAT.md
@@ -23,3 +24,11 @@ SOUL.md
 TOOLS.md
 USER.md
 test_serialization_no_default.json
+
+# 5. 论文、文档及敏感数据（不上传）
+docs/
+mathematical_appendix/
+Thesis_Outline*.md
+Thesis_Outline_v2*
+*.docx
+*.pdf

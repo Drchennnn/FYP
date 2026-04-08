@@ -45,7 +45,30 @@ from sklearn.metrics import (
 )
 
 
-DEFAULT_PEAK_THRESHOLD = 18500
+# 官方承载量上限：旺季（4/1~11/15）41000人，淡季（11/16~3/31）23000人
+# 预警阈值取上限的80%：旺季32800，淡季18400
+CAPACITY_PEAK_SEASON = 41000
+CAPACITY_OFF_SEASON  = 23000
+THRESHOLD_RATIO      = 0.80
+PEAK_THRESHOLD_PEAK  = int(CAPACITY_PEAK_SEASON * THRESHOLD_RATIO)  # 32800
+PEAK_THRESHOLD_OFF   = int(CAPACITY_OFF_SEASON  * THRESHOLD_RATIO)  # 18400
+DEFAULT_PEAK_THRESHOLD = PEAK_THRESHOLD_PEAK  # 向后兼容，默认取旺季值
+
+
+def get_season_peak_threshold(query_date=None) -> float:
+    """根据日期返回对应季节的预警阈值（官方承载量上限×80%）。
+
+    旺季（4/1~11/15）: 32800  淡季（11/16~3/31）: 18400
+    """
+    if query_date is None:
+        return float(PEAK_THRESHOLD_PEAK)
+    from datetime import date as _d
+    if isinstance(query_date, str):
+        query_date = _d.fromisoformat(query_date)
+    m, d = query_date.month, query_date.day
+    is_peak = (4 <= m <= 10) or (m == 11 and d <= 15)
+    return float(PEAK_THRESHOLD_PEAK if is_peak else PEAK_THRESHOLD_OFF)
+
 
 # Default horizon weights from README (Section 7.4.0), used for H=7.
 DEFAULT_HORIZON_WEIGHTS_H7 = [0.28, 0.20, 0.15, 0.12, 0.10, 0.08, 0.07]
@@ -65,29 +88,11 @@ def compute_dynamic_peak_threshold(
     quantile: float = 0.75,
     fallback: float = DEFAULT_PEAK_THRESHOLD,
 ) -> float:
-    """从训练集动态计算峰值阈值（数据驱动）。
+    """返回旺季预警阈值（官方承载量上限×80%=32800）。
 
-    设计原则：
-    - 仅使用训练集数据，避免测试集泄露
-    - 默认取 75 分位数，与景区"高峰期"定义对齐
-    - 若训练集数据不足（< 30 条），回退到硬编码默认值
-
-    Args:
-        train_visitor_counts: 训练集客流量数组（真实值，非归一化）
-        quantile: 分位数（默认 0.75）
-        fallback: 数据不足时的回退值（默认 18500）
-
-    Returns:
-        float: 动态计算的峰值阈值
+    训练时无法区分预测日期，统一用旺季值；运行时由 get_season_peak_threshold() 按日期动态调整。
     """
-    counts = np.asarray(train_visitor_counts, dtype=float)
-    counts = counts[np.isfinite(counts) & (counts > 0)]
-    if len(counts) < 30:
-        return float(fallback)
-    threshold = float(np.quantile(counts, quantile))
-    # 合理性检查：阈值不应低于 5000 或高于 80000
-    threshold = float(np.clip(threshold, 5000.0, 80000.0))
-    return threshold
+    return float(PEAK_THRESHOLD_PEAK)
 
 
 def _nanquantile(x: np.ndarray, q: float) -> float:

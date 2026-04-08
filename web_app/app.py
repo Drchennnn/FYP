@@ -4,9 +4,16 @@ import glob
 import json
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone, date as _date_type
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, request, render_template, redirect, url_for
 from sklearn.preprocessing import MinMaxScaler
+
+_TZ_CN = ZoneInfo('Asia/Shanghai')
+
+def _today_cn() -> _date_type:
+    """返回中国标准时间（CST, UTC+8）的今日日期，避免服务器时区差异。"""
+    return datetime.now(_TZ_CN).date()
 
 # --- Path Setup (must come before project-relative imports) ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -362,8 +369,7 @@ def _load_predictions(run_dir: str):
         df_agg = df[['date', 'y_true', 'y_pred']].drop_duplicates(subset='date', keep='first').sort_values('date')
 
         # 截断：today 及以后的行由在线推理填充，CSV 里的不展示
-        from datetime import date as _today_cls
-        _today = _today_cls.today()
+        _today = _today_cn()
         df_agg = df_agg[df_agg['date'] < _today]
 
         return df_agg
@@ -1279,8 +1285,7 @@ def api_forecast():
         #   而非用上一步预测值回填。这样 gap_days 步的误差不会自累积，
         #   只有 today 起的 horizon 步才是单步模型的真实贡献。
         #   在学术上对应"考虑数据滞伏期（Latency）的多视界不确定性校准"。
-        from datetime import date as _date_cls
-        today = _date_cls.today()
+        today = _today_cn()
         gap_days = max(0, (today - last_date).days - 1)  # last_date+1 到 today 之间的天数
         single_total_steps = gap_days + horizon
 
@@ -1398,8 +1403,7 @@ def api_forecast():
         return pd.DataFrame(out_rows)
 
     # ── 计算 zones 所需的边界日期（供 payload 和内部逻辑共用）──
-    from datetime import date as _outer_date_cls
-    _outer_today = _outer_date_cls.today()
+    _outer_today = _today_cn()
     _actual_s_outer = pd.to_numeric(df_master['actual'], errors='coerce')
     _last_date_outer = df_master.loc[_actual_s_outer.notna(), 'date'].max()
     if hasattr(_last_date_outer, 'date'):
@@ -1430,8 +1434,7 @@ def api_forecast():
                     df_merge[_c] = np.nan
             # today 이후의 모든 행 제거（backfill CSV의 4/12~4/19 등 포함）
             # df_future(today~today+6)로 완전히 대체
-            from datetime import date as _trim_date
-            _today = _trim_date.today()
+            _today = _today_cn()
             df_merge['date'] = pd.to_datetime(df_merge['date']).dt.date
             df_merge = df_merge[df_merge['date'] < _today]
             df_merge = pd.concat([
@@ -1469,14 +1472,13 @@ def api_forecast():
         capped_by_h = {}
         if not qhat_by_h:
             return lower_arr, upper_arr, half_w_arr, capped_by_h
-        from datetime import date as _dc
-        _today = _dc.today()
+        _today = _today_cn()
         for _i, _row in df_merge.iterrows():
             _d = _row['date']
             if isinstance(_d, str):
                 _d = pd.to_datetime(_d).date()
             elif hasattr(_d, 'date'):
-                _d = _d.date() if not isinstance(_d, type(_dc.today())) else _d
+                _d = _d.date() if isinstance(_d, _date_type) else _d.date()
             if _d < _today:
                 continue
             _step = (_d - _today).days + 1  # h=1 for today, h=7 for today+6
@@ -1511,7 +1513,10 @@ def api_forecast():
         if model_data.get(_mk, {}).get('metrics'):
             _ref_metrics = model_data[_mk]['metrics']
             break
-    threshold_crowd = float((_ref_metrics.get('meta') or {}).get('peak_threshold', 18500.0))
+    # 预警阈值按预测日期动态取（旺季32800/淡季18400），不再从 metrics.json 读固定值
+    from models.common.core_evaluation import get_season_peak_threshold
+    _forecast_date = _today_cn()  # 预测起点为今天
+    threshold_crowd = get_season_peak_threshold(_forecast_date)
     wh = (_ref_metrics.get('weather_hazard') or {})
     wh_thr = (wh.get('thresholds') or {})
     precip_high = float(wh_thr.get('precip_high', 8.0))
@@ -1527,7 +1532,10 @@ def api_forecast():
                     'suitability_warning_bin':[0]*n,'risk_level':[0]*n,
                     'p_warn':[0.15]*n,'drivers':[[]]*n,'risk_score':[0.0]*n}
         y_pred = df_merge[pred_col].astype(float)
-        crowd_alert = (y_pred >= threshold_crowd)
+        # 逐日按季节取阈值
+        dates_for_thr = pd.to_datetime(df_merge['date']).dt.date
+        daily_thr = dates_for_thr.map(get_season_peak_threshold)
+        crowd_alert = pd.Series(y_pred.values if hasattr(y_pred,'values') else y_pred) >= daily_thr.values
         weather_hazard = (
             (df_merge['precip_mm'].fillna(0) >= precip_high) |
             (df_merge['temp_high_c'].fillna(0) >= temp_high) |
@@ -1574,9 +1582,8 @@ def api_forecast():
 
     # forecast window：以今天为起点，今天+h-1 为终点
     # 与 _online_future_forecast_all_models 的输出日期对齐
-    from datetime import date as _fc_date_cls
-    _today_str = _fc_date_cls.today().isoformat()
-    _today_end_str = (_fc_date_cls.today() + timedelta(days=h - 1)).isoformat()
+    _today_str = _today_cn().isoformat()
+    _today_end_str = (_today_cn() + timedelta(days=h - 1)).isoformat()
     forecast_start_idx = 0
     forecast_end_idx = len(time_axis) - 1
     if _today_str in time_axis:

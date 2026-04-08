@@ -2,22 +2,23 @@
 
 本项目是一个端到端的客流预测解决方案，集成了数据爬取、特征工程、深度学习模型训练、自动化数据管道以及基于 Web 的可视化展示平台。系统利用 10 年历史客流与气象数据，通过三种深度学习模型（GRU、LSTM、Seq2Seq+Attention）预测未来九寨沟景区的游客接待量，并提供多维度预警机制，辅助景区管理和游客出行决策。
 
-> **最新更新（2026-04-05）**：确立五模型预测架构（单步离线回测 + 多步/Seq2Seq 实时在线推理），废弃在线/离线切换开关，Dashboard 始终展示最新预测结果。详见[预测展示逻辑](#预测展示逻辑)。
+> **最新更新（2026-04-09）**：修复数据更新管道（爬虫URL、批量回填、占位行覆盖）；预警阈值改为官方承载量季节性标准（旺季32,800/淡季18,400）；所有模型时区统一为 CST；API 时区修复。详见[更新日志](#更新日志)。
 
 ---
 
 ## 每日数据更新
 
-每天运行一次以下命令，将昨日官网客流数据追加到训练集并刷新预测：
-
 ```bash
 python scripts/append_and_retrain.py --append
 ```
 
-执行后效果：
-- **单步模型**（GRU/LSTM）：backfill 向后延伸一天，历史回测段右端 +1
-- **多步模型**（MIMO/Seq2Seq）：下次页面加载时自动以最新 30 天为输入重新推理，预测窗口自动后移
-- **天气数据**：由 Open-Meteo 自动拉取，无需手动操作
+自动检测 CSV 中最后一条真实数据日期，补追到昨天。空挡1天就追1天，多天就批量追，统一写入一次。所有模型的预测起点随之更新。
+
+如需指定截止日期：
+
+```bash
+python scripts/append_and_retrain.py --append --date 2026-04-07
+```
 
 如需重训模型权重（建议每月一次）：
 
@@ -126,8 +127,7 @@ pip install shap
 ### 数据获取
 
 ```bash
-# 手动触发每日爬取与数据追加
-python realtime/daily_update.py
+# 自动检测空挡，批量补追到昨天（1天或多天均可）
 python scripts/append_and_retrain.py --append
 ```
 
@@ -159,9 +159,10 @@ python run_benchmark.py
 ### 数据管道（手动触发）
 
 ```bash
-python scripts/append_and_retrain.py --append          # 追加昨日数据
-python scripts/append_and_retrain.py --retrain         # 重训三个模型
-python scripts/append_and_retrain.py --append --retrain  # 追加+重训
+python scripts/append_and_retrain.py --append                    # 自动补追所有空挡到昨天
+python scripts/append_and_retrain.py --append --date 2026-04-07  # 补追到指定日期
+python scripts/append_and_retrain.py --retrain                   # 重训三个模型
+python scripts/append_and_retrain.py --append --retrain          # 补追+重训
 ```
 
 ### 历史预测回填（首次部署或重训后需要执行）
@@ -187,16 +188,24 @@ cd web_app && python app.py
 
 爬虫逻辑位于 `realtime/` 目录（已整合至主系统）。
 
-- **客流抓取 (`realtime/jiuzhaigou_crawler.py`)**：`requests` + `BeautifulSoup` 从九寨沟官网解析每日入园人数
-- **天气获取 (`realtime/data_fetcher.py`)**：从 Open-Meteo API 获取历史天气（温度、降水、风速）及未来 7 天预报
-- **每日更新 (`realtime/daily_update.py`)**：集成爬取 + 追加 + 写入 SQLite 的完整日更新流程
+- **客流抓取 (`realtime/jiuzhaigou_crawler.py`)**：`requests` + `BeautifulSoup` 从 `https://www.jiuzhai.com/news/number-of-tourists` 解析每日入园人数，支持 `fetch_latest_visitor_count()`（单日）和 `fetch_by_date_range(start, end)`（历史批量爬取）
+- **天气获取**：Open-Meteo 历史存档 API（`_fetch_meteo_for_date`）及未来预报，自动集成于追加流程
+- **数据追加 (`scripts/append_and_retrain.py`)**：`--append` 自动检测最后真实数据日期，批量补追空挡，统一写一次 CSV
 
-**当前数据范围**：2016-05-01 ~ 2026-04-02，约 10 年，2719 条日级记录，存储于：
-`data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv`
+**当前数据范围**：2016-05-01 ~ 至今，约 10 年+，日级记录，存储于：
+`data/processed/jiuzhaigou_daily_features_*.csv`
 
-**实时数据获取 (`realtime/data_fetcher.py`)**：
-- `get_current_visitor_count()`：获取昨日客流（官网每日更新）
-- `get_weather_forecast(days=7)`：从 Open-Meteo 获取未来 7 天天气预报（用于在线预测）
+### 预售票 API（待集成）
+
+九寨沟景区预售订票数据可通过以下接口获取：
+
+- **Endpoint**：`https://count.jiuzhai.com/api/data?secret=<MD5>`
+- **Secret 生成**：`MD5(YYYYMMDDHHMMjzg7737).toUpperCase()`（当前北京时间 + 固定盐值）
+- **返回字段**：`total_num`（今日预订量）、`future_nums`（未来7天预订量）、`future_times`（对应日期）、`max_limit`（各天动态承载上限）、`entry_num`（已入园人数）
+
+**现状与计划**：该 API 仅返回今日及未来7天数据，无历史查询接口。历史预售数据需从今日起每天定时爬取存档，积累足够数量后（建议≥6个月）可作为训练特征加入模型，短期内可在前端展示"未来7天预售量"供参考。
+
+> **TODO**：建立每日预售数据爬取 + 存档机制（存入 SQLite `booking_data` 表）；前端展示未来7天预售量；长期将预售量纳入 Seq2Seq decoder 输入特征。
 
 ---
 
@@ -502,23 +511,27 @@ python scripts/uncertainty_ensemble.py --cal-source recent
 
 ## 7. 预警定义与风险等级
 
-### 动态峰值阈值
+### 季节性预警阈值
 
-**位置**：`models/common/core_evaluation.py`，`compute_dynamic_peak_threshold()`
+**位置**：`models/common/core_evaluation.py`，`get_season_peak_threshold(date)`
 
-```python
-peak_threshold = Quantile(train_visitor_counts, q=0.75)
-```
+基于九寨沟景区官方公布的限流承载量，取上限的 80% 作为预警触发线：
 
-- 仅使用训练集数据，避免测试集泄露
-- 合理性约束：限制在 [5000, 80000] 范围内
-- 每次重训练自动更新，反映数据分布变化
+| 季节 | 时间范围 | 官方承载上限 | 预警阈值（×80%） |
+|------|---------|------------|----------------|
+| 旺季 | 4月1日 ~ 11月15日 | 41,000 人/日 | **32,800** |
+| 淡季 | 11月16日 ~ 3月31日 | 23,000 人/日 | **18,400** |
+
+- 运行时按预测日期动态取对应阈值，逐日判断
+- 历史数据验证：旺季最高实测值恰好为41,000（限额上限），淡季有少量超出23,000的节假日特例
+
+> **TODO（前端）**：前端预警阈值红线、适宜性预警说明文字、推荐出行窗口等涉及阈值的展示与描述，均需按季节动态更新，目前仍显示单一静态阈值标注，待后续调整。
 
 ### 拥挤预警 (crowd_alert)
 
-`crowd_alert = 1` 当 `visitor_count ≥ peak_threshold`
+`crowd_alert = 1` 当 `visitor_count ≥ peak_threshold`（按日期取季节阈值）
 
-四级风险映射（T = peak_threshold）：
+四级风险映射（T = 当日季节阈值）：
 
 | 等级 | 条件 | 颜色 |
 |------|------|------|
@@ -587,8 +600,11 @@ peak_threshold = Quantile(train_visitor_counts, q=0.75)
 ### 9.3 手动操作
 
 ```bash
-# 追加指定日期数据
-python scripts/append_and_retrain.py --append --date 2026-04-03
+# 自动检测空挡，批量补追到昨天
+python scripts/append_and_retrain.py --append
+
+# 补追到指定截止日期
+python scripts/append_and_retrain.py --append --date 2026-04-07
 
 # 仅重训（不追加）
 python scripts/append_and_retrain.py --retrain --epochs 120
@@ -716,7 +732,7 @@ MIMO GRU/LSTM / Seq2Seq：
 
 **功能**：
 - 五模型预测曲线（GRU单步 / GRU多步 / LSTM单步 / LSTM多步 / Seq2Seq+Attention），独立 chip 切换
-- 始终显示在线预测结果（MIMO/Seq2Seq 实时推理，单步只读历史 CSV）
+- 始终显示在线预测结果（所有模型均实时推理，包括单步模型）
 - 顶部天气预报横向滚动条（未来14天）
 - 右侧面板：天气卡片 + 适宜性风险温度计 + 推荐出行窗口
 - 测试集开始竖线标注
@@ -1016,12 +1032,13 @@ pip install APScheduler==3.10.4  # 自动调度
 pip install shap                  # 可解释性分析（可选）
 ```
 
-**最后更新**：2026年4月6日
+**最后更新**：2026年4月9日
 
 ### 更新日志
 
 | 日期 | 内容 |
 |------|------|
+| 2026-04-09 | 修复爬虫：改用正确 URL (`/news/number-of-tourists`) 和选择器，新增 `fetch_by_date_range()` 历史批量爬取；`--append` 合并批量回填逻辑，自动检测空挡；修复占位行覆盖 bug；预警阈值改为季节性官方承载量×80%（旺季32,800/淡季18,400）；所有 `date.today()` 统一为 CST 时区；发现并文档化九寨沟预售票 API |
 | 2026-04-06 | 完成全部四项实验：Ablation（特征遮蔽法）、SHAP（特征消融法）、Walk-forward（GRU/LSTM/Seq2Seq 三模型 4折）、Attention 热力图（268×7×30 权重矩阵）；修复 month_norm/day_of_week_norm NaN bug；修复 backfill_predictions.py 公式错误；新增 Key Academic Findings 章节 |
 | 2026-04-05 | 确立五模型架构（单步 GRU/LSTM + 多步 MIMO + Seq2Seq），预测窗口对齐今天，前端天气直连 Open-Meteo，废弃在线/离线切换开关 |
 | 2026-04-03 | Dashboard v3 发布（Apple 风格），完成10年数据训练（GRU/LSTM/MIMO/Seq2Seq） |

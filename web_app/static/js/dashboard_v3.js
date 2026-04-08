@@ -99,7 +99,7 @@
   // ─────────────────────────────────────────────
   const state = {
     h: 7,
-    mode: 'online',  // 始终在线：MIMO/Seq2Seq 实时推理，单步只读离线 CSV
+    mode: 'online',  // 始终在线：所有模型（MIMO/Seq2Seq/单步）均实时推理
     lang: 'zh',
     theme: 'dark',
     modelView: 'both',

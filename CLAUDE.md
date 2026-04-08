@@ -24,7 +24,8 @@ python run_benchmark.py  # compare all models
 
 **Data pipeline:**
 ```bash
-python scripts/append_and_retrain.py --append          # append yesterday's data
+python scripts/append_and_retrain.py --append          # auto-detect gap, backfill to yesterday (1 day or many)
+python scripts/append_and_retrain.py --append --date YYYY-MM-DD  # backfill to specific date
 python scripts/append_and_retrain.py --retrain         # retrain all 3 models
 python scripts/append_and_retrain.py --append --retrain
 python scripts/backfill_predictions.py                 # fill historical prediction gaps (rolling inference)
@@ -106,3 +107,39 @@ ECharts-based dashboard. Cache key: `v3_forecast_v2_${mode}_h${h}` (30-min TTL f
 - **Walk-forward data**: `scripts/walk_forward_eval.py` has never been run; `walk_forward` key is absent from `metrics.json`. Model Analysis page in dashboard shows empty skeleton.
 - **GRU/LSTM `model_architecture`**: Only Seq2Seq has this field in `metrics.json['meta']`.
 - **Backfill script**: `scripts/backfill_predictions.py` extends GRU/LSTM prediction CSVs via rolling inference (not retraining). Run after long gaps in offline predictions.
+
+---
+
+## Academic Research Skills
+
+Skills for thesis writing, literature research, peer review, and pipeline orchestration. Located in `.claude/skills/`.
+
+| Skill | Purpose | Key Modes |
+|-------|---------|-----------|
+| `deep-research` | 13-agent research team | full, quick, socratic, lit-review, fact-check, systematic-review |
+| `academic-paper` | 12-agent paper writing | full, plan, outline, revision, citation-check, bilingual-abstract |
+| `academic-paper-reviewer` | Multi-perspective review (5 reviewers) | full, re-review, quick, methodology-focus, guided |
+| `academic-pipeline` | Full pipeline orchestrator | coordinates all above |
+
+### Recommended Flow for This Thesis
+
+```
+deep-research (lit-review)          ← Chapter 2 literature
+  → academic-paper (plan/outline)   ← Chapter structure
+    → academic-paper (full)         ← Draft chapters
+      → academic-paper-reviewer     ← Self-review
+        → academic-paper (revision) ← Revise
+```
+
+### Routing Rules
+
+- Use **academic-pipeline** for end-to-end runs; use individual skills for single tasks.
+- Use **deep-research socratic** when the research question is unclear; **full** for direct output.
+- Use **academic-paper plan** to think through structure; **full** to produce draft directly.
+- Use **academic-paper-reviewer guided** to learn from review; **full** for a standard report.
+
+### Key Rules
+
+- All claims must have citations; evidence hierarchy respected (meta-analyses > RCTs > cohort > expert opinion).
+- Default output language matches user input (Simplified Chinese or English).
+- AI disclosure included in all reports.

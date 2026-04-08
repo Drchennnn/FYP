@@ -9,11 +9,16 @@
 
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import re
-from typing import Optional, Dict
+import time
+import random
+from typing import Optional, Dict, List
 import sqlite3
 from pathlib import Path
+
+TOURIST_URL = 'https://www.jiuzhai.com/news/number-of-tourists'
+_HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
 
 class JiuzhaigouCrawler:
@@ -64,126 +69,92 @@ class JiuzhaigouCrawler:
         
         print(f'Database initialized: {self.db_path}')
     
+    def _fetch_page(self, start: int = 0) -> List[Dict]:
+        """爬取一页数据（20条），返回 [{date, visitor_count}] 列表。"""
+        url = TOURIST_URL if start == 0 else f'{TOURIST_URL}?start={start}'
+        r = requests.get(url, headers=_HEADERS, timeout=15)
+        r.encoding = 'utf-8'
+        if r.status_code != 200:
+            raise RuntimeError(f'HTTP {r.status_code}')
+        soup = BeautifulSoup(r.text, 'lxml')
+        dates = soup.find_all('td', attrs={'class': 'list-date small'})
+        nums  = soup.find_all('td', attrs={'class': 'list-title'})
+        results = []
+        for d, n in zip(dates, nums):
+            date_str = d.text.strip()
+            m = re.search(r'\d+', n.text)
+            if m and re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                count = int(m.group())
+                if 100 <= count <= 200000:
+                    results.append({'date': date_str, 'visitor_count': count})
+        return results
+
     def fetch_latest_visitor_count(self) -> Optional[Dict]:
-        """
-        爬取最新客流数据（昨天的数据）
-        
-        Returns:
-            {
-                'date': '2026-04-02',
-                'visitor_count': 15000,
-                'crawled_at': '2026-04-03 17:00:00'
-            }
-        """
+        """爬取官网第一页，返回最新一天（昨天）的数据。"""
         try:
-            # 九寨沟官网客流数据页面
-            # 注意：实际 URL 可能需要根据官网结构调整
-            url = f'{self.base_url}/index.php'
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            response = requests.get(url, headers=headers, timeout=10)
-            response.encoding = 'utf-8'
-            
-            if response.status_code != 200:
-                print(f'Failed to fetch page: HTTP {response.status_code}')
-                return None
-            
-            # 解析 HTML
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 方法 1: 查找包含"游客"或"人数"的元素
-            visitor_count = self._extract_visitor_count_method1(soup)
-            
-            if visitor_count is None:
-                # 方法 2: 查找特定 class 或 id
-                visitor_count = self._extract_visitor_count_method2(soup)
-            
-            if visitor_count is None:
+            rows = self._fetch_page(0)
+            if not rows:
                 print('Failed to extract visitor count from page')
                 return None
-            
-            # 昨天的日期
-            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-            
-            data = {
-                'date': yesterday,
-                'visitor_count': visitor_count,
-                'crawled_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            
-            # 保存到数据库
+            # 第一页第一条即最新数据
+            data = {**rows[0], 'crawled_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             self._save_to_database(data)
-            
             return data
-            
         except Exception as e:
             print(f'Error crawling Jiuzhaigou website: {e}')
             return None
-    
-    def _extract_visitor_count_method1(self, soup: BeautifulSoup) -> Optional[int]:
+
+    def fetch_by_date_range(self, start_date: str, end_date: str) -> List[Dict]:
         """
-        方法 1: 通过关键词搜索提取客流数据
-        
-        常见模式：
-        - "今日游客：15000人"
-        - "游客人数：15000"
-        - "接待游客 15000 人次"
+        爬取指定日期范围内的历史客流数据。
+
+        Args:
+            start_date: 起始日期 'YYYY-MM-DD'（含）
+            end_date:   截止日期 'YYYY-MM-DD'（含）
+
+        Returns:
+            按日期升序排列的 [{date, visitor_count, crawled_at}] 列表
         """
-        # 搜索包含"游客"或"人数"的文本
-        patterns = [
-            r'游客[：:]\s*(\d+)',
-            r'人数[：:]\s*(\d+)',
-            r'接待.*?(\d+).*?人',
-            r'(\d+).*?人次'
-        ]
-        
-        text = soup.get_text()
-        
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                try:
-                    count = int(match.group(1))
-                    # 验证数据合理性（1000 - 80000）
-                    if 1000 <= count <= 80000:
-                        return count
-                except ValueError:
-                    continue
-        
-        return None
-    
-    def _extract_visitor_count_method2(self, soup: BeautifulSoup) -> Optional[int]:
-        """
-        方法 2: 通过特定 HTML 元素提取
-        
-        需要根据实际网站结构调整选择器
-        """
-        # 常见的 class 或 id 名称
-        selectors = [
-            '.visitor-count',
-            '#visitor-count',
-            '.tourist-number',
-            '#tourist-number',
-            '[data-visitor-count]'
-        ]
-        
-        for selector in selectors:
-            element = soup.select_one(selector)
-            if element:
-                text = element.get_text()
-                match = re.search(r'(\d+)', text)
-                if match:
-                    try:
-                        count = int(match.group(1))
-                        if 1000 <= count <= 80000:
-                            return count
-                    except ValueError:
-                        continue
-        
-        return None
+        start = date.fromisoformat(start_date)
+        end   = date.fromisoformat(end_date)
+        needed = {d.isoformat() for d in (start + timedelta(n) for n in range((end - start).days + 1))}
+        collected: Dict[str, int] = {}
+
+        page = 0
+        while needed - set(collected):
+            try:
+                rows = self._fetch_page(page * 20)
+            except Exception as e:
+                print(f'  页面 {page} 爬取失败: {e}')
+                break
+            if not rows:
+                break  # 没有更多数据
+
+            for row in rows:
+                d = row['date']
+                if d in needed:
+                    collected[d] = row['visitor_count']
+                # 如果页面最旧日期已早于 start，停止翻页
+                if d < start_date:
+                    needed.clear()  # 触发退出
+                    break
+
+            print(f'  第 {page+1} 页：已收集 {len(collected)}/{len(needed) + len(collected)} 条')
+            page += 1
+            time.sleep(random.uniform(1, 3))
+
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        result = []
+        for d_str in sorted(collected):
+            entry = {'date': d_str, 'visitor_count': collected[d_str], 'crawled_at': now_str}
+            self._save_to_database(entry)
+            result.append(entry)
+
+        missing = sorted(needed - set(collected))
+        if missing:
+            print(f'  警告：以下日期未能爬取到数据: {missing}')
+
+        return result
     
     def _save_to_database(self, data: Dict):
         """保存数据到数据库"""

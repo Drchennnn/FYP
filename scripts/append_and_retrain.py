@@ -5,13 +5,17 @@
 
 功能：
 1. append_new_data()：将爬取的新客流数据 + Open-Meteo 天气追加到10年训练 CSV
-2. monthly_retrain()：触发三个模型的重训练（通过 run_pipeline.py）
-3. APScheduler 集成：每日追加，每月1日重训
+2. backfill_real_data()：自动检测最后真实数据日期，批量补追到昨天
+3. monthly_retrain()：触发三个模型的重训练（通过 run_pipeline.py）
+4. APScheduler 集成：每日追加，每月1日重训
 
 用法（手动）：
-  python scripts/append_and_retrain.py --append          # 仅追加今日数据
-  python scripts/append_and_retrain.py --retrain         # 仅重训三个模型
-  python scripts/append_and_retrain.py --append --retrain  # 追加+重训
+  python scripts/append_and_retrain.py --append              # 追加昨日数据
+  python scripts/append_and_retrain.py --append --date YYYY-MM-DD  # 追加指定日期
+  python scripts/append_and_retrain.py --backfill            # 自动补追所有空挡
+  python scripts/append_and_retrain.py --backfill --date YYYY-MM-DD  # 补追到指定日期
+  python scripts/append_and_retrain.py --retrain             # 仅重训三个模型
+  python scripts/append_and_retrain.py --append --retrain    # 追加+重训
 
 APScheduler 集成（在 web_app/app.py 中调用 start_data_pipeline_scheduler()）
 """
@@ -204,8 +208,13 @@ def append_new_data(target_date: Optional[date] = None, dry_run: bool = False) -
 
     # 2. 检查是否已存在
     if date_str in df_train['date'].values:
-        print(f"  跳过：{date_str} 已存在于训练数据中")
-        return False
+        existing_row = df_train[df_train['date'] == date_str]
+        if pd.notna(existing_row['tourism_num'].values[0]):
+            print(f"  跳过：{date_str} 已存在于训练数据中（含真实客流数据）")
+            return False
+        # 日期存在但 tourism_num 为 NaN（backfill 预写的天气占位行），继续覆盖
+        print(f"  {date_str} 存在占位行（tourism_num=NaN），将用真实数据覆盖")
+        df_train = df_train[df_train['date'] != date_str].reset_index(drop=True)
 
     # 3. 从爬虫获取客流数据
     visitor_count = None
@@ -217,11 +226,17 @@ def append_new_data(target_date: Optional[date] = None, dry_run: bool = False) -
             visitor_count = int(data['visitor_count'])
             print(f"  爬虫获取客流: {visitor_count:,} 人")
         else:
-            # 尝试从数据库获取
-            db_data = crawler.get_latest_from_database()
-            if db_data and str(db_data.get('date', '')) == date_str:
-                visitor_count = int(db_data['visitor_count'])
-                print(f"  数据库获取客流: {visitor_count:,} 人")
+            # fetch_latest 拿到的不是目标日期，改用历史查询
+            rows = crawler.fetch_by_date_range(date_str, date_str)
+            if rows:
+                visitor_count = int(rows[0]['visitor_count'])
+                print(f"  历史查询获取客流: {visitor_count:,} 人")
+            else:
+                # 最后兜底：数据库
+                db_data = crawler.get_latest_from_database()
+                if db_data and str(db_data.get('date', '')) == date_str:
+                    visitor_count = int(db_data['visitor_count'])
+                    print(f"  数据库获取客流: {visitor_count:,} 人")
     except Exception as e:
         print(f"  爬虫获取失败: {e}")
 
@@ -432,6 +447,112 @@ def daily_backfill():
 
 
 
+def backfill_real_data(end_date: Optional[date] = None, dry_run: bool = False) -> int:
+    """
+    自动检测 CSV 中最后一条真实数据日期，批量补追到 end_date（默认昨天）。
+
+    - 跳过已有真实数据（tourism_num 非 NaN）的日期
+    - 覆盖占位行（tourism_num=NaN）
+    - 批量爬取后统一写一次 CSV，避免重复 fit scaler
+
+    Returns:
+        成功追加的天数
+    """
+    if end_date is None:
+        end_date = date.today() - timedelta(days=1)
+
+    if not TRAIN_CSV.exists():
+        print(f'错误：训练 CSV 不存在: {TRAIN_CSV}')
+        return 0
+
+    df = pd.read_csv(TRAIN_CSV, encoding='utf-8-sig')
+    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+
+    # 找最后一条真实数据日期
+    real_mask = pd.to_numeric(df['tourism_num'], errors='coerce').notna()
+    if not real_mask.any():
+        print('错误：CSV 中没有任何真实客流数据')
+        return 0
+    last_real = date.fromisoformat(df.loc[real_mask, 'date'].max())
+
+    if last_real >= end_date:
+        print(f'数据已是最新（最后真实日期: {last_real}），无需补追')
+        return 0
+
+    gap_dates = [last_real + timedelta(days=i+1)
+                 for i in range((end_date - last_real).days)]
+    print(f'\n{"="*60}')
+    print(f'批量补追: {gap_dates[0]} ~ {gap_dates[-1]}（共 {len(gap_dates)} 天）')
+    print(f'{"="*60}')
+
+    # 批量爬取客流数据
+    from realtime.jiuzhaigou_crawler import JiuzhaigouCrawler
+    crawler = JiuzhaigouCrawler()
+    crawled = crawler.fetch_by_date_range(gap_dates[0].isoformat(), gap_dates[-1].isoformat())
+    crawled_map = {r['date']: r['visitor_count'] for r in crawled}
+
+    if not crawled_map:
+        print('爬取失败，未获取到任何数据')
+        return 0
+
+    # 移除所有占位行（NaN 行）
+    nan_mask = pd.to_numeric(df['tourism_num'], errors='coerce').isna()
+    df = df[~nan_mask].reset_index(drop=True)
+
+    # 逐日构建新行
+    new_rows = []
+    for d in gap_dates:
+        d_str = d.isoformat()
+        if d_str not in crawled_map:
+            print(f'  跳过 {d_str}：未爬取到客流数据')
+            continue
+        visitor_count = crawled_map[d_str]
+        weather = _fetch_meteo_for_date(d)
+        new_row = {
+            'date': d_str,
+            'tourism_num': visitor_count,
+            'temp_high_c': weather['meteo_temp_max'],
+            'temp_low_c': weather['meteo_temp_min'],
+            'meteo_weather_code': weather['meteo_weather_code'],
+            'meteo_temp_max': weather['meteo_temp_max'],
+            'meteo_temp_min': weather['meteo_temp_min'],
+            'meteo_wind_max': weather['meteo_wind_max'],
+            'meteo_precip_sum': weather['meteo_precip_sum'],
+            'meteo_rain_sum': 0.0,
+            'meteo_snowfall_sum': 0.0,
+            'meteo_precip_hours': 0.0,
+            'weather_source': 'open-meteo',
+        }
+        df_row = pd.DataFrame([new_row])
+        df_row = _engineer_features(df_row)
+        new_rows.append(df_row)
+        print(f'  ✓ {d_str}: {visitor_count:,} 人，'
+              f'{weather["meteo_temp_max"]:.1f}/{weather["meteo_temp_min"]:.1f}°C')
+
+    if not new_rows:
+        print('没有可追加的数据')
+        return 0
+
+    if dry_run:
+        print(f'\n[DRY RUN] 将追加 {len(new_rows)} 天数据，不写入文件')
+        return len(new_rows)
+
+    # 合并并统一计算 scaled 特征（只 fit 一次）
+    df_combined = pd.concat([df] + new_rows, ignore_index=True)
+    df_combined = df_combined.sort_values('date').reset_index(drop=True)
+    df_combined = _compute_scaled_features(df_combined)
+    df_combined.to_csv(TRAIN_CSV, index=False, encoding='utf-8-sig')
+
+    print(f'\n✅ 成功追加 {len(new_rows)} 天数据（CSV 共 {len(df_combined)} 行）')
+
+    # 更新日志
+    for row in new_rows:
+        d_str = row['date'].values[0]
+        _update_append_log(d_str, crawled_map[d_str], {})
+
+    return len(new_rows)
+
+
 def monthly_retrain(epochs: int = 120) -> bool:
     """触发三个模型的重训练。
 
@@ -519,9 +640,9 @@ def start_data_pipeline_scheduler(scheduler):
 
 def main():
     parser = argparse.ArgumentParser(description='数据追加与月度重训管道')
-    parser.add_argument('--append', action='store_true', help='追加昨日数据')
+    parser.add_argument('--append', action='store_true', help='追加数据：自动检测空挡，1天或多天均可（默认追到昨天）')
     parser.add_argument('--retrain', action='store_true', help='重训三个模型')
-    parser.add_argument('--date', default=None, help='指定追加日期 (YYYY-MM-DD)，默认昨天')
+    parser.add_argument('--date', default=None, help='指定截止日期 (YYYY-MM-DD)，默认昨天')
     parser.add_argument('--epochs', type=int, default=120, help='重训轮次（默认120）')
     parser.add_argument('--dry-run', action='store_true', help='仅打印，不写入')
     args = parser.parse_args()
@@ -531,8 +652,8 @@ def main():
         return
 
     if args.append:
-        target = date.fromisoformat(args.date) if args.date else None
-        append_new_data(target_date=target, dry_run=args.dry_run)
+        end = date.fromisoformat(args.date) if args.date else None
+        backfill_real_data(end_date=end, dry_run=args.dry_run)
 
     if args.retrain:
         monthly_retrain(epochs=args.epochs)
