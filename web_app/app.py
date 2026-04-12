@@ -1514,7 +1514,7 @@ def api_forecast():
             _ref_metrics = model_data[_mk]['metrics']
             break
     # 预警阈值按预测日期动态取（旺季32800/淡季18400），不再从 metrics.json 读固定值
-    from models.common.core_evaluation import get_season_peak_threshold
+    from models.common.core_evaluation import get_season_peak_threshold, PEAK_THRESHOLD_PEAK, PEAK_THRESHOLD_OFF
     _forecast_date = _today_cn()  # 预测起点为今天
     threshold_crowd = get_season_peak_threshold(_forecast_date)
     wh = (_ref_metrics.get('weather_hazard') or {})
@@ -1658,6 +1658,8 @@ def api_forecast():
         },
         'thresholds': {
             'crowd': threshold_crowd,
+            'crowd_peak': float(PEAK_THRESHOLD_PEAK),    # 旺季阈值 32800（4/1~11/15）
+            'crowd_off': float(PEAK_THRESHOLD_OFF),      # 淡季阈值 18400（11/16~3/31）
             'weather': {
                 'precip_high': precip_high,
                 'temp_high': temp_high,

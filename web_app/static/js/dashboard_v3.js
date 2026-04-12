@@ -263,7 +263,9 @@
     out.series.seq2seq     = safeArr(s.seq2seq_pred || [], n, safeNum);
 
     const thr = raw.thresholds || {};
-    out.thresholds.crowd = safeNum(thr.crowd);
+    out.thresholds.crowd      = safeNum(thr.crowd);
+    out.thresholds.crowd_peak = safeNum(thr.crowd_peak);
+    out.thresholds.crowd_off  = safeNum(thr.crowd_off);
     const wt = thr.weather || {};
     out.thresholds.weather = {
       precipHigh: safeNum(wt.precip_high), tempHigh: safeNum(wt.temp_high), tempLow: safeNum(wt.temp_low)
@@ -669,7 +671,8 @@
     // Zone 1: [last real data date] boundary — implicit in actual series null-end
     // Zone 2: Gap zone (last_real + 1 → today - 1): data latency, grey hatched
     // Zone 3: Forecast zone (today → today+6): future prediction, light blue
-    const todayStr = new Date().toISOString().slice(0, 10);
+    // Use backend forecast_start (CST) as today; avoids UTC offset bug at midnight
+    const todayStr = (zones && zones.forecastStart) || new Date().toISOString().slice(0, 10);
     // Prefer backend-provided zones; fall back to scanning actual series for lastRealDate
     let lastRealDate = (zones && zones.historyEnd) || null;
     if (!lastRealDate) {
@@ -747,17 +750,64 @@
         markLine: {
           silent: true,
           data: [
-            ...(thresholds.crowd ? [{
-              yAxis: thresholds.crowd, name: 'Crowd Threshold',
-              lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
-              label: {
-                show: true, position: 'insideEndTop',
-                color: '#ff453a', fontSize: 10, fontWeight: 500,
-                formatter: state.lang === 'zh'
-                  ? `预警阈值 ${fmtVisitors(thresholds.crowd)}`
-                  : `Crowd threshold ${fmtVisitors(thresholds.crowd)}`
+            // 季节性预警阈值：按 timeAxis 日期判断淡/旺季，分段画线
+            ...(() => {
+              const peakThr = thresholds.crowd_peak;
+              const offThr  = thresholds.crowd_off;
+              if (!peakThr && !offThr) return [];
+              function isPeakSeason(dateStr) {
+                const d = new Date(dateStr + 'T00:00:00');
+                const m = d.getMonth() + 1, day = d.getDate();
+                return (m >= 4 && m <= 10) || (m === 11 && day <= 15);
               }
-            }] : []),
+              // 找出每段连续同季节的起止日期，生成分段 markLine
+              const lines = [];
+              let segStart = null, segIsPeak = null;
+              for (let i = 0; i < timeAxis.length; i++) {
+                const d = timeAxis[i];
+                const peak = isPeakSeason(d);
+                if (segIsPeak === null) { segStart = d; segIsPeak = peak; }
+                const isLast = (i === timeAxis.length - 1);
+                const nextPeak = isLast ? null : isPeakSeason(timeAxis[i + 1]);
+                if (isLast || nextPeak !== segIsPeak) {
+                  const thr = segIsPeak ? peakThr : offThr;
+                  const label = segIsPeak
+                    ? (state.lang === 'zh' ? `旺季预警 ${fmtVisitors(thr)}` : `Peak alert ${fmtVisitors(thr)}`)
+                    : (state.lang === 'zh' ? `淡季预警 ${fmtVisitors(thr)}` : `Off-peak alert ${fmtVisitors(thr)}`);
+                  lines.push([
+                    { xAxis: segStart, yAxis: thr,
+                      lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
+                      label: { show: true, position: 'insideEndTop',
+                               color: '#ff453a', fontSize: 10, fontWeight: 500,
+                               formatter: label } },
+                    { xAxis: d, yAxis: thr }
+                  ]);
+                  segStart = timeAxis[i + 1] || null;
+                  segIsPeak = nextPeak;
+                }
+              }
+              // ECharts markLine data 中分段线需要用 coords 格式，转换为单点 yAxis 标注
+              // 实际用 markLine 的 [from, to] 方式无法按 x 分段，改用 markArea 叠一条细线效果
+              // 简化：只输出两条独立 yAxis 线，label 只在末尾显示一次
+              const result = [];
+              const hasPeak = timeAxis.some(isPeakSeason);
+              const hasOff  = timeAxis.some(d => !isPeakSeason(d));
+              if (hasPeak && peakThr) result.push({
+                yAxis: peakThr, name: 'Peak Threshold',
+                lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
+                label: { show: true, position: 'insideEndTop',
+                         color: '#ff453a', fontSize: 10, fontWeight: 500,
+                         formatter: state.lang === 'zh' ? `旺季预警 ${fmtVisitors(peakThr)}` : `Peak alert ${fmtVisitors(peakThr)}` }
+              });
+              if (hasOff && offThr && offThr !== peakThr) result.push({
+                yAxis: offThr, name: 'Off-peak Threshold',
+                lineStyle: { color: '#ff9f0a', type: 'dashed', width: 1.5 },
+                label: { show: true, position: 'insideEndTop',
+                         color: '#ff9f0a', fontSize: 10, fontWeight: 500,
+                         formatter: state.lang === 'zh' ? `淡季预警 ${fmtVisitors(offThr)}` : `Off-peak alert ${fmtVisitors(offThr)}` }
+              });
+              return result;
+            })(),
             // Vertical line at today marking start of future predictions
             ...(todayStr && timeAxis.includes(todayStr) ? [{
               xAxis: todayStr,
