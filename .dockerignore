@@ -1,0 +1,47 @@
+# 开发工具和 IDE
+.claude/
+.vscode/
+memory/
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+
+# 论文/文档（不进镜像）
+docs/
+mathematical_appendix/
+Thesis_Outline*.md
+*.docx
+*.pdf
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 数据库（运行时生成，通过 volume 持久化）
+*.db
+*.sqlite3
+
+# 旧的/多余的 output runs（只保留最新各一份，在 Dockerfile 里显式 COPY）
+# 这里排除整个 output，让 Dockerfile 的 COPY 精确控制
+output/
+
+# 原始数据（体积可能较大，不需要进镜像）
+data/raw/
+data/append_log.json
+
+# Git
+.git/
+.gitignore
+
+# 测试和分析输出
+output/shap/
+output/ablation/
+output/walk_forward/
+output/uncertainty/
+
+# Windows 专用
+Thumbs.db
+desktop.ini

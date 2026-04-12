@@ -1,0 +1,25 @@
+# Docker 专用 requirements（去掉 Windows 专用包 tensorflow-intel）
+# 对应 requirements_all.txt，但适配 Linux/amd64
+
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+SQLAlchemy==2.0.25
+pandas==2.2.0
+numpy==1.26.3
+python-dotenv==1.0.1
+chinesecalendar==1.8.0
+requests==2.31.0
+scikit-learn==1.4.0
+matplotlib==3.8.2
+APScheduler==3.10.4
+beautifulsoup4==4.12.3
+lxml==5.1.0
+
+# Linux 用标准 TensorFlow，不用 tensorflow-intel（Windows only）
+tensorflow==2.15.0
+keras==2.15.0
+h5py==3.10.0
+protobuf==4.25.3
+
+# 可解释性（可选，注释掉可减小镜像约200MB）
+# shap>=0.44.0

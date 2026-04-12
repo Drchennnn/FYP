@@ -1,0 +1,32 @@
+services:
+  fyp:
+    image: fyp-jiuzhaigou:latest   # 或改成 ghcr.io/<你的用户名>/fyp:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fyp_app
+    restart: unless-stopped
+    ports:
+      - "5000:5000"          # 改成 "80:5000" 如果服务器直接对外
+    environment:
+      - TZ=Asia/Shanghai
+      - FLASK_ENV=production
+    volumes:
+      # 持久化：容器重建后数据不丢失
+      # 格式：宿主机路径:容器内路径
+      - ./persistent/data/processed:/app/data/processed
+      - ./persistent/data/append_log.json:/app/data/append_log.json
+      - ./persistent/output/runs:/app/output/runs
+      - ./persistent/models/scalers:/app/models/scalers
+      - ./persistent/db:/app/db   # SQLite 数据库
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/scheduler/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"

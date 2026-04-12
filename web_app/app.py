@@ -1803,6 +1803,6 @@ if __name__ == '__main__':
     if _sched:
         app.config['_scheduler'] = _sched
 
-    # Use port 5000 as requested
+    # 绑定 0.0.0.0 使容器内可从外部访问（本地开发时等同于 localhost）
     print("Starting Flask server on port 5000...")
-    app.run(debug=False, port=5000)
+    app.run(host="0.0.0.0", debug=False, port=5000)
