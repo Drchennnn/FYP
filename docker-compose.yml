@@ -11,14 +11,14 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - FLASK_ENV=production
-    volumes:
-      # 持久化：容器重建后数据不丢失
-      # 格式：宿主机路径:容器内路径
-      - ./persistent/data/processed:/app/data/processed
-      - ./persistent/data/append_log.json:/app/data/append_log.json
-      - ./persistent/output/runs:/app/output/runs
-      - ./persistent/models/scalers:/app/models/scalers
-      - ./persistent/db:/app/db   # SQLite 数据库
+    # volumes 在服务器部署时启用，本地测试不挂载
+    # 启用前先运行 bash deploy/init_persistent.sh 初始化 persistent/ 目录
+    # volumes:
+    #   - ./persistent/data/processed:/app/data/processed
+    #   - ./persistent/data/append_log.json:/app/data/append_log.json
+    #   - ./persistent/output/runs:/app/output/runs
+    #   - ./persistent/models/scalers:/app/models/scalers
+    #   - ./persistent/db:/app/db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/scheduler/status"]
       interval: 30s

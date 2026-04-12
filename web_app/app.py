@@ -18,7 +18,9 @@ def _today_cn() -> _date_type:
 # --- Path Setup (must come before project-relative imports) ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
-if project_root not in sys.path:
+# 确保 project_root 在 sys.path 最前面（优先于 '' 空字符串和其他路径）
+# 避免 web_app/models.py 遮蔽 project_root/models/ 包
+if sys.path and sys.path[0] != project_root:
     sys.path.insert(0, project_root)
 
 # --- Import Keras/TensorFlow (Compatibility Layer) ---

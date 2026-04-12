@@ -24,9 +24,13 @@ __pycache__/
 *.db
 *.sqlite3
 
-# 旧的/多余的 output runs（只保留最新各一份，在 Dockerfile 里显式 COPY）
-# 这里排除整个 output，让 Dockerfile 的 COPY 精确控制
+# output 大部分不进镜像，只开放必要的 run 目录白名单
 output/
+!output/runs/gru_8features_20260406_172031/
+!output/runs/gru_mimo_8features_20260404_174122/
+!output/runs/lstm_8features_20260403_230759/
+!output/runs/lstm_mimo_8features_20260404_174313/
+!output/runs/seq2seq_attention_8features_20260403_230801/
 
 # 原始数据（体积可能较大，不需要进镜像）
 data/raw/
@@ -35,12 +39,6 @@ data/append_log.json
 # Git
 .git/
 .gitignore
-
-# 测试和分析输出
-output/shap/
-output/ablation/
-output/walk_forward/
-output/uncertainty/
 
 # Windows 专用
 Thumbs.db

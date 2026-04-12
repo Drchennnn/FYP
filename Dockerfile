@@ -5,14 +5,14 @@ FROM python:3.10-slim AS builder
 WORKDIR /install
 
 # 系统依赖（lxml、h5py 需要编译工具）
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     gcc g++ libhdf5-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # 只复制 requirements，利用 Docker 层缓存（依赖不变时跳过此步）
 COPY requirements_docker.txt .
 
-RUN pip install --no-cache-dir --prefix=/deps -r requirements_docker.txt
+RUN pip install --no-cache-dir --prefix=/deps --timeout=300 --retries=5 -r requirements_docker.txt
 
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
@@ -22,13 +22,15 @@ WORKDIR /app
 
 # 运行时系统依赖（libhdf5 运行时库）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libhdf5-103 curl && \
+    libhdf5-310 curl && \
     rm -rf /var/lib/apt/lists/*
 
 # 从 builder 复制安装好的 Python 包
 COPY --from=builder /deps /usr/local
 
 # ── 复制项目代码 ──────────────────────────────────────────────────────────────
+# CACHEBUST 用于强制让代码层缓存失效，不影响依赖层
+ARG CACHEBUST=1
 # 代码层（改动频繁，放最后以充分利用缓存）
 COPY models/       ./models/
 COPY realtime/     ./realtime/
@@ -85,7 +87,7 @@ ENV PYTHONPATH=/app \
     CUDA_VISIBLE_DEVICES="" \
     TF_CPP_MIN_LOG_LEVEL=2
 
-WORKDIR /app/web_app
+WORKDIR /app
 
 EXPOSE 5000
 
@@ -93,4 +95,4 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:5000/api/scheduler/status || exit 1
 
-CMD ["python", "app.py"]
+CMD ["python", "web_app/app.py"]
