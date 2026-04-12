@@ -439,7 +439,7 @@
     setStatus('', t('status_loading'));
 
     // 缓存 key：固定 online 模式，30分钟 TTL
-    const cacheKey = `v3_forecast_v6_h${state.h}`;
+    const cacheKey = `v3_forecast_v7_h${state.h}`;
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -1533,9 +1533,9 @@
     }
     const thr = payload.thresholds || {};
     const wthr = thr.weather || {};
-    const precipHigh = safeNum(wthr.precip_high);
-    const tempHigh = safeNum(wthr.temp_high);
-    const tempLow = safeNum(wthr.temp_low);
+    const precipHigh = safeNum(wthr.precipHigh);
+    const tempHigh = safeNum(wthr.tempHigh);
+    const tempLow = safeNum(wthr.tempLow);
     const precip = safeNum(payload.weather && payload.weather.precipMm ? payload.weather.precipMm[idx] : null);
     const th = safeNum(payload.weather && payload.weather.tempHighC ? payload.weather.tempHighC[idx] : null);
     const tl = safeNum(payload.weather && payload.weather.tempLowC ? payload.weather.tempLowC[idx] : null);

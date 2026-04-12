@@ -1517,21 +1517,26 @@ def api_forecast():
     from models.common.core_evaluation import get_season_peak_threshold, PEAK_THRESHOLD_PEAK, PEAK_THRESHOLD_OFF
     _forecast_date = _today_cn()  # 预测起点为今天
     threshold_crowd = get_season_peak_threshold(_forecast_date)
-    wh = (_ref_metrics.get('weather_hazard') or {})
-    wh_thr = (wh.get('thresholds') or {})
-    precip_high = float(wh_thr.get('precip_high', 8.0))
-    temp_high = float(wh_thr.get('temp_high', 22.6))
-    temp_low = float(wh_thr.get('temp_low', -10.61))
-    quantiles = (wh_thr.get('quantiles') or {})
+    # 气象预警阈值：改用旅游舒适度绝对阈值，不再依赖统计分位数
+    # - 高温(>28°C)：暑热，九寨沟夏季高温，游客体验明显下降
+    # - 低温(<2°C)：接近冰点，山路结冰，徒步风险上升
+    # - 强降水(>10mm/day)：中雨以上，影响景区观光和安全
+    precip_high = 10.0   # mm/day，中雨下限
+    temp_high   = 28.0   # °C，暑热阈值
+    temp_low    = 2.0    # °C，冰点风险阈值
+    quantiles = {}
 
     def _compute_risk(pred_col: str):
-        """基于预测客流和天气计算逐日风险。"""
+        """基于客流和天气计算逐日风险。
+        历史段（actual 非 NaN）用真实客流判断 crowd_alert，预测段用模型预测值。
+        """
+        actual_s = pd.to_numeric(df_merge['actual'], errors='coerce')
         if pred_col not in df_merge.columns:
-            n = len(df_merge)
-            return {'crowd_alert':[False]*n,'weather_hazard':[False]*n,
-                    'suitability_warning_bin':[0]*n,'risk_level':[0]*n,
-                    'p_warn':[0.15]*n,'drivers':[[]]*n,'risk_score':[0.0]*n}
-        y_pred = df_merge[pred_col].astype(float)
+            y_pred = actual_s.fillna(0)
+        else:
+            pred_s = pd.to_numeric(df_merge[pred_col], errors='coerce')
+            # 有真实数据的行用 actual，否则用预测值
+            y_pred = actual_s.where(actual_s.notna(), pred_s)
         # 逐日按季节取阈值
         dates_for_thr = pd.to_datetime(df_merge['date']).dt.date
         daily_thr = dates_for_thr.map(get_season_peak_threshold)
