@@ -1204,16 +1204,41 @@ def api_forecast():
         ]
 
         def _load_model_by_key(model_key: str):
-            """从 output/runs 找最新 run_dir 并加载模型。"""
+            """从 output/runs 找最新 run_dir 并加载模型。
+            Seq2Seq 子类化模型用 _weights.h5 + load_weights 方式加载（跨平台兼容）。
+            GRU/LSTM 用标准 load_model。
+            """
             top_dirs = sorted(
                 glob.glob(os.path.join(OUTPUT_RUNS_DIR, f'{model_key}_*')),
                 key=os.path.getmtime, reverse=True
             )
+            is_seq2seq = 'seq2seq' in model_key
             for top_dir in top_dirs:
                 run_subdirs = glob.glob(os.path.join(top_dir, 'runs', 'run_*'))
                 run_dir = max(run_subdirs, key=os.path.getmtime) if run_subdirs else top_dir
+                # Seq2Seq：优先找 _weights.h5，用 load_weights 重建
+                if is_seq2seq and tf and _seq2seq_custom_objects:
+                    wfiles = glob.glob(os.path.join(run_dir, 'weights', '*_weights.h5'))
+                    if wfiles:
+                        try:
+                            import numpy as np
+                            from models.lstm.train_seq2seq_attention_8features import Seq2SeqWithAttention
+                            m = Seq2SeqWithAttention(
+                                encoder_units=128, decoder_units=256,
+                                encoder_features=8, decoder_features=7
+                            )
+                            dummy_enc = np.zeros((1, 30, 8), dtype=np.float32)
+                            dummy_dec = np.zeros((1, 7, 7), dtype=np.float32)
+                            m([dummy_enc, dummy_dec], training=False)
+                            m.load_weights(wfiles[0])
+                            print(f"Seq2Seq loaded via load_weights: {wfiles[0]}")
+                            return m
+                        except Exception as e:
+                            print(f"Seq2Seq load_weights failed ({wfiles[0]}): {e}")
+                # GRU/LSTM（及 Seq2Seq fallback）：标准 load_model
                 for pattern in ['weights/*.keras', 'weights/*.h5']:
-                    matches = glob.glob(os.path.join(run_dir, pattern))
+                    matches = [p for p in glob.glob(os.path.join(run_dir, pattern))
+                               if '_weights.h5' not in p]  # 排除 _weights.h5
                     if matches:
                         try:
                             m = tf.keras.models.load_model(
@@ -1760,20 +1785,16 @@ def _start_scheduler():
     """Start APScheduler background scheduler for daily auto-crawl and monthly retrain."""
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
-        from realtime.daily_update import daily_update
         from scripts.append_and_retrain import start_data_pipeline_scheduler
 
         scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
-        # 每日 09:00 爬取客流
-        scheduler.add_job(daily_update, 'cron', hour=9, minute=0, id='daily_crawl',
-                          replace_existing=True)
-        # 每日 08:30 追加数据到训练 CSV + 每月1日 02:00 重训
+        # 每日 08:30 追加数据 + 每日 09:30 backfill 预测 + 每月1日 02:00 重训
         start_data_pipeline_scheduler(scheduler)
         scheduler.start()
-        print("Scheduler started: daily crawl (09:00), daily append (08:30), monthly retrain (1st 02:00).")
+        print("Scheduler started: daily append (08:30), daily backfill (09:30), monthly retrain (1st 02:00).")
         return scheduler
-    except ImportError:
-        print("WARNING: APScheduler not installed. Run: pip install APScheduler==3.10.4")
+    except ImportError as e:
+        print(f"WARNING: Scheduler failed to import dependency: {e}")
         return None
     except Exception as e:
         print(f"WARNING: Scheduler failed to start: {e}")

@@ -639,7 +639,7 @@ def main() -> None:
     fig_dir.mkdir(parents=True, exist_ok=True)
 
     # 模型权重保存在 output/runs/<run_name>/weights/ 目录中
-    model_path = weights_dir / "seq2seq_jiuzhaigou.keras"
+    model_path = weights_dir / "seq2seq_jiuzhaigou.h5"  # h5 跨平台兼容性优于 .keras
     pred_path = run_dir / "seq2seq_test_predictions.csv"
     history_path = run_dir / "seq2seq_history.csv"
 
