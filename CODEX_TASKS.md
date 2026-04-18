@@ -1,345 +1,183 @@
-# Codex 任务书 — 九寨沟客流预测系统扩展
+# Codex 任务书 v2 — 五模型统一重训对比
 
-> **写给 Codex**：本项目是一个端到端旅游客流预测系统，已有 GRU / LSTM / Seq2Seq+Attention 三个深度学习模型跑通。你的任务是完成两项扩展（P0 特征扩展 + P1 新模型），所有代码需与现有框架风格一致。
+> **当前状态**（2026-04-18）：
+> - ✅ XGBoost 已完整训练（14特征，MAE=4326，NRMSE=16.7%）
+> - ✅ Transformer 已完整训练（11特征，120ep→早停58ep，MAE=2909，NRMSE=12.1%）
+> - ✅ Seq2Seq 已完整训练（8特征，MAE=3846）
+> - ❌ GRU/LSTM 只跑了 1 epoch（无效），需要用 **11特征** 正式重训
+> - ❌ 五模型 peak_threshold 不统一（旧run=18500，新run=32800），对比无意义
+> - ❌ GRU/LSTM 脚本尚未加入 P0 三个新特征
 >
-> **读懂再动手**：先读 `models/gru/train_gru_8features.py`（~500行），理解整体数据流、特征工程、evaluate_and_save_run 调用方式，再逐项完成下方任务。
+> **你的核心任务**：改 GRU/LSTM 脚本加入 11 特征 → 正式重训 GRU+LSTM → 跑五模型对比
 
 ---
 
-## 项目结构速览
+## 任务 1：GRU 脚本加入 P0 三个新特征
 
-```
-FYP/
-├── data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv  ← 训练数据
-├── models/
-│   ├── common/
-│   │   ├── core_evaluation.py    ← evaluate_and_save_run()（不要改）
-│   │   ├── evaluator.py          ← calculate_metrics()（不要改）
-│   │   └── preprocess.py
-│   ├── gru/train_gru_8features.py      ← 参考实现（最完整）
-│   ├── lstm/train_lstm_8features.py
-│   ├── xgboost/train_xgboost_8features.py   ← 骨架，待你补全
-│   └── transformer/train_transformer_8features.py  ← 骨架，待你补全
-├── output/runs/   ← 所有训练结果输出目录（自动创建）
-└── run_pipeline.py
-```
+**文件**：`models/gru/train_gru_8features.py`
 
----
+### 1-A：在 `load_and_engineer_features()` 中新增特征构造
 
-## P0 — 特征扩展（所有模型共用，优先完成）
-
-**目标**：在现有 8 特征基础上新增 3 个特征，形成 **11 特征版本**。
-
-### 新增特征
-
-| 特征名 | 说明 | 实现方式 |
-|--------|------|---------|
-| `tourism_num_lag_14_scaled` | 14天滞后客流（归一化） | `df['tourism_num'].shift(14)`，用训练集 scaler transform |
-| `rolling_mean_14_scaled` | 14天滚动均值（归一化） | `df['tourism_num'].rolling(14).mean()`，同 scaler |
-| `is_peak_season` | 旺淡季标记（0/1） | 4月1日~11月15日=1，其余=0，无需归一化 |
-
-### 需要修改的文件
-
-1. **`models/gru/train_gru_8features.py`** 的 `load_and_engineer_features()`：
-   - 在现有 8 特征构造之后，追加 3 个新特征
-   - 更新 `FEATURE_COLS` 列表（8→11列）
-   - **关键**：`lag_14` 和 `rolling_mean_14` 的 scaler 必须只在训练集 fit，然后 transform 全集（与现有 lag_7 逻辑完全一致）
-
-2. **`models/lstm/train_lstm_8features.py`**：同上，保持与 GRU 特征完全一致
-
-3. **`models/lstm/train_seq2seq_attention_8features.py`**：
-   - Encoder 输入从 `(30, 8)` → `(30, 11)`
-   - Decoder 输入（外生特征）从 `(7, 7)` → `(7, 10)`（不含 visitor_count_scaled，其余 10 个）
-   - 注意：`encoder_features=11`, `decoder_features=10` 参数需更新
-
-### 验证标准
-
-修改后运行以下命令，若无报错且输出 MAE 数值则通过：
-```bash
-python run_pipeline.py --model gru --features 11 --epochs 5
-```
-
----
-
-## P0.5 — NRMSE 归一化指标（P0 完成后立即做）
-
-**目标**：在所有模型的评估结果中，将 RMSE 替换为 **NRMSE（值域归一化 RMSE）**，作为论文主要回归指标。
-
-**定义**：
-```
-NRMSE = RMSE / (y_true_max - y_true_min)
-```
-其中 `y_true` 为**反归一化后的真实客流量**（人次/天，非 scaled 值）。
-
-### 需要修改的文件：`models/common/core_evaluation.py`
-
-**Step 1**：在 `_rmse()` 函数下方（约第 188 行）新增 `_nrmse()` 函数：
+找到函数内构造 lag_7 的位置，在其后追加：
 
 ```python
-def _nrmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    y_true = _to_1d(y_true).astype(float)
-    y_pred = _to_1d(y_pred).astype(float)
-    rmse = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
-    value_range = float(y_true.max() - y_true.min())
-    if value_range == 0:
-        return float("nan")
-    return rmse / value_range
+# P0 扩展特征
+df["tourism_num_lag_14"] = df["tourism_num"].shift(14)
+df["tourism_num_rolling_mean_14"] = df["tourism_num"].rolling(14).mean()
+df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
 ```
 
-**Step 2**：在 `reg` 字典（约第 338 行）中加入 `nrmse`：
+同时在 scaler fit/transform 段（lag_7_scaler 附近）追加：
 
 ```python
-reg = {
-    "mae":   _mae(y_true_flat, y_pred_flat),
-    "rmse":  _rmse(y_true_flat, y_pred_flat),
-    "nrmse": _nrmse(y_true_flat, y_pred_flat),   # ← 新增
-    "smape": _smape(y_true_flat, y_pred_flat),
-}
+lag14_scaler = MinMaxScaler()
+lag14_scaler.fit(train_df[["tourism_num_lag_14"]])
+df["tourism_num_lag_14_scaled"] = lag14_scaler.transform(df[["tourism_num_lag_14"]]).reshape(-1)
+
+rolling14_scaler = MinMaxScaler()
+rolling14_scaler.fit(train_df[["tourism_num_rolling_mean_14"]])
+df["rolling_mean_14_scaled"] = rolling14_scaler.transform(df[["tourism_num_rolling_mean_14"]]).reshape(-1)
+# is_peak_season 不需要归一化（已是 0/1）
 ```
 
-**Step 3**：在 per-horizon 指标字典（约第 447 行，`for h in range(H)` 循环内）同样加入 `nrmse`：
+**重要**：scaler 只在训练集（`train_df`）上 fit，然后 transform 全量 df。与现有 lag_7 逻辑完全一致。
+
+### 1-B：在 `build_sequences()` 内更新 `feature_cols` 列表
+
+将原来的 8 个特征改为 11 个：
 
 ```python
-{
-    "mae":   _mae(y_true[:, h], y_pred[:, h]),
-    "rmse":  _rmse(y_true[:, h], y_pred[:, h]),
-    "nrmse": _nrmse(y_true[:, h], y_pred[:, h]),   # ← 新增
-    "smape": _smape(y_true[:, h], y_pred[:, h]),
-}
-```
-
-**Step 4**：在约第 620 行的顶层 metrics 汇总处加入 `nrmse`：
-
-```python
-"mae":   metrics["regression"]["mae"],
-"rmse":  metrics["regression"]["rmse"],
-"nrmse": metrics["regression"]["nrmse"],   # ← 新增
-"smape": metrics["regression"]["smape"],
-```
-
-### 验证
-
-```bash
-python -c "
-import json
-f = open('output/runs/gru_8features_20260406_172031/runs/run_20260406_172031_lb30_ep120_gru_8features/metrics.json')
-m = json.load(f)
-print('nrmse' in m['regression'], m['regression'].get('nrmse'))
-"
-# 预期：True 0.137...（约13.7%）
-```
-
-> **注意**：`core_evaluation.py` 中 RMSE 保留不删（`metrics.json` 向后兼容），`nrmse` 作为新增字段并列存在。
-
----
-
-## P1-A — XGBoost 模型补全
-
-**文件**：`models/xgboost/train_xgboost_8features.py`
-
-框架骨架已写好，所有 `TODO` 标注了需要实现的位置。按以下顺序补全：
-
-### 步骤 1：安装依赖
-
-```bash
-pip install xgboost
-```
-
-在文件顶部取消注释：
-```python
-import xgboost as xgb
-from xgboost import XGBRegressor
-```
-
-### 步骤 2：`load_and_engineer_features()`
-
-参照 `models/gru/train_gru_8features.py` 的同名函数实现，但输出是 **表格形式**（非序列），包含以下列：
-
-```python
-FEATURE_COLS = [
-    "month_norm", "day_of_week_norm", "is_holiday", "is_peak_season",
-    "tourism_num_lag_1_scaled",   # 新增 lag_1
+feature_cols = [
+    "visitor_count_scaled",
+    "month_norm",
+    "day_of_week_norm",
+    "is_holiday",
+    "is_peak_season",            # 新增
     "tourism_num_lag_7_scaled",
-    "tourism_num_lag_14_scaled",  # 新增 lag_14
-    "tourism_num_lag_28_scaled",  # 新增 lag_28
-    "rolling_mean_7_scaled",
-    "rolling_mean_14_scaled",     # 新增 rolling_14
-    "rolling_std_7_scaled",       # 新增 rolling_std
+    "tourism_num_lag_14_scaled",  # 新增
+    "rolling_mean_14_scaled",    # 新增
     "meteo_precip_sum_scaled",
     "temp_high_scaled",
     "temp_low_scaled",
 ]
 ```
 
-注意：XGBoost 不需要 `build_sequences()`，每行直接是一个样本。
+### 1-C：确认 `is_peak_season` 函数存在
 
-### 步骤 3：`build_model()`
-
-```python
-return XGBRegressor(
-    n_estimators=args.n_estimators,   # 默认300
-    max_depth=args.max_depth,          # 默认6
-    learning_rate=args.lr,             # 默认0.05
-    subsample=0.8,
-    colsample_bytree=0.8,
-    reg_alpha=0.5,
-    reg_lambda=1.0,
-    random_state=42,
-    n_jobs=-1,
-    early_stopping_rounds=30,          # 配合 eval_set 提前停止
-)
-```
-
-### 步骤 4：`compute_sample_weights()`
+在文件顶部（`mark_core_holiday` 附近）加入：
 
 ```python
-# 2020-01-01 ~ 2022-12-31 赋权重 0.3，其余 1.0
-mask = (train_df["date"] >= "2020-01-01") & (train_df["date"] <= "2022-12-31")
-weights = np.where(mask, 0.3, 1.0)
-return weights
+def is_peak_season(date_val: pd.Timestamp) -> int:
+    """旺季：4月1日 ~ 11月15日"""
+    m, d = int(date_val.month), int(date_val.day)
+    if m < 4 or m > 11:
+        return 0
+    if m == 11 and d > 15:
+        return 0
+    return 1
 ```
 
-### 步骤 5：`main()` 中补全训练与评估逻辑
+### 1-D：dropna 覆盖新增列
 
-参照骨架注释中的 TODO 伪代码，逐段实现。  
-**关键**：`evaluate_and_save_run()` 的调用签名必须与 GRU 脚本完全一致（见骨架注释）。
+确保 dropna 的 subset 包含新列：
+```python
+df = df.dropna(subset=[..., "tourism_num_lag_14", "tourism_num_rolling_mean_14"])
+```
 
-### 运行验证
+### 验证
 
 ```bash
-python models/xgboost/train_xgboost_8features.py --n-estimators 100 --max-depth 4
-# 预期输出：run_dir 路径 + MAE 数值
-# 输出目录：output/runs/xgboost_8features_<timestamp>/
+python models/gru/train_gru_8features.py --epochs 2
+# 输出应包含：使用特征: [..., 'is_peak_season', 'tourism_num_lag_14_scaled', 'rolling_mean_14_scaled']
+# feature_count 应为 11
 ```
 
 ---
 
-## P1-B — Transformer 模型补全
+## 任务 2：LSTM 脚本同步相同修改
 
-**文件**：`models/transformer/train_transformer_8features.py`
+**文件**：`models/lstm/train_lstm_8features.py`
 
-### 步骤 1：`PositionalEncoding`
+与任务 1 完全一致，对 `train_lstm_8features.py` 做同样的四步修改（1-A 到 1-D）。
 
-```python
-# __init__ 中预计算
-positions = np.arange(max_len)[:, np.newaxis]           # (max_len, 1)
-dims = np.arange(d_model)[np.newaxis, :]                # (1, d_model)
-angles = positions / np.power(10000, (2*(dims//2)) / d_model)
-angles[:, 0::2] = np.sin(angles[:, 0::2])
-angles[:, 1::2] = np.cos(angles[:, 1::2])
-self.pe = tf.cast(angles[np.newaxis, :, :], tf.float32)  # (1, max_len, d_model)
-
-# call 中
-def call(self, x):
-    return x + self.pe[:, :tf.shape(x)[1], :]
-```
-
-### 步骤 2：`TransformerEncoderBlock`
-
-```python
-# __init__
-self.mha = tf.keras.layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model//num_heads)
-self.ffn1 = tf.keras.layers.Dense(dff, activation="relu")
-self.ffn2 = tf.keras.layers.Dense(d_model)
-self.norm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-self.norm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
-self.drop1 = tf.keras.layers.Dropout(dropout_rate)
-self.drop2 = tf.keras.layers.Dropout(dropout_rate)
-
-# call
-def call(self, x, training=False):
-    attn = self.mha(x, x, training=training)
-    attn = self.drop1(attn, training=training)
-    x = self.norm1(x + attn)
-    ffn = self.ffn2(self.ffn1(x))
-    ffn = self.drop2(ffn, training=training)
-    return self.norm2(x + ffn)
-```
-
-### 步骤 3：`build_model()`
-
-```python
-inp = tf.keras.Input(shape=(look_back, n_features))
-x = tf.keras.layers.Dense(d_model)(inp)          # 特征投影
-x = PositionalEncoding(d_model)(x)
-for _ in range(num_layers):
-    x = TransformerEncoderBlock(num_heads, d_model, dff, dropout_rate)(x)
-x = tf.keras.layers.GlobalAveragePooling1D()(x)
-x = tf.keras.layers.Dense(64, activation="relu")(x)
-x = tf.keras.layers.Dropout(dropout_rate)(x)
-out = tf.keras.layers.Dense(1)(x)
-model = tf.keras.Model(inp, out)
-model.compile(optimizer=tf.keras.optimizers.Adam(1e-3),
-              loss=tf.keras.losses.Huber())
-return model
-```
-
-### 步骤 4：`load_and_engineer_features()` 和 `build_sequences()`
-
-- `load_and_engineer_features`：与 P0 扩展后的 GRU 脚本完全一致（11特征）
-- `build_sequences`：直接复制 GRU 脚本的实现
-
-### 步骤 5：`main()` 训练与评估
-
-callbacks 与 GRU 相同：EarlyStopping(patience=15) + ReduceLROnPlateau(patience=8) + ModelCheckpoint。  
-评估调用 `evaluate_and_save_run()`，`model_name="transformer"`。
-
-### 运行验证
+### 验证
 
 ```bash
-python models/transformer/train_transformer_8features.py --epochs 10 --d-model 32 --num-layers 1
-# 预期：训练10个epoch，输出 run_dir + MAE
-# 输出目录：output/runs/transformer_8features_<timestamp>/
+python models/lstm/train_lstm_8features.py --epochs 2
+# feature_count 应为 11
 ```
 
 ---
 
-## P2 — run_pipeline.py 扩展（P1 完成后）
+## 任务 3：正式重训 GRU 和 LSTM（120 epoch）
 
-在 `run_pipeline.py` 中增加对 xgboost 和 transformer 的支持：
+任务 1、2 验证通过后，运行完整训练：
 
-```python
-# 在 --model 参数的 choices 中加入：
-choices=["gru", "lstm", "seq2seq_attention", "xgboost", "transformer"]
-
-# 在模型分发逻辑中加入对应的训练函数调用
+```bash
+python run_pipeline.py --model gru --features 8 --epochs 120
+python run_pipeline.py --model lstm --features 8 --epochs 120
 ```
 
-同时更新 `run_benchmark.py`，使其能汇总5个模型的 metrics.json 并输出对比表。
+> 注意：`run_pipeline.py` 的 `--features 8` 参数是脚本选择用的，实际特征数已由脚本内部决定（现在是11）。不需要改 run_pipeline.py。
+
+**预期结果**：
+- GRU：MAE 目标 < 3500，peak_threshold 应为 32800（与 Transformer/XGBoost 一致）
+- LSTM：MAE 目标 < 4500
 
 ---
 
-## 代码规范（必须遵守）
+## 任务 4：运行五模型对比
 
-1. **输出目录结构**必须与 GRU 完全一致：
-   ```
-   output/runs/<model>_8features_<timestamp>/runs/run_<timestamp>_<model>_8features/
-   ├── metrics.json      ← evaluate_and_save_run() 自动生成，不要手动创建
-   ├── weights/
-   └── figures/
-   ```
+五个模型全部完整训练后，运行：
 
-2. **不要修改** `models/common/core_evaluation.py` 和 `models/common/evaluator.py`
+```bash
+python run_benchmark.py
+```
 
-3. **日期切分逻辑**：80/10/10 时序切分，不能打乱顺序，不能有数据泄露（scaler 只在训练集 fit）
+`run_benchmark.py` 会自动发现 `output/runs/` 下各模型类型的最新有效 run，生成：
+- `output/runs/run_compare_<timestamp>/report.md`
+- `output/runs/run_compare_<timestamp>/compare_metrics.csv`
 
-4. **MinMaxScaler**：visitor_count 和 lag/rolling 特征使用独立 scaler，保存到 `models/scalers/` 或 run_dir
+### 对比报告必须包含这五个模型
 
-5. 所有 print 使用中文（与现有脚本风格一致）
+| 模型 | 特征数 | 预期 MAE | 备注 |
+|------|--------|---------|------|
+| GRU | 11 | < 3500 | 任务3重训后 |
+| LSTM | 11 | < 4500 | 任务3重训后 |
+| Seq2Seq | 8 | ~3846 | 已有，直接用 |
+| XGBoost | 14 | ~4326 | 已有，直接用 |
+| Transformer | 11 | ~2909 | 已有，直接用 |
+
+**成功标准**：report.md 的 Metrics Table 中出现五行，且 GRU/LSTM 的 `epochs_trained > 30`（确认是完整训练）。
+
+---
+
+## 注意事项
+
+1. **不要修改** `models/common/core_evaluation.py`（已有 NRMSE，不动）
+2. **不要修改** Seq2Seq、XGBoost、Transformer 脚本（已完成）
+3. lag_14 / rolling_mean_14 的 scaler 必须只在训练集 fit，逻辑与 lag_7 完全一致
+4. `dropna` 要覆盖新增列，否则 lag_14（需要14天历史）会导致前14行有 NaN 未清理
 
 ---
 
 ## 完成标志
 
-| 任务 | 验证命令 | 成功标准 |
-|------|---------|---------|
-| P0 特征扩展 | `python run_pipeline.py --model gru --features 11 --epochs 5` | 无报错，输出 MAE |
-| P1-A XGBoost | `python models/xgboost/train_xgboost_8features.py --n-estimators 50` | 生成 output/runs/xgboost_*/metrics.json |
-| P1-B Transformer | `python models/transformer/train_transformer_8features.py --epochs 5` | 生成 output/runs/transformer_*/metrics.json |
-| P2 Pipeline | `python run_benchmark.py` | 打印5模型对比表（含 xgboost 和 transformer 行） |
-
-所有任务完成后，运行完整训练：
 ```bash
-python run_pipeline.py --model xgboost
-python run_pipeline.py --model transformer --epochs 120
+# 检查 GRU/LSTM 是否用了 11 特征且完整训练
+python -c "
+import json, glob
+for pattern in ['output/runs/gru_8features_*/runs/*/metrics.json',
+                'output/runs/lstm_8features_*/runs/*/metrics.json']:
+    files = sorted(glob.glob(pattern))
+    if files:
+        d = json.load(open(files[-1]))
+        m = d['meta']
+        print(m['model_name'], 'feat=', m['feature_count'],
+              'epochs=', m.get('epochs_trained','?'),
+              'peak_thr=', m['peak_threshold'])
+"
+# 预期输出：
+# gru  feat=11  epochs=XX(>30)  peak_thr=32800.0
+# lstm feat=11  epochs=XX(>30)  peak_thr=32800.0
 ```
