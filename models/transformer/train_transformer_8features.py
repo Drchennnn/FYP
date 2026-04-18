@@ -43,10 +43,10 @@ DEFAULT_DATA_PATH = (
 )
 OUTPUT_BASE = PROJECT_ROOT / "output" / "runs"
 
-TRAIN_RATIO = 0.80
-VAL_RATIO   = 0.10
-TEST_RATIO  = 0.10
 LOOK_BACK   = 45          # 与 GRU/LSTM 保持一致
+TRAIN_RATIO = 0.80
+VAL_RATIO = 0.10
+TEST_RATIO = 0.10
 
 
 # ── 节假日 / 旺季标记（与 GRU 保持一致）─────────────────────────────────────
@@ -186,6 +186,16 @@ def build_sequences(
         x_list.append(data[i - look_back : i, :])
         y_list.append(data[i, 0])  # 目标始终是第0列 visitor_count_scaled
     return np.asarray(x_list, dtype=np.float32), np.asarray(y_list, dtype=np.float32)
+
+
+def compute_sample_weights(months: np.ndarray) -> np.ndarray:
+    """旺季(4-11月)权重×2，淡季权重×1"""
+    weights = np.where(
+        np.isin(months, [4, 5, 6, 7, 8, 9, 10, 11]),
+        2.0,
+        1.0,
+    )
+    return weights.astype(np.float32)
 
 
 # ── Transformer 组件 ──────────────────────────────────────────────────────────
@@ -344,6 +354,7 @@ def main() -> None:
     X_train, y_train = X_all[:train_end], y_all[:train_end]
     X_val, y_val = X_all[train_end:val_end], y_all[train_end:val_end]
     X_test, y_test = X_all[val_end:], y_all[val_end:]
+    dates_train = all_dates[:train_end]
     d_test = all_dates[val_end:]
 
     weather_train_precip = weather_precip_all[:train_end]
@@ -401,6 +412,7 @@ def main() -> None:
         batch_size=args.batch_size,
         shuffle=False,
         callbacks=callbacks,
+        sample_weight=compute_sample_weights(pd.to_datetime(dates_train).month.values),
         verbose=1,
     )
     model.save(weights_dir / "transformer_8features.h5")

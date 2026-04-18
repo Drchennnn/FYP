@@ -39,6 +39,10 @@ from models.common.core_evaluation import evaluate_and_save_run, compute_dynamic
 
 matplotlib.use("Agg")
 
+TRAIN_RATIO = 0.80
+VAL_RATIO = 0.10
+TEST_RATIO = 0.10
+
 
 def mark_core_holiday(date_val: pd.Timestamp) -> int:
     """核心节假日标记函数。
@@ -347,20 +351,34 @@ def create_custom_asymmetric_loss(holiday_weight=2.0, peak_weight=1.5):
         )
         weight = tf.where(peak_underpred, peak_weight, weight)
         
-        # 加权误差
+        # 加权误差；按样本聚合（保留 batch 维），以兼容 sample_weight=(batch,)
         weighted_error = error * weight
-        
-        return tf.reduce_mean(weighted_error)
+        return tf.reduce_mean(weighted_error, axis=1)
         
     return custom_loss
 
 
+def compute_sample_weights(months: np.ndarray) -> np.ndarray:
+    """旺季(4-11月)权重×2，淡季权重×1"""
+    weights = np.where(
+        np.isin(months, [4, 5, 6, 7, 8, 9, 10, 11]),
+        2.0,
+        1.0,
+    )
+    return weights.astype(np.float32)
+
+
 def prepare_seq2seq_data(
-    df: pd.DataFrame,
-    encoder_steps: int = 30,
+    df: pd.DataFrame, 
+    encoder_steps: int = 30, 
     decoder_steps: int = 7,
-    test_ratio: float = 0.2
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[
+    np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray,
+    np.ndarray, np.ndarray, np.ndarray
+]:
     """准备非自回归Seq2Seq模型的训练/测试数据
     
     架构：非自回归直接多步预测 + Attention
@@ -372,12 +390,13 @@ def prepare_seq2seq_data(
         df: 特征工程后的DataFrame
         encoder_steps: Encoder输入序列长度（历史天数）
         decoder_steps: Decoder输出序列长度（预测天数）
-        test_ratio: 测试集比例
         
     Returns:
         x_encoder_train, x_decoder_train, y_train,
+        x_encoder_val, x_decoder_val, y_val,
         x_encoder_test, x_decoder_test, y_test,
-        weather_train, weather_test
+        weather_train, weather_val, weather_test,
+        target_dates_test, weather_cols
 
     weather_* have shape (N, decoder_steps, 3) in real units:
       [:, :, 0] precip_sum
@@ -435,6 +454,8 @@ def prepare_seq2seq_data(
     decoder_input = []
     decoder_target = []
     weather_target = []
+    seq_anchor_dates = []
+    target_dates = []
     
     total_steps = encoder_steps + decoder_steps
     for i in range(total_steps, len(df)):
@@ -454,6 +475,8 @@ def prepare_seq2seq_data(
             # 格式：[真实值, 节假日标记]
             dec_target.append([values_encoder[idx, 0], values_encoder[idx, 3]])
             dec_weather.append([precip_real[idx], temp_high_real[idx], temp_low_real[idx]])
+        seq_anchor_dates.append(dates[i - total_steps])
+        target_dates.append(dates[i - decoder_steps : i])
         decoder_target.append(dec_target)
         weather_target.append(dec_weather)
     
@@ -461,26 +484,37 @@ def prepare_seq2seq_data(
     decoder_input = np.array(decoder_input)
     decoder_target = np.array(decoder_target)
     weather_target = np.array(weather_target, dtype=float)
+    seq_anchor_dates = np.array(seq_anchor_dates)
+    target_dates = np.array(target_dates)
     
-    # 时间划分训练/测试集
     n = len(encoder_input)
-    test_size = int(n * test_ratio)
-    train_size = n - test_size
-    
-    x_encoder_train = encoder_input[:train_size]
-    x_decoder_train = decoder_input[:train_size]
-    y_train = decoder_target[:train_size]
-    
-    x_encoder_test = encoder_input[train_size:]
-    x_decoder_test = decoder_input[train_size:]
-    y_test = decoder_target[train_size:]
+    train_end = int(n * TRAIN_RATIO)
+    val_end = int(n * (TRAIN_RATIO + VAL_RATIO))
+    train_mask = np.arange(n) < train_end
+    val_mask = (np.arange(n) >= train_end) & (np.arange(n) < val_end)
+    test_mask = np.arange(n) >= val_end
 
-    weather_train = weather_target[:train_size]
-    weather_test = weather_target[train_size:]
+    x_encoder_train = encoder_input[train_mask]
+    x_decoder_train = decoder_input[train_mask]
+    y_train = decoder_target[train_mask]
+
+    x_encoder_val = encoder_input[val_mask]
+    x_decoder_val = decoder_input[val_mask]
+    y_val = decoder_target[val_mask]
+
+    x_encoder_test = encoder_input[test_mask]
+    x_decoder_test = decoder_input[test_mask]
+    y_test = decoder_target[test_mask]
+
+    weather_train = weather_target[train_mask]
+    weather_val = weather_target[val_mask]
+    weather_test = weather_target[test_mask]
+    target_dates_test = target_dates[test_mask]
+    encoder_dates_train = seq_anchor_dates[train_mask]
     
     print(f"数据准备完成:")
-    print(f"  总样本数: {n}")
-    print(f"  训练样本: {train_size}, 测试样本: {test_size}")
+    print(f"  总样本数: {len(encoder_input)}")
+    print(f"  训练样本: {len(x_encoder_train)}, 验证样本: {len(x_encoder_val)}, 测试样本: {len(x_encoder_test)}")
     print(f"  Encoder输入形状: {x_encoder_train.shape}")
     print(f"  Decoder输入形状: {x_decoder_train.shape}")
     print(f"  目标形状: {y_train.shape}")
@@ -489,11 +523,17 @@ def prepare_seq2seq_data(
         x_encoder_train,
         x_decoder_train,
         y_train,
+        x_encoder_val,
+        x_decoder_val,
+        y_val,
         x_encoder_test,
         x_decoder_test,
         y_test,
         weather_train,
+        weather_val,
         weather_test,
+        target_dates_test,
+        encoder_dates_train,
         np.array([precip_col, temp_high_col, temp_low_col], dtype=object),
     )
 
@@ -639,8 +679,8 @@ def main() -> None:
     weights_dir.mkdir(parents=True, exist_ok=True)
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    # 模型权重保存在 output/runs/<run_name>/weights/ 目录中
-    model_path = weights_dir / "seq2seq_jiuzhaigou.h5"  # h5 跨平台兼容性优于 .keras
+    # 子类化模型不支持以 HDF5 保存完整模型，统一保存权重文件
+    model_path = weights_dir / "seq2seq_jiuzhaigou.weights.h5"
     pred_path = run_dir / "seq2seq_test_predictions.csv"
     history_path = run_dir / "seq2seq_history.csv"
 
@@ -656,17 +696,22 @@ def main() -> None:
         x_encoder_train,
         x_decoder_train,
         y_train,
+        x_encoder_val,
+        x_decoder_val,
+        y_val,
         x_encoder_test,
         x_decoder_test,
         y_test,
         weather_train,
+        weather_val,
         weather_test,
+        target_dates_test,
+        encoder_dates_train,
         weather_cols,
     ) = prepare_seq2seq_data(
         df,
         encoder_steps=args.encoder_steps,
         decoder_steps=args.decoder_steps,
-        test_ratio=args.test_ratio,
     )
 
     # 动态峰值阈值：仅从训练集客流量计算，避免测试集泄露
@@ -710,17 +755,18 @@ def main() -> None:
             str(model_path),
             monitor="val_loss",
             save_best_only=True,
-            save_weights_only=False,
+            save_weights_only=True,
         )
     ]
 
     history = model.fit(
         [x_encoder_train, x_decoder_train],
         y_train,  # 传递完整的目标值（包含真实值和节假日标记）
-        validation_split=0.15,
+        validation_data=([x_encoder_val, x_decoder_val], y_val),
         epochs=args.epochs,
         batch_size=args.batch_size,
         callbacks=callbacks,
+        sample_weight=compute_sample_weights(pd.to_datetime(encoder_dates_train).month.values),
         verbose=1,
         shuffle=True
     )
@@ -739,8 +785,8 @@ def main() -> None:
     y_pred = scaler.inverse_transform(y_pred.reshape(-1, 1)).reshape(-1, args.decoder_steps)
     y_true = scaler.inverse_transform(y_test[:, :, 0].reshape(-1, 1)).reshape(-1, args.decoder_steps)
 
-    # 10. 保存模型
-    model.save(model_path)
+    # 10. 保存模型权重
+    model.save_weights(model_path)
     
     extra_meta = {
         "samples": int(len(df)),
@@ -749,7 +795,7 @@ def main() -> None:
         "epochs_requested": int(args.epochs),
         "epochs_trained": int(len(history.history["loss"])),
         "train_samples": int(len(x_encoder_train)),
-        "val_samples": int(len(x_encoder_train) * 0.15),
+        "val_samples": int(len(x_encoder_val)),
         "test_samples": int(len(x_encoder_test)),
         "features": [
             "visitor_count_scaled",      # 目标客流（归一化）
@@ -776,13 +822,9 @@ def main() -> None:
     pred_dates = []
     for i in range(len(x_encoder_test)):
         for j in range(args.decoder_steps):
-            date_idx = len(df) - len(x_encoder_test) - args.decoder_steps + i + j
-            if date_idx >= len(df):
-                continue
-                
-            pred_dates.append(pd.to_datetime(df["date"].iloc[date_idx]))
+            pred_dates.append(pd.to_datetime(target_dates_test[i, j]))
             pred_rows.append({
-                "date": str(df["date"].iloc[date_idx]),
+                "date": str(pd.to_datetime(target_dates_test[i, j])),
                 "y_true": y_true[i, j],
                 "y_pred": y_pred[i, j]
             })

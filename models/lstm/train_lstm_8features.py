@@ -55,6 +55,10 @@ from sklearn.preprocessing import MinMaxScaler
 
 matplotlib.use("Agg")
 
+TRAIN_RATIO = 0.80
+VAL_RATIO = 0.10
+TEST_RATIO = 0.10
+
 
 def mark_core_holiday(date_val: pd.Timestamp) -> int:
     """核心节假日标记函数。
@@ -224,6 +228,16 @@ def build_sequences(
     return np.array(x_list), np.array(y_list), np.array(d_list)
 
 
+def compute_sample_weights(months: np.ndarray) -> np.ndarray:
+    """旺季(4-11月)权重×2，淡季权重×1"""
+    weights = np.where(
+        np.isin(months, [4, 5, 6, 7, 8, 9, 10, 11]),
+        2.0,
+        1.0,
+    )
+    return weights.astype(np.float32)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="LSTM 客流预测训练脚本。")
     parser.add_argument(
@@ -316,24 +330,21 @@ def main() -> None:
     weather_temp_high_all = df[temp_high_col].values[args.look_back :].astype(float)
     weather_temp_low_all = df[temp_low_col].values[args.look_back :].astype(float)
     
-    # 时间划分训练/测试集
     n = len(X)
-    test_size = int(n * args.test_ratio)
-    train_size = n - test_size
-    
-    X_train = X[:train_size]
-    y_train = y[:train_size]
-    
-    X_test = X[train_size:]
-    y_test = y[train_size:]
+    train_end = int(n * TRAIN_RATIO)
+    val_end = int(n * (TRAIN_RATIO + VAL_RATIO))
 
-    weather_train_precip = weather_precip_all[:train_size]
-    weather_train_temp_high = weather_temp_high_all[:train_size]
-    weather_train_temp_low = weather_temp_low_all[:train_size]
+    X_train, y_train, d_train = X[:train_end], y[:train_end], dates[:train_end]
+    X_val, y_val, d_val = X[train_end:val_end], y[train_end:val_end], dates[train_end:val_end]
+    X_test, y_test, d_test = X[val_end:], y[val_end:], dates[val_end:]
 
-    weather_test_precip = weather_precip_all[train_size:]
-    weather_test_temp_high = weather_temp_high_all[train_size:]
-    weather_test_temp_low = weather_temp_low_all[train_size:]
+    weather_train_precip = weather_precip_all[:train_end]
+    weather_train_temp_high = weather_temp_high_all[:train_end]
+    weather_train_temp_low = weather_temp_low_all[:train_end]
+
+    weather_test_precip = weather_precip_all[val_end:]
+    weather_test_temp_high = weather_temp_high_all[val_end:]
+    weather_test_temp_low = weather_temp_low_all[val_end:]
 
     # 动态峰值阈值：仅从训练集客流量计算，避免测试集泄露
     train_visitor_counts = scaler.inverse_transform(y_train.reshape(-1, 1)).reshape(-1)
@@ -343,8 +354,8 @@ def main() -> None:
     print(f"动态峰值阈值（训练集 {args.peak_quantile*100:.0f} 分位数）: {dynamic_peak_threshold:.0f}")
     
     print(f"数据准备完成:")
-    print(f"  总样本数: {n}")
-    print(f"  训练样本: {train_size}, 测试样本: {test_size}")
+    print(f"  总样本数: {len(X)}")
+    print(f"  训练样本: {len(X_train)}, 验证样本: {len(X_val)}, 测试样本: {len(X_test)}")
     print(f"  输入形状: {X_train.shape}")
     print(f"  输出形状: {y_train.shape}")
 
@@ -382,10 +393,11 @@ def main() -> None:
 
     history = model.fit(
         X_train, y_train,
-        validation_split=args.val_ratio,
+        validation_data=(X_val, y_val),
         epochs=args.epochs,
         batch_size=args.batch_size,
         callbacks=callbacks,
+        sample_weight=compute_sample_weights(pd.to_datetime(d_train).month.values),
         verbose=1,
         shuffle=True
     )
@@ -428,7 +440,7 @@ def main() -> None:
             "epochs_requested": int(args.epochs),
             "epochs_trained": int(len(history.history["loss"])),
             "train_samples": int(len(X_train)),
-            "val_samples": int(len(X_train) * args.val_ratio),
+            "val_samples": int(len(X_val)),
             "test_samples": int(len(X_test)),
             "input_dim": 11,
             "features": [
@@ -466,12 +478,8 @@ def main() -> None:
     # 12. 保存测试预测结果
     pred_df = []
     for i in range(len(X_test)):
-        date_idx = len(df) - len(X_test) + i
-        if date_idx >= len(df):
-            continue
-            
         pred_df.append({
-            "date": str(df["date"].iloc[date_idx]),
+            "date": str(pd.to_datetime(d_test[i])),
             "y_true": y_true[i],
             "y_pred": y_pred[i]
         })
@@ -486,12 +494,12 @@ def main() -> None:
     
     # 保存可视化
     if args.save_plots and fig_dir:
-        dates = pd.to_datetime(df['date'].iloc[-len(y_true):])
-        generate_visualizations(fig_dir, history.history, dates, y_true, y_pred)
+        plot_dates = pd.to_datetime(d_test)
+        generate_visualizations(fig_dir, history.history, plot_dates, y_true, y_pred)
 
     # 13b. Unified core evaluation artifacts (metrics.json/metrics.csv/figures/*.png)
     try:
-        test_dates = pd.to_datetime(df["date"].iloc[-len(y_true) :]).values
+        test_dates = pd.to_datetime(d_test).values
     except Exception:
         test_dates = None
     evaluate_and_save_run(

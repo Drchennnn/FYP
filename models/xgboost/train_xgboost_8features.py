@@ -191,11 +191,14 @@ def load_and_engineer_features(input_csv: Path) -> tuple[pd.DataFrame, MinMaxSca
 
 # ── 训练/验证/测试切分 ────────────────────────────────────────────────────────
 def split_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """按 80/10/10 时序切分，不打乱顺序"""
+    """按时间顺序切分：80/10/10"""
     n = len(df)
     train_end = int(n * TRAIN_RATIO)
     val_end = int(n * (TRAIN_RATIO + VAL_RATIO))
-    return df.iloc[:train_end], df.iloc[train_end:val_end], df.iloc[val_end:]
+    train_df = df.iloc[:train_end].copy()
+    val_df = df.iloc[train_end:val_end].copy()
+    test_df = df.iloc[val_end:].copy()
+    return train_df, val_df, test_df
 
 
 # ── 特征列定义 ────────────────────────────────────────────────────────────────

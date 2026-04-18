@@ -35,6 +35,10 @@ from models.common.evaluator import calculate_metrics, save_metrics_to_files
 
 matplotlib.use("Agg")
 
+TRAIN_RATIO = 0.80
+VAL_RATIO = 0.10
+TEST_RATIO = 0.10
+
 
 def mark_core_holiday(date_val: pd.Timestamp) -> int:
     """核心节假日标记函数（与LSTM保持一致）
@@ -245,9 +249,9 @@ def split_by_time(
     """
     n = len(x)
     test_size = int(n * test_ratio)
-    trainval_size = n - test_size
-    val_size = int(trainval_size * val_ratio)
-    train_size = trainval_size - val_size
+    train_val_size = n - test_size
+    val_size = int(train_val_size * val_ratio)
+    train_size = train_val_size - val_size
 
     x_train = x[:train_size]
     y_train = y[:train_size]
@@ -257,10 +261,20 @@ def split_by_time(
     y_val = y[train_size : train_size + val_size]
     d_val = d[train_size : train_size + val_size]
 
-    x_test = x[trainval_size:]
-    y_test = y[trainval_size:]
-    d_test = d[trainval_size:]
+    x_test = x[train_size + val_size :]
+    y_test = y[train_size + val_size :]
+    d_test = d[train_size + val_size :]
     return x_train, y_train, d_train, x_val, y_val, d_val, x_test, y_test, d_test
+
+
+def compute_sample_weights(months: np.ndarray) -> np.ndarray:
+    """旺季(4-11月)权重×2，淡季权重×1"""
+    weights = np.where(
+        np.isin(months, [4, 5, 6, 7, 8, 9, 10, 11]),
+        2.0,
+        1.0,
+    )
+    return weights.astype(np.float32)
 
 
 def create_gru_model(look_back: int, n_features: int = 11) -> tf.keras.Model:
@@ -439,6 +453,12 @@ def main() -> None:
         x, y, d, test_ratio=args.test_ratio, val_ratio=args.val_ratio
     )
 
+    n_total = len(x)
+    test_size = int(n_total * args.test_ratio)
+    train_val_size = n_total - test_size
+    val_size = int(train_val_size * args.val_ratio)
+    train_size = train_val_size - val_size
+
     # 动态峰值阈值：仅从训练集客流量计算，避免测试集泄露
     train_visitor_counts = scaler.inverse_transform(y_train.reshape(-1, 1)).reshape(-1)
     dynamic_peak_threshold = compute_dynamic_peak_threshold(
@@ -447,15 +467,13 @@ def main() -> None:
     print(f"动态峰值阈值（训练集 {args.peak_quantile*100:.0f} 分位数）: {dynamic_peak_threshold:.0f}")
 
     # Split weather arrays using the same time split.
-    n_train = len(y_train)
-    n_val = len(y_val)
-    weather_train_precip = weather_precip_all[:n_train]
-    weather_train_temp_high = weather_temp_high_all[:n_train]
-    weather_train_temp_low = weather_temp_low_all[:n_train]
+    weather_train_precip = weather_precip_all[:train_size]
+    weather_train_temp_high = weather_temp_high_all[:train_size]
+    weather_train_temp_low = weather_temp_low_all[:train_size]
 
-    weather_test_precip = weather_precip_all[n_train + n_val :]
-    weather_test_temp_high = weather_temp_high_all[n_train + n_val :]
-    weather_test_temp_low = weather_temp_low_all[n_train + n_val :]
+    weather_test_precip = weather_precip_all[train_size + val_size :]
+    weather_test_temp_high = weather_temp_high_all[train_size + val_size :]
+    weather_test_temp_low = weather_temp_low_all[train_size + val_size :]
 
     # 4. 创建并训练GRU模型
     model = create_gru_model(args.look_back, x_train.shape[2])
@@ -481,6 +499,7 @@ def main() -> None:
         batch_size=args.batch_size,
         shuffle=False,
         callbacks=callbacks,
+        sample_weight=compute_sample_weights(pd.to_datetime(d_train).month.values),
         verbose=1,
     )
 
