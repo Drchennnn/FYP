@@ -187,6 +187,14 @@ def _rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
 
 
+def _nrmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = _to_1d(y_true).astype(float)
+    y_pred = _to_1d(y_pred).astype(float)
+    rmse = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+    value_range = float(y_true.max() - y_true.min())
+    return rmse / value_range if value_range > 0 else float("nan")
+
+
 def _sigmoid(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     # numerically stable sigmoid
@@ -338,6 +346,7 @@ def compute_core_metrics(
     reg = {
         "mae": _mae(y_true_flat, y_pred_flat),
         "rmse": _rmse(y_true_flat, y_pred_flat),
+        "nrmse": _nrmse(y_true_flat, y_pred_flat),
         "smape": _smape(y_true_flat, y_pred_flat),
     }
 
@@ -445,6 +454,7 @@ def compute_core_metrics(
                     "horizon": h + 1,
                     "mae": _mae(y_true[:, h], y_pred[:, h]),
                     "rmse": _rmse(y_true[:, h], y_pred[:, h]),
+                    "nrmse": _nrmse(y_true[:, h], y_pred[:, h]),
                     "smape": _smape(y_true[:, h], y_pred[:, h]),
                 }
             )
@@ -619,6 +629,7 @@ def save_metrics_artifacts(
     flat = {
         "mae": metrics["regression"]["mae"],
         "rmse": metrics["regression"]["rmse"],
+        "nrmse": metrics["regression"]["nrmse"],
         "smape": metrics["regression"]["smape"],
         "peak_only_mae": metrics["peak_only_mae"],
         "crowd_alert_precision": metrics["crowd_alert"]["precision"],
