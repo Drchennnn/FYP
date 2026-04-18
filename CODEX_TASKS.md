@@ -61,6 +61,78 @@ python run_pipeline.py --model gru --features 11 --epochs 5
 
 ---
 
+## P0.5 — NRMSE 归一化指标（P0 完成后立即做）
+
+**目标**：在所有模型的评估结果中，将 RMSE 替换为 **NRMSE（值域归一化 RMSE）**，作为论文主要回归指标。
+
+**定义**：
+```
+NRMSE = RMSE / (y_true_max - y_true_min)
+```
+其中 `y_true` 为**反归一化后的真实客流量**（人次/天，非 scaled 值）。
+
+### 需要修改的文件：`models/common/core_evaluation.py`
+
+**Step 1**：在 `_rmse()` 函数下方（约第 188 行）新增 `_nrmse()` 函数：
+
+```python
+def _nrmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = _to_1d(y_true).astype(float)
+    y_pred = _to_1d(y_pred).astype(float)
+    rmse = float(np.sqrt(np.mean((y_pred - y_true) ** 2)))
+    value_range = float(y_true.max() - y_true.min())
+    if value_range == 0:
+        return float("nan")
+    return rmse / value_range
+```
+
+**Step 2**：在 `reg` 字典（约第 338 行）中加入 `nrmse`：
+
+```python
+reg = {
+    "mae":   _mae(y_true_flat, y_pred_flat),
+    "rmse":  _rmse(y_true_flat, y_pred_flat),
+    "nrmse": _nrmse(y_true_flat, y_pred_flat),   # ← 新增
+    "smape": _smape(y_true_flat, y_pred_flat),
+}
+```
+
+**Step 3**：在 per-horizon 指标字典（约第 447 行，`for h in range(H)` 循环内）同样加入 `nrmse`：
+
+```python
+{
+    "mae":   _mae(y_true[:, h], y_pred[:, h]),
+    "rmse":  _rmse(y_true[:, h], y_pred[:, h]),
+    "nrmse": _nrmse(y_true[:, h], y_pred[:, h]),   # ← 新增
+    "smape": _smape(y_true[:, h], y_pred[:, h]),
+}
+```
+
+**Step 4**：在约第 620 行的顶层 metrics 汇总处加入 `nrmse`：
+
+```python
+"mae":   metrics["regression"]["mae"],
+"rmse":  metrics["regression"]["rmse"],
+"nrmse": metrics["regression"]["nrmse"],   # ← 新增
+"smape": metrics["regression"]["smape"],
+```
+
+### 验证
+
+```bash
+python -c "
+import json
+f = open('output/runs/gru_8features_20260406_172031/runs/run_20260406_172031_lb30_ep120_gru_8features/metrics.json')
+m = json.load(f)
+print('nrmse' in m['regression'], m['regression'].get('nrmse'))
+"
+# 预期：True 0.137...（约13.7%）
+```
+
+> **注意**：`core_evaluation.py` 中 RMSE 保留不删（`metrics.json` 向后兼容），`nrmse` 作为新增字段并列存在。
+
+---
+
 ## P1-A — XGBoost 模型补全
 
 **文件**：`models/xgboost/train_xgboost_8features.py`
