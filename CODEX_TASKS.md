@@ -1,183 +1,230 @@
-# Codex 任务书 v2 — 五模型统一重训对比
+# Codex 任务书 v3 — 四模型调参 + 重跑对比
 
 > **当前状态**（2026-04-18）：
-> - ✅ XGBoost 已完整训练（14特征，MAE=4326，NRMSE=16.7%）
-> - ✅ Transformer 已完整训练（11特征，120ep→早停58ep，MAE=2909，NRMSE=12.1%）
-> - ✅ Seq2Seq 已完整训练（8特征，MAE=3846）
-> - ❌ GRU/LSTM 只跑了 1 epoch（无效），需要用 **11特征** 正式重训
-> - ❌ 五模型 peak_threshold 不统一（旧run=18500，新run=32800），对比无意义
-> - ❌ GRU/LSTM 脚本尚未加入 P0 三个新特征
+> - ✅ 五模型已完整训练，最新对比见 `output/runs/run_compare_20260418_172530/report.md`
+> - ✅ Seq2Seq 保持 8 特征不动（结果最稳定，MAE=3846）
+> - ❌ GRU/LSTM 表现差于预期（MAE≈4300+，Suit-Recall 0.786/0.816），需要调参
+> - ❌ Transformer 有进一步提升空间（MAE=2909，lookback=30）
+> - ❌ XGBoost 超参未优化（MAE=4326，n_estimators=300 固定）
 >
-> **你的核心任务**：改 GRU/LSTM 脚本加入 11 特征 → 正式重训 GRU+LSTM → 跑五模型对比
+> **你的任务**：按下方调参方案修改各模型脚本默认值 → 重训四个模型 → 重跑五模型对比
 
 ---
 
-## 任务 1：GRU 脚本加入 P0 三个新特征
+## 当前五模型基准（对比参考）
+
+| 模型 | 特征 | MAE | NRMSE | sMAPE | Suit-Recall |
+|------|------|-----|-------|-------|-------------|
+| Transformer | 11 | 2,909 | 12.1% | 16.1% | 0.981 |
+| Seq2Seq | 8 | 3,846 | — | 21.0% | 0.952 ← 不动 |
+| LSTM | 11 | 4,306 | 16.2% | 22.3% | 0.816 |
+| XGBoost | 14 | 4,326 | 16.7% | 20.7% | 0.819 |
+| GRU | 11 | 4,389 | 16.4% | 21.7% | 0.786 |
+
+---
+
+## 任务 1：GRU 调参
 
 **文件**：`models/gru/train_gru_8features.py`
 
-### 1-A：在 `load_and_engineer_features()` 中新增特征构造
-
-找到函数内构造 lag_7 的位置，在其后追加：
+找到 `argparse` 参数定义，修改以下默认值：
 
 ```python
-# P0 扩展特征
-df["tourism_num_lag_14"] = df["tourism_num"].shift(14)
-df["tourism_num_rolling_mean_14"] = df["tourism_num"].rolling(14).mean()
-df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
+# 原来
+parser.add_argument("--look-back", type=int, default=30)
+parser.add_argument("--epochs",    type=int, default=120)
+
+# 改为
+parser.add_argument("--look-back", type=int, default=45)
+parser.add_argument("--epochs",    type=int, default=150)
 ```
 
-同时在 scaler fit/transform 段（lag_7_scaler 附近）追加：
+找到模型 `build_model()` 或内联的 GRU 层定义，修改单元数和 dropout：
 
 ```python
-lag14_scaler = MinMaxScaler()
-lag14_scaler.fit(train_df[["tourism_num_lag_14"]])
-df["tourism_num_lag_14_scaled"] = lag14_scaler.transform(df[["tourism_num_lag_14"]]).reshape(-1)
+# 原来（大约是）
+GRU(128, return_sequences=True, dropout=0.2, recurrent_dropout=0.2)
+GRU(64,  return_sequences=False, dropout=0.2, recurrent_dropout=0.2)
 
-rolling14_scaler = MinMaxScaler()
-rolling14_scaler.fit(train_df[["tourism_num_rolling_mean_14"]])
-df["rolling_mean_14_scaled"] = rolling14_scaler.transform(df[["tourism_num_rolling_mean_14"]]).reshape(-1)
-# is_peak_season 不需要归一化（已是 0/1）
+# 改为
+GRU(128, return_sequences=True,  dropout=0.1, recurrent_dropout=0.1)
+GRU(96,  return_sequences=False, dropout=0.1, recurrent_dropout=0.1)
 ```
 
-**重要**：scaler 只在训练集（`train_df`）上 fit，然后 transform 全量 df。与现有 lag_7 逻辑完全一致。
-
-### 1-B：在 `build_sequences()` 内更新 `feature_cols` 列表
-
-将原来的 8 个特征改为 11 个：
+找到 EarlyStopping callback，修改 patience：
 
 ```python
-feature_cols = [
-    "visitor_count_scaled",
-    "month_norm",
-    "day_of_week_norm",
-    "is_holiday",
-    "is_peak_season",            # 新增
-    "tourism_num_lag_7_scaled",
-    "tourism_num_lag_14_scaled",  # 新增
-    "rolling_mean_14_scaled",    # 新增
-    "meteo_precip_sum_scaled",
-    "temp_high_scaled",
-    "temp_low_scaled",
-]
-```
+# 原来
+EarlyStopping(patience=15, ...)
 
-### 1-C：确认 `is_peak_season` 函数存在
-
-在文件顶部（`mark_core_holiday` 附近）加入：
-
-```python
-def is_peak_season(date_val: pd.Timestamp) -> int:
-    """旺季：4月1日 ~ 11月15日"""
-    m, d = int(date_val.month), int(date_val.day)
-    if m < 4 or m > 11:
-        return 0
-    if m == 11 and d > 15:
-        return 0
-    return 1
-```
-
-### 1-D：dropna 覆盖新增列
-
-确保 dropna 的 subset 包含新列：
-```python
-df = df.dropna(subset=[..., "tourism_num_lag_14", "tourism_num_rolling_mean_14"])
+# 改为
+EarlyStopping(patience=20, restore_best_weights=True, ...)
 ```
 
 ### 验证
 
 ```bash
-python models/gru/train_gru_8features.py --epochs 2
-# 输出应包含：使用特征: [..., 'is_peak_season', 'tourism_num_lag_14_scaled', 'rolling_mean_14_scaled']
-# feature_count 应为 11
+python models/gru/train_gru_8features.py --epochs 3
+# 确认输出包含：look_back=45，无报错
 ```
 
 ---
 
-## 任务 2：LSTM 脚本同步相同修改
+## 任务 2：LSTM 调参
 
 **文件**：`models/lstm/train_lstm_8features.py`
 
-与任务 1 完全一致，对 `train_lstm_8features.py` 做同样的四步修改（1-A 到 1-D）。
+与 GRU 完全相同的四处修改：
+
+1. `--look-back` 默认值：`30` → `45`
+2. `--epochs` 默认值：`120` → `150`
+3. LSTM 第二层单元数：`64` → `96`，dropout：`0.2` → `0.1`
+4. EarlyStopping patience：`15` → `20`
 
 ### 验证
 
 ```bash
-python models/lstm/train_lstm_8features.py --epochs 2
-# feature_count 应为 11
+python models/lstm/train_lstm_8features.py --epochs 3
+# 确认输出包含：look_back=45，无报错
 ```
 
 ---
 
-## 任务 3：正式重训 GRU 和 LSTM（120 epoch）
+## 任务 3：Transformer 调参
 
-任务 1、2 验证通过后，运行完整训练：
+**文件**：`models/transformer/train_transformer_8features.py`
+
+修改 argparse 默认值：
+
+```python
+# 原来
+parser.add_argument("--look-back", type=int, default=30)
+parser.add_argument("--dropout",   type=float, default=0.1)
+parser.add_argument("--epochs",    type=int, default=120)
+
+# 改为
+parser.add_argument("--look-back", type=int, default=45)
+parser.add_argument("--dropout",   type=float, default=0.15)
+parser.add_argument("--epochs",    type=int, default=150)
+```
+
+EarlyStopping patience 同样改为 20。
+
+### 验证
 
 ```bash
-python run_pipeline.py --model gru --features 8 --epochs 120
-python run_pipeline.py --model lstm --features 8 --epochs 120
+python models/transformer/train_transformer_8features.py --epochs 3
+# 确认输出包含：look_back=45，无报错
 ```
-
-> 注意：`run_pipeline.py` 的 `--features 8` 参数是脚本选择用的，实际特征数已由脚本内部决定（现在是11）。不需要改 run_pipeline.py。
-
-**预期结果**：
-- GRU：MAE 目标 < 3500，peak_threshold 应为 32800（与 Transformer/XGBoost 一致）
-- LSTM：MAE 目标 < 4500
 
 ---
 
-## 任务 4：运行五模型对比
+## 任务 4：XGBoost 调参
 
-五个模型全部完整训练后，运行：
+**文件**：`models/xgboost/train_xgboost_8features.py`
+
+修改 `build_model()` 中的超参：
+
+```python
+# 原来
+XGBRegressor(
+    n_estimators=300,
+    max_depth=6,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_alpha=0.5,
+    reg_lambda=1.0,
+    ...
+)
+
+# 改为
+XGBRegressor(
+    n_estimators=500,       # 300 → 500
+    max_depth=5,            # 6 → 5（防过拟合）
+    learning_rate=0.03,     # 0.05 → 0.03（配合更多树）
+    subsample=0.8,
+    colsample_bytree=0.7,   # 0.8 → 0.7
+    min_child_weight=3,     # 新增，防止稀疏节点
+    reg_alpha=0.3,          # 0.5 → 0.3
+    reg_lambda=1.5,         # 1.0 → 1.5
+    early_stopping_rounds=40,  # 30 → 40
+    ...
+)
+```
+
+同时修改 argparse 默认值：
+
+```python
+parser.add_argument("--n-estimators", type=int, default=500)
+parser.add_argument("--max-depth",    type=int, default=5)
+parser.add_argument("--lr",           type=float, default=0.03)
+```
+
+### 验证
+
+```bash
+python models/xgboost/train_xgboost_8features.py --n-estimators 50 --max-depth 4
+# 确认正常运行，无报错
+```
+
+---
+
+## 任务 5：重训四个模型
+
+四个脚本验证通过后，**按顺序**运行完整训练：
+
+```bash
+python run_pipeline.py --model gru --features 8 --epochs 150
+python run_pipeline.py --model lstm --features 8 --epochs 150
+python models/transformer/train_transformer_8features.py
+python models/xgboost/train_xgboost_8features.py
+```
+
+> Seq2Seq 不重训，`run_benchmark.py` 会自动复用已有结果。
+
+**预期训练时间**：GRU ~10min，LSTM ~15min，Transformer ~20min，XGBoost ~5min
+
+---
+
+## 任务 6：重跑五模型对比
 
 ```bash
 python run_benchmark.py
 ```
 
-`run_benchmark.py` 会自动发现 `output/runs/` 下各模型类型的最新有效 run，生成：
-- `output/runs/run_compare_<timestamp>/report.md`
-- `output/runs/run_compare_<timestamp>/compare_metrics.csv`
+生成新的 `output/runs/run_compare_<timestamp>/report.md`。
 
-### 对比报告必须包含这五个模型
+**目标指标**（调参后预期）：
 
-| 模型 | 特征数 | 预期 MAE | 备注 |
-|------|--------|---------|------|
-| GRU | 11 | < 3500 | 任务3重训后 |
-| LSTM | 11 | < 4500 | 任务3重训后 |
-| Seq2Seq | 8 | ~3846 | 已有，直接用 |
-| XGBoost | 14 | ~4326 | 已有，直接用 |
-| Transformer | 11 | ~2909 | 已有，直接用 |
-
-**成功标准**：report.md 的 Metrics Table 中出现五行，且 GRU/LSTM 的 `epochs_trained > 30`（确认是完整训练）。
-
----
-
-## 注意事项
-
-1. **不要修改** `models/common/core_evaluation.py`（已有 NRMSE，不动）
-2. **不要修改** Seq2Seq、XGBoost、Transformer 脚本（已完成）
-3. lag_14 / rolling_mean_14 的 scaler 必须只在训练集 fit，逻辑与 lag_7 完全一致
-4. `dropna` 要覆盖新增列，否则 lag_14（需要14天历史）会导致前14行有 NaN 未清理
+| 模型 | MAE 目标 | Suit-Recall 目标 |
+|------|---------|----------------|
+| GRU | < 3,500 | > 0.90 |
+| LSTM | < 3,800 | > 0.90 |
+| Transformer | < 2,700 | > 0.97 |
+| XGBoost | < 4,000 | > 0.85 |
 
 ---
 
 ## 完成标志
 
 ```bash
-# 检查 GRU/LSTM 是否用了 11 特征且完整训练
 python -c "
 import json, glob
-for pattern in ['output/runs/gru_8features_*/runs/*/metrics.json',
-                'output/runs/lstm_8features_*/runs/*/metrics.json']:
+models = {
+    'gru':         'output/runs/gru_8features_*/runs/*/metrics.json',
+    'lstm':        'output/runs/lstm_8features_*/runs/*/metrics.json',
+    'transformer': 'output/runs/transformer_8features_*/runs/*/metrics.json',
+    'xgboost':     'output/runs/xgboost_8features_*/runs/*/metrics.json',
+}
+for name, pattern in models.items():
     files = sorted(glob.glob(pattern))
     if files:
         d = json.load(open(files[-1]))
+        r = d['regression']
         m = d['meta']
-        print(m['model_name'], 'feat=', m['feature_count'],
-              'epochs=', m.get('epochs_trained','?'),
-              'peak_thr=', m['peak_threshold'])
+        sw = d.get('suitability_warning', {})
+        print(f\"{name:12s} MAE={r['mae']:7.0f}  NRMSE={r.get('nrmse', float('nan')):.3f}  epochs={m.get('epochs_trained','?'):>3}  recall={sw.get('recall','?')}\")
 "
-# 预期输出：
-# gru  feat=11  epochs=XX(>30)  peak_thr=32800.0
-# lstm feat=11  epochs=XX(>30)  peak_thr=32800.0
+# 预期：四个模型 MAE 均低于当前值，epochs > 30
 ```
