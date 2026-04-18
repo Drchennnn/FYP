@@ -1,0 +1,16 @@
+{
+  "method": "split_conformal",
+  "model": "gru_8features",
+  "alpha": 0.1,
+  "confidence_level": 0.9,
+  "cal_size": 268,
+  "test_size": 268,
+  "q_hat": 6282.0,
+  "score_mean": 2797.0,
+  "score_max": 21644.6,
+  "picp": 0.7201,
+  "mpiw": 12563.9,
+  "winkler_score": 28043.3,
+  "coverage_guarantee": ">= 0.90 (finite-sample marginal)",
+  "generated_at": "2026-04-05T12:42:52.189960"
+}

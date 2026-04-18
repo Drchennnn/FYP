@@ -1,0 +1,9 @@
+feature,feature_key,mean_abs_shap
+Visitor Count (t-1~t-30),visitor_count_scaled,0.22928877
+Lag-7 Visitor Count,tourism_num_lag_7_scaled,0.016865166
+Month,month_norm,0.01556275
+Temp Low,temp_low_scaled,0.0125967655
+Is Holiday,is_holiday,0.012095459
+Day of Week,day_of_week_norm,0.0036159453
+Temp High,temp_high_scaled,0.0034407645
+Precipitation,meteo_precip_sum_scaled,0.0018411524

@@ -1,0 +1,30 @@
+{
+  "method": "deep_ensemble",
+  "n_members": 5,
+  "seeds": [
+    42,
+    7,
+    13,
+    99,
+    2024
+  ],
+  "alpha": 0.1,
+  "confidence_level": 0.9,
+  "test_size": 268,
+  "picp": 0.1194,
+  "mpiw": 1288.4,
+  "winkler_score": 71682.8,
+  "ensemble_mae": 4142.9,
+  "std_mean": 529.3,
+  "std_max": 1884.5,
+  "std_min": 28.6,
+  "member_maes": [
+    4058.7,
+    4196.4,
+    4148.6,
+    4251.3,
+    4187.6
+  ],
+  "ensemble_dir": "E:\\openclaw\\my_project\\workspace\\FYP\\output\\runs\\gru_ensemble_20260405_124534",
+  "generated_at": "2026-04-05T12:50:30.714747"
+}

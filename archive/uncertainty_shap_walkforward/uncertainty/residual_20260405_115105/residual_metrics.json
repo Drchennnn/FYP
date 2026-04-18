@@ -1,0 +1,15 @@
+{
+  "method": "residual_quantile",
+  "model": "gru_8features",
+  "alpha": 0.1,
+  "confidence_level": 0.9,
+  "val_size": 268,
+  "test_size": 268,
+  "q_low": 4012.23,
+  "q_high": 33455.01,
+  "interval_width_fixed": 29442.78,
+  "picp": 0.7388,
+  "mpiw": 29442.8,
+  "winkler_score": 53647.0,
+  "generated_at": "2026-04-05T11:51:05.308097"
+}

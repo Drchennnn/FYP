@@ -1,0 +1,28 @@
+{
+  "method": "deep_ensemble_conformal",
+  "cal_source": "val",
+  "n_members": 5,
+  "seeds": [
+    42,
+    7,
+    13,
+    99,
+    2024
+  ],
+  "alpha": 0.1,
+  "confidence_level": 0.9,
+  "cal_size": 268,
+  "test_size": 268,
+  "q_hat": 17.5855,
+  "eps": 1.0,
+  "picp": 0.8433,
+  "mpiw": 18650.6,
+  "winkler_score": 27083.0,
+  "ensemble_mae": 4142.9,
+  "std_mean": 529.3,
+  "std_max": 1884.5,
+  "half_width_mean": 9325.3,
+  "half_width_max": 33156.8,
+  "ensemble_dir": "E:\\openclaw\\my_project\\workspace\\FYP\\output\\runs\\gru_ensemble_20260405_124534",
+  "generated_at": "2026-04-05T12:54:58.114423"
+}

@@ -1,0 +1,15 @@
+{
+  "method": "mc_dropout",
+  "model": "gru_8features",
+  "T": 50,
+  "alpha": 0.1,
+  "confidence_level": 0.9,
+  "test_size": 268,
+  "picp": 0.0,
+  "mpiw": NaN,
+  "winkler_score": NaN,
+  "std_mean": NaN,
+  "std_max": NaN,
+  "std_min": NaN,
+  "generated_at": "2026-04-05T11:59:17.380878"
+}
