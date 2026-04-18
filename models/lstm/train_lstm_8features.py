@@ -80,6 +80,16 @@ def mark_core_holiday(date_val: pd.Timestamp) -> int:
         return 0
 
 
+def is_peak_season(date_val: pd.Timestamp) -> int:
+    """旺季：4月1日 ~ 11月15日"""
+    m, d = int(date_val.month), int(date_val.day)
+    if m < 4 or m > 11:
+        return 0
+    if m == 11 and d > 15:
+        return 0
+    return 1
+
+
 def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     """加载数据并进行特征工程（8特征版本）
     
@@ -110,6 +120,7 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
 
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+    df = df[df["date"] >= "2023-06-01"].reset_index(drop=True)
     df["visitor_count"] = pd.to_numeric(df[target_col], errors="coerce")
     df = df.dropna(subset=["visitor_count"]).reset_index(drop=True)
 
@@ -117,25 +128,100 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     df["month"] = df["date"].dt.month
     df["day_of_week"] = df["date"].dt.weekday
     df["is_holiday"] = df["date"].apply(mark_core_holiday).astype(float)
+    df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
 
     # 时间特征归一化
     df["month_norm"] = (df["month"] - 1) / 11.0
     df["day_of_week_norm"] = df["day_of_week"] / 6.0
 
-    # 检查并确保所有8个特征都存在
+    # 构造 lag / rolling 原始特征（P0 扩展）
+    df["tourism_num_lag_7"] = df["visitor_count"].shift(7)
+    df["tourism_num_lag_14"] = df["visitor_count"].shift(14)
+    df["tourism_num_rolling_mean_14"] = df["visitor_count"].rolling(14).mean()
+
+    # 检查并确保天气缩放特征存在
     required_features = [
-        "tourism_num_lag_7_scaled",
-        "meteo_precip_sum_scaled", 
+        "meteo_precip_sum_scaled",
         "temp_high_scaled",
-        "temp_low_scaled"
+        "temp_low_scaled",
     ]
-    
     for feature in required_features:
         if feature not in df.columns:
             print(f"警告: 特征 '{feature}' 不存在，将用0填充")
             df[feature] = 0.0
-    
+
+    # dropna 覆盖新增列
+    df = df.dropna(
+        subset=[
+            "visitor_count",
+            "tourism_num_lag_7",
+            "tourism_num_lag_14",
+            "tourism_num_rolling_mean_14",
+            "meteo_precip_sum_scaled",
+            "temp_high_scaled",
+            "temp_low_scaled",
+        ]
+    ).reset_index(drop=True)
+
+    # scaler 仅在训练集 fit，再 transform 全量（与 lag_7 逻辑一致）
+    train_end = int(len(df) * 0.8)
+    if train_end <= 0:
+        raise ValueError("有效样本不足，无法拟合 lag/rolling scaler。")
+    train_df = df.iloc[:train_end]
+
+    lag7_scaler = MinMaxScaler()
+    lag7_scaler.fit(train_df[["tourism_num_lag_7"]])
+    df["tourism_num_lag_7_scaled"] = lag7_scaler.transform(df[["tourism_num_lag_7"]]).reshape(-1)
+
+    lag14_scaler = MinMaxScaler()
+    lag14_scaler.fit(train_df[["tourism_num_lag_14"]])
+    df["tourism_num_lag_14_scaled"] = lag14_scaler.transform(df[["tourism_num_lag_14"]]).reshape(-1)
+
+    rolling14_scaler = MinMaxScaler()
+    rolling14_scaler.fit(train_df[["tourism_num_rolling_mean_14"]])
+    df["rolling_mean_14_scaled"] = rolling14_scaler.transform(
+        df[["tourism_num_rolling_mean_14"]]
+    ).reshape(-1)
+
     return df
+
+
+def build_sequences(
+    df: pd.DataFrame,
+    look_back: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """构建时间序列输入（11特征版本）"""
+    feature_cols = [
+        "visitor_count_scaled",
+        "month_norm",
+        "day_of_week_norm",
+        "is_holiday",
+        "is_peak_season",
+        "tourism_num_lag_7_scaled",
+        "tourism_num_lag_14_scaled",
+        "rolling_mean_14_scaled",
+        "meteo_precip_sum_scaled",
+        "temp_high_scaled",
+        "temp_low_scaled",
+    ]
+
+    for col in feature_cols:
+        if col not in df.columns:
+            raise ValueError(f"缺失特征列: {col}")
+
+    values = df[feature_cols].values.astype(np.float32)
+    target = df["visitor_count_scaled"].values.astype(np.float32)
+    dates = df["date"].values
+
+    x_list, y_list, d_list = [], [], []
+    for i in range(look_back, len(df)):
+        x_list.append(values[i - look_back : i, :])
+        y_list.append(target[i])
+        d_list.append(dates[i])
+
+    print(f"序列构建完成: {len(x_list)} 个样本，特征维度: {len(feature_cols)}")
+    print(f"使用特征: {feature_cols}")
+    return np.array(x_list), np.array(y_list), np.array(d_list)
 
 
 def main() -> None:
@@ -145,8 +231,8 @@ def main() -> None:
         default="data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
         help="输入 CSV（需包含 date + 客流列）。",
     )
-    parser.add_argument("--look-back", type=int, default=30, help="历史窗口长度。")
-    parser.add_argument("--epochs", type=int, default=120, help="训练轮次（建议 >=100）。")
+    parser.add_argument("--look-back", type=int, default=45, help="历史窗口长度。")
+    parser.add_argument("--epochs", type=int, default=150, help="训练轮次（建议 >=100）。")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--val-ratio", type=float, default=0.125)
@@ -208,18 +294,7 @@ def main() -> None:
     scaler = MinMaxScaler()
     df["visitor_count_scaled"] = scaler.fit_transform(df[["visitor_count"]]).reshape(-1)
 
-    # 使用统一数据加载器构建序列（通过sys.path调整）
-    import sys
-    from pathlib import Path
-    
-    # 添加项目根目录到sys.path
-    project_root = Path(__file__).resolve().parents[2]
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    
-    from data.data_loader import build_sequences
-    
-    X, y, dates = build_sequences(df, args.look_back, model_type="lstm", features=8)
+    X, y, dates = build_sequences(df, args.look_back)
 
     # Weather arrays aligned to each y sample date (real units, NOT scaled).
     # Assumption: weather is exogenous (from dataset/API) and available at prediction time.
@@ -275,9 +350,9 @@ def main() -> None:
 
     # 4. 创建 LSTM 模型（标准单步预测）
     model = tf.keras.Sequential([
-        tf.keras.layers.LSTM(128, return_sequences=True, dropout=0.2, recurrent_dropout=0.2, input_shape=(X_train.shape[1], X_train.shape[2])),
-        tf.keras.layers.LSTM(64, return_sequences=True, dropout=0.2, recurrent_dropout=0.2),
-        tf.keras.layers.LSTM(32, dropout=0.2, recurrent_dropout=0.2),
+        tf.keras.layers.LSTM(128, return_sequences=True, dropout=0.1, recurrent_dropout=0.1, input_shape=(X_train.shape[1], X_train.shape[2])),
+        tf.keras.layers.LSTM(96, return_sequences=True, dropout=0.1, recurrent_dropout=0.1),
+        tf.keras.layers.LSTM(32, dropout=0.1, recurrent_dropout=0.1),
         tf.keras.layers.Dense(1)
     ])
 
@@ -288,7 +363,7 @@ def main() -> None:
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss",
-            patience=15,
+            patience=20,
             restore_best_weights=True,
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
@@ -355,19 +430,22 @@ def main() -> None:
             "train_samples": int(len(X_train)),
             "val_samples": int(len(X_train) * args.val_ratio),
             "test_samples": int(len(X_test)),
-            "input_dim": 8,
+            "input_dim": 11,
             "features": [
                 "visitor_count_scaled",
                 "month_norm",
                 "day_of_week_norm",
                 "is_holiday",
+                "is_peak_season",
                 "tourism_num_lag_7_scaled",
+                "tourism_num_lag_14_scaled",
+                "rolling_mean_14_scaled",
                 "meteo_precip_sum_scaled",
                 "temp_high_scaled",
                 "temp_low_scaled"
             ],
             "model_architecture": "LSTM-128-64-32",
-            "feature_version": "8_features_v1",
+            "feature_version": "11_features_v1",
             "loss_function": "MSE"
         }
     }
@@ -419,7 +497,7 @@ def main() -> None:
     evaluate_and_save_run(
         str(run_dir),
         model_name="lstm",
-        feature_count=8,
+        feature_count=11,
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
         dates=test_dates,

@@ -46,7 +46,7 @@ OUTPUT_BASE = PROJECT_ROOT / "output" / "runs"
 TRAIN_RATIO = 0.80
 VAL_RATIO   = 0.10
 TEST_RATIO  = 0.10
-LOOK_BACK   = 30          # 与 GRU/LSTM 保持一致
+LOOK_BACK   = 45          # 与 GRU/LSTM 保持一致
 
 
 # ── 节假日 / 旺季标记（与 GRU 保持一致）─────────────────────────────────────
@@ -86,12 +86,87 @@ def load_and_engineer_features(input_csv: Path) -> tuple[pd.DataFrame, MinMaxSca
 
         IMPORTANT: MinMaxScaler 只在训练集上 fit，然后 transform 全集。
     """
-    df = pd.read_csv(input_csv)
+    df = pd.read_csv(input_csv, encoding="utf-8-sig")
     df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
+    df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+    df = df[df["date"] >= "2023-06-01"].reset_index(drop=True)
 
-    # TODO: 参照 GRU 脚本补全特征工程逻辑
-    raise NotImplementedError("TODO: implement feature engineering")
+    if "tourism_num" in df.columns:
+        target_col = "tourism_num"
+    elif "visitor_count" in df.columns:
+        target_col = "visitor_count"
+    else:
+        raise ValueError("未找到目标列，请包含 'tourism_num' 或 'visitor_count'。")
+
+    df["visitor_count"] = pd.to_numeric(df[target_col], errors="coerce")
+    df = df.dropna(subset=["visitor_count"]).reset_index(drop=True)
+
+    df["month_norm"] = (df["date"].dt.month - 1) / 11.0
+    df["day_of_week_norm"] = df["date"].dt.weekday / 6.0
+    df["is_holiday"] = df["date"].apply(mark_core_holiday).astype(float)
+    df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
+
+    # P0 扩展：lag_14 + rolling_mean_14
+    df["tourism_num_lag_7"] = df["visitor_count"].shift(7)
+    df["tourism_num_lag_14"] = df["visitor_count"].shift(14)
+    df["tourism_num_rolling_mean_14"] = df["visitor_count"].rolling(14).mean()
+
+    def _pick_col(candidates: list[str]) -> str | None:
+        for col in candidates:
+            if col in df.columns:
+                return col
+        return None
+
+    precip_src = _pick_col(["meteo_precip_sum", "meteo_rain_sum", "precip_sum"])
+    temp_high_src = _pick_col(["meteo_temp_max", "temp_high_c", "temp_high"])
+    temp_low_src = _pick_col(["meteo_temp_min", "temp_low_c", "temp_low"])
+
+    if precip_src is None:
+        df["precip_raw"] = 0.0
+    else:
+        df["precip_raw"] = pd.to_numeric(df[precip_src], errors="coerce")
+
+    if temp_high_src is None:
+        df["temp_high_raw"] = 0.0
+    else:
+        df["temp_high_raw"] = pd.to_numeric(df[temp_high_src], errors="coerce")
+
+    if temp_low_src is None:
+        df["temp_low_raw"] = 0.0
+    else:
+        df["temp_low_raw"] = pd.to_numeric(df[temp_low_src], errors="coerce")
+
+    df = df.dropna(
+        subset=[
+            "visitor_count",
+            "tourism_num_lag_7",
+            "tourism_num_lag_14",
+            "tourism_num_rolling_mean_14",
+            "precip_raw",
+            "temp_high_raw",
+            "temp_low_raw",
+        ]
+    ).reset_index(drop=True)
+
+    train_end = int(len(df) * TRAIN_RATIO)
+    if train_end <= 0:
+        raise ValueError("数据量不足，无法完成训练集拟合。")
+
+    def _fit_transform_col(raw_col: str, scaled_col: str) -> MinMaxScaler:
+        scaler = MinMaxScaler()
+        scaler.fit(df.iloc[:train_end][[raw_col]])
+        df[scaled_col] = scaler.transform(df[[raw_col]]).reshape(-1)
+        return scaler
+
+    visitor_scaler = _fit_transform_col("visitor_count", "visitor_count_scaled")
+    _fit_transform_col("tourism_num_lag_7", "tourism_num_lag_7_scaled")
+    _fit_transform_col("tourism_num_lag_14", "tourism_num_lag_14_scaled")
+    _fit_transform_col("tourism_num_rolling_mean_14", "rolling_mean_14_scaled")
+    _fit_transform_col("precip_raw", "meteo_precip_sum_scaled")
+    _fit_transform_col("temp_high_raw", "temp_high_scaled")
+    _fit_transform_col("temp_low_raw", "temp_low_scaled")
+
+    return df, visitor_scaler
 
 
 # ── 序列构建（与 GRU 完全相同）───────────────────────────────────────────────
@@ -106,7 +181,11 @@ def build_sequences(
         y shape: (N,)  — 每窗口的下一步目标值（visitor_count_scaled，index=0）
         逻辑与 GRU 脚本完全相同，可直接复制。
     """
-    raise NotImplementedError("TODO: implement build_sequences()")
+    x_list, y_list = [], []
+    for i in range(look_back, len(data)):
+        x_list.append(data[i - look_back : i, :])
+        y_list.append(data[i, 0])  # 目标始终是第0列 visitor_count_scaled
+    return np.asarray(x_list, dtype=np.float32), np.asarray(y_list, dtype=np.float32)
 
 
 # ── Transformer 组件 ──────────────────────────────────────────────────────────
@@ -124,11 +203,15 @@ class PositionalEncoding(tf.keras.layers.Layer):
     def __init__(self, d_model: int, max_len: int = 512, **kwargs):
         super().__init__(**kwargs)
         self.d_model = d_model
-        # TODO: 预计算 pe 矩阵，shape=(1, max_len, d_model)
+        positions = np.arange(max_len)[:, np.newaxis]
+        dims = np.arange(d_model)[np.newaxis, :]
+        angles = positions / np.power(10000.0, (2 * (dims // 2)) / float(d_model))
+        angles[:, 0::2] = np.sin(angles[:, 0::2])
+        angles[:, 1::2] = np.cos(angles[:, 1::2])
+        self.pe = tf.cast(angles[np.newaxis, :, :], tf.float32)
 
     def call(self, x):
-        # TODO: return x + self.pe[:, :tf.shape(x)[1], :]
-        raise NotImplementedError("TODO: implement PositionalEncoding.call()")
+        return x + self.pe[:, :tf.shape(x)[1], :]
 
 
 class TransformerEncoderBlock(tf.keras.layers.Layer):
@@ -146,11 +229,25 @@ class TransformerEncoderBlock(tf.keras.layers.Layer):
     """
     def __init__(self, num_heads: int, d_model: int, dff: int, dropout_rate: float, **kwargs):
         super().__init__(**kwargs)
-        # TODO: 初始化 MHA、FFN Dense 层、LayerNorm、Dropout
+        if d_model % num_heads != 0:
+            raise ValueError(f"d_model={d_model} 必须能被 num_heads={num_heads} 整除。")
+        self.mha = tf.keras.layers.MultiHeadAttention(
+            num_heads=num_heads, key_dim=d_model // num_heads
+        )
+        self.ffn1 = tf.keras.layers.Dense(dff, activation="relu")
+        self.ffn2 = tf.keras.layers.Dense(d_model)
+        self.norm1 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.norm2 = tf.keras.layers.LayerNormalization(epsilon=1e-6)
+        self.drop1 = tf.keras.layers.Dropout(dropout_rate)
+        self.drop2 = tf.keras.layers.Dropout(dropout_rate)
 
     def call(self, x, training=False):
-        # TODO: 实现前向传播
-        raise NotImplementedError("TODO: implement TransformerEncoderBlock.call()")
+        attn = self.mha(x, x, training=training)
+        attn = self.drop1(attn, training=training)
+        x = self.norm1(x + attn)
+        ffn = self.ffn2(self.ffn1(x))
+        ffn = self.drop2(ffn, training=training)
+        return self.norm2(x + ffn)
 
 
 def build_model(
@@ -181,7 +278,22 @@ def build_model(
         3. compile: optimizer=Adam(1e-3), loss=Huber()
         4. 返回 model
     """
-    raise NotImplementedError("TODO: implement build_model()")
+    inp = tf.keras.Input(shape=(look_back, n_features))
+    x = tf.keras.layers.Dense(d_model)(inp)
+    x = PositionalEncoding(d_model)(x)
+    for _ in range(num_layers):
+        x = TransformerEncoderBlock(num_heads, d_model, dff, dropout_rate)(x)
+    x = tf.keras.layers.GlobalAveragePooling1D()(x)
+    x = tf.keras.layers.Dense(64, activation="relu")(x)
+    x = tf.keras.layers.Dropout(dropout_rate)(x)
+    out = tf.keras.layers.Dense(1)(x)
+
+    model = tf.keras.Model(inp, out)
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        loss=tf.keras.losses.Huber(),
+    )
+    return model
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -189,22 +301,62 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Transformer Encoder 客流预测")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA_PATH)
     parser.add_argument("--look-back", type=int, default=LOOK_BACK)
-    parser.add_argument("--epochs", type=int, default=120)
+    parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--d-model", type=int, default=64)
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--dff", type=int, default=128)
-    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--dropout", type=float, default=0.15)
     parser.add_argument("--peak-quantile", type=float, default=0.75)
     args = parser.parse_args()
 
+    np.random.seed(42)
+    tf.random.set_seed(42)
+
     # ── 数据准备 ────────────────────────────────────────────────────────────
-    # TODO (Codex):
-    #   df, scaler = load_and_engineer_features(args.data)
-    #   feature_cols 包含 11 个扩展特征（P0）
-    #   按 80/10/10 切分，build_sequences() 构建 X/y
-    #   与 GRU 脚本保持完全一致的切分逻辑
+    df, scaler = load_and_engineer_features(args.data)
+    feature_cols = [
+        "visitor_count_scaled",
+        "month_norm",
+        "day_of_week_norm",
+        "is_holiday",
+        "is_peak_season",
+        "tourism_num_lag_7_scaled",
+        "tourism_num_lag_14_scaled",
+        "rolling_mean_14_scaled",
+        "meteo_precip_sum_scaled",
+        "temp_high_scaled",
+        "temp_low_scaled",
+    ]
+
+    data = df[feature_cols].values.astype(np.float32)
+    X_all, y_all = build_sequences(data, args.look_back)
+    all_dates = pd.to_datetime(df["date"]).values[args.look_back:]
+    weather_precip_all = df["precip_raw"].values[args.look_back:].astype(float)
+    weather_temp_high_all = df["temp_high_raw"].values[args.look_back:].astype(float)
+    weather_temp_low_all = df["temp_low_raw"].values[args.look_back:].astype(float)
+
+    n = len(X_all)
+    train_end = int(n * TRAIN_RATIO)
+    val_end = int(n * (TRAIN_RATIO + VAL_RATIO))
+
+    X_train, y_train = X_all[:train_end], y_all[:train_end]
+    X_val, y_val = X_all[train_end:val_end], y_all[train_end:val_end]
+    X_test, y_test = X_all[val_end:], y_all[val_end:]
+    d_test = all_dates[val_end:]
+
+    weather_train_precip = weather_precip_all[:train_end]
+    weather_train_temp_high = weather_temp_high_all[:train_end]
+    weather_train_temp_low = weather_temp_low_all[:train_end]
+    weather_test_precip = weather_precip_all[val_end:]
+    weather_test_temp_high = weather_temp_high_all[val_end:]
+    weather_test_temp_low = weather_temp_low_all[val_end:]
+
+    train_visitor_counts = scaler.inverse_transform(y_train.reshape(-1, 1)).reshape(-1)
+    dynamic_peak_threshold = compute_dynamic_peak_threshold(
+        train_visitor_counts, quantile=args.peak_quantile
+    )
 
     # ── 输出目录 ─────────────────────────────────────────────────────────────
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -218,41 +370,98 @@ def main() -> None:
     fig_dir.mkdir(exist_ok=True)
 
     # ── 模型训练 ─────────────────────────────────────────────────────────────
-    # TODO (Codex):
-    #   model = build_model(args.look_back, n_features, args.d_model,
-    #                       args.num_heads, args.num_layers, args.dff, args.dropout)
-    #   callbacks: EarlyStopping(patience=15, restore_best_weights=True)
-    #              ReduceLROnPlateau(factor=0.5, patience=8, min_lr=1e-6)
-    #              ModelCheckpoint(weights_dir/"transformer_best.h5", save_best_only=True)
-    #   history = model.fit(X_train, y_train,
-    #                       validation_data=(X_val, y_val),
-    #                       epochs=args.epochs, batch_size=args.batch_size,
-    #                       callbacks=callbacks)
-    #   model.save(weights_dir / "transformer_8features.h5")
+    n_features = len(feature_cols)
+    model = build_model(
+        args.look_back,
+        n_features,
+        args.d_model,
+        args.num_heads,
+        args.num_layers,
+        args.dff,
+        args.dropout,
+    )
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_loss", patience=20, restore_best_weights=True
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss", factor=0.5, patience=8, min_lr=1e-6
+        ),
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=str(weights_dir / "transformer_best.h5"),
+            monitor="val_loss",
+            save_best_only=True,
+        ),
+    ]
+    history = model.fit(
+        X_train,
+        y_train,
+        validation_data=(X_val, y_val),
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        shuffle=False,
+        callbacks=callbacks,
+        verbose=1,
+    )
+    model.save(weights_dir / "transformer_8features.h5")
 
     # ── 预测与反归一化 ───────────────────────────────────────────────────────
-    # TODO (Codex):
-    #   与 GRU 脚本完全一致：
-    #   y_pred_scaled = model.predict(X_test).ravel()
-    #   y_true = scaler.inverse_transform(y_test.reshape(-1,1)).ravel()
-    #   y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1,1)).ravel()
-    #   y_pred = np.clip(y_pred, 0, None)
+    y_pred_scaled = model.predict(X_test, verbose=0).ravel()
+    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).ravel()
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
+    y_pred = np.clip(y_pred, 0, None)
+
+    pred_df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(d_test),
+            "y_true": y_true,
+            "y_pred": y_pred,
+        }
+    ).sort_values("date")
+    pred_df.to_csv(run_dir / "transformer_test_predictions.csv", index=False, encoding="utf-8-sig")
 
     # ── 评估（复用统一框架）────────────────────────────────────────────────
-    # TODO (Codex):
-    #   evaluate_and_save_run(
-    #       str(run_dir), model_name="transformer", feature_count=n_features,
-    #       y_true=y_true, y_pred=y_pred,
-    #       dates=pd.to_datetime(test_df["date"]).values,
-    #       horizon=1, peak_threshold=dynamic_peak_threshold,
-    #       warning_temperature=1000.0, fn_fp_cost_ratio=(5.0, 1.0),
-    #       weather_precip=..., weather_temp_high=..., weather_temp_low=...,
-    #       weather_train_precip=..., weather_train_temp_high=..., weather_train_temp_low=...,
-    #       extra_meta={"d_model": args.d_model, "num_heads": args.num_heads,
-    #                   "num_layers": args.num_layers, "look_back": args.look_back},
-    #   )
+    evaluate_and_save_run(
+        str(run_dir),
+        model_name="transformer",
+        feature_count=n_features,
+        y_true=np.asarray(y_true),
+        y_pred=np.asarray(y_pred),
+        dates=pd.to_datetime(d_test),
+        horizon=1,
+        peak_threshold=dynamic_peak_threshold,
+        warning_temperature=1000.0,
+        fn_fp_cost_ratio=(5.0, 1.0),
+        weather_precip=np.asarray(weather_test_precip),
+        weather_temp_high=np.asarray(weather_test_temp_high),
+        weather_temp_low=np.asarray(weather_test_temp_low),
+        weather_train_precip=np.asarray(weather_train_precip),
+        weather_train_temp_high=np.asarray(weather_train_temp_high),
+        weather_train_temp_low=np.asarray(weather_train_temp_low),
+        extra_meta={
+            "d_model": int(args.d_model),
+            "num_heads": int(args.num_heads),
+            "num_layers": int(args.num_layers),
+            "dff": int(args.dff),
+            "dropout": float(args.dropout),
+            "look_back": int(args.look_back),
+            "epochs_requested": int(args.epochs),
+            "epochs_trained": int(len(history.history.get("loss", []))),
+            "peak_threshold_source": "dynamic_train_quantile",
+            "peak_quantile": float(args.peak_quantile),
+        },
+    )
 
-    print("Transformer 框架骨架已就绪，等待 Codex 补全 TODO 部分。")
+    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
+    try:
+        save_metrics_to_files(metrics, str(run_dir), "transformer_baseline")
+    except TypeError:
+        pass
+
+    print("Transformer 训练完成！")
+    print(f"运行目录: {run_dir}")
+    print(f"特征维度: {n_features}")
+    print(f"MAE: {metrics['regression']['mae']:.4f}")
 
 
 if __name__ == "__main__":

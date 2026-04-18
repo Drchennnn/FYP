@@ -60,6 +60,16 @@ def mark_core_holiday(date_val: pd.Timestamp) -> int:
         return 0
 
 
+def is_peak_season(date_val: pd.Timestamp) -> int:
+    """旺季：4月1日 ~ 11月15日"""
+    m, d = int(date_val.month), int(date_val.day)
+    if m < 4 or m > 11:
+        return 0
+    if m == 11 and d > 15:
+        return 0
+    return 1
+
+
 def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     """加载数据并进行特征工程（8特征版本）
     
@@ -90,6 +100,7 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
 
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+    df = df[df["date"] >= "2023-06-01"].reset_index(drop=True)
     df["visitor_count"] = pd.to_numeric(df[target_col], errors="coerce")
     df = df.dropna(subset=["visitor_count"]).reset_index(drop=True)
 
@@ -97,24 +108,61 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     df["month"] = df["date"].dt.month
     df["day_of_week"] = df["date"].dt.weekday
     df["is_holiday"] = df["date"].apply(mark_core_holiday).astype(float)
+    df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
 
     # 时间特征归一化
     df["month_norm"] = (df["month"] - 1) / 11.0
     df["day_of_week_norm"] = df["day_of_week"] / 6.0
 
-    # 检查并确保所有8个特征都存在
+    # 构造 lag / rolling 原始特征（P0 扩展）
+    df["tourism_num_lag_7"] = df["visitor_count"].shift(7)
+    df["tourism_num_lag_14"] = df["visitor_count"].shift(14)
+    df["tourism_num_rolling_mean_14"] = df["visitor_count"].rolling(14).mean()
+
+    # 检查并确保天气缩放特征存在
     required_features = [
-        "tourism_num_lag_7_scaled",
-        "meteo_precip_sum_scaled", 
+        "meteo_precip_sum_scaled",
         "temp_high_scaled",
-        "temp_low_scaled"
+        "temp_low_scaled",
     ]
-    
     for feature in required_features:
         if feature not in df.columns:
             print(f"警告: 特征 '{feature}' 不存在，将用0填充")
             df[feature] = 0.0
-    
+
+    # dropna 覆盖新增列
+    df = df.dropna(
+        subset=[
+            "visitor_count",
+            "tourism_num_lag_7",
+            "tourism_num_lag_14",
+            "tourism_num_rolling_mean_14",
+            "meteo_precip_sum_scaled",
+            "temp_high_scaled",
+            "temp_low_scaled",
+        ]
+    ).reset_index(drop=True)
+
+    # scaler 仅在训练集 fit，再 transform 全量（与 lag_7 逻辑一致）
+    train_end = int(len(df) * 0.8)
+    if train_end <= 0:
+        raise ValueError("有效样本不足，无法拟合 lag/rolling scaler。")
+    train_df = df.iloc[:train_end]
+
+    lag7_scaler = MinMaxScaler()
+    lag7_scaler.fit(train_df[["tourism_num_lag_7"]])
+    df["tourism_num_lag_7_scaled"] = lag7_scaler.transform(df[["tourism_num_lag_7"]]).reshape(-1)
+
+    lag14_scaler = MinMaxScaler()
+    lag14_scaler.fit(train_df[["tourism_num_lag_14"]])
+    df["tourism_num_lag_14_scaled"] = lag14_scaler.transform(df[["tourism_num_lag_14"]]).reshape(-1)
+
+    rolling14_scaler = MinMaxScaler()
+    rolling14_scaler.fit(train_df[["tourism_num_rolling_mean_14"]])
+    df["rolling_mean_14_scaled"] = rolling14_scaler.transform(
+        df[["tourism_num_rolling_mean_14"]]
+    ).reshape(-1)
+
     return df
 
 
@@ -142,14 +190,17 @@ def build_sequences(
         Tuple[np.ndarray, np.ndarray, np.ndarray]: (特征序列, 目标值, 日期)
     """
     feature_cols = [
-        "visitor_count_scaled",    # 目标客流（归一化）
-        "month_norm",              # 月份归一化
-        "day_of_week_norm",        # 星期归一化
-        "is_holiday",              # 节假日标记
-        "tourism_num_lag_7_scaled", # 滞后7天客流（归一化）
-        "meteo_precip_sum_scaled",  # 降水量（归一化）
-        "temp_high_scaled",         # 最高温度（归一化）
-        "temp_low_scaled"           # 最低温度（归一化）
+        "visitor_count_scaled",
+        "month_norm",
+        "day_of_week_norm",
+        "is_holiday",
+        "is_peak_season",
+        "tourism_num_lag_7_scaled",
+        "tourism_num_lag_14_scaled",
+        "rolling_mean_14_scaled",
+        "meteo_precip_sum_scaled",
+        "temp_high_scaled",
+        "temp_low_scaled",
     ]
     
     # 确保所有特征列都存在
@@ -212,7 +263,7 @@ def split_by_time(
     return x_train, y_train, d_train, x_val, y_val, d_val, x_test, y_test, d_test
 
 
-def create_gru_model(look_back: int) -> tf.keras.Model:
+def create_gru_model(look_back: int, n_features: int = 11) -> tf.keras.Model:
     """创建GRU模型（8特征版本）
     
     输入形状: (look_back, 8)
@@ -233,9 +284,11 @@ def create_gru_model(look_back: int) -> tf.keras.Model:
     """
     model = tf.keras.Sequential(
         [
-            tf.keras.layers.Input(shape=(look_back, 8)),
-            tf.keras.layers.GRU(128, return_sequences=True, dropout=0.2, implementation=1),
-            tf.keras.layers.GRU(64, dropout=0.2, implementation=1),
+            tf.keras.layers.Input(shape=(look_back, n_features)),
+            tf.keras.layers.GRU(
+                128, return_sequences=True, dropout=0.1, recurrent_dropout=0.1, implementation=1
+            ),
+            tf.keras.layers.GRU(96, dropout=0.1, recurrent_dropout=0.1, implementation=1),
             tf.keras.layers.Dense(32, activation="relu"),
             tf.keras.layers.Dense(1),
         ]
@@ -245,7 +298,7 @@ def create_gru_model(look_back: int) -> tf.keras.Model:
         loss=tf.keras.losses.Huber(),
     )
     
-    print(f"模型创建完成: 输入形状=({look_back}, 8), 参数={model.count_params():,}")
+    print(f"模型创建完成: 输入形状=({look_back}, {n_features}), 参数={model.count_params():,}")
     return model
 
 
@@ -296,8 +349,8 @@ def main() -> None:
         default="data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
         help="输入 CSV（需包含 date + 客流列）。",
     )
-    parser.add_argument("--look-back", type=int, default=30, help="历史窗口长度。")
-    parser.add_argument("--epochs", type=int, default=120, help="训练轮次（建议 >=100）。")
+    parser.add_argument("--look-back", type=int, default=45, help="历史窗口长度。")
+    parser.add_argument("--epochs", type=int, default=150, help="训练轮次（建议 >=100）。")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--val-ratio", type=float, default=0.125)
@@ -405,11 +458,11 @@ def main() -> None:
     weather_test_temp_low = weather_temp_low_all[n_train + n_val :]
 
     # 4. 创建并训练GRU模型
-    model = create_gru_model(args.look_back)
+    model = create_gru_model(args.look_back, x_train.shape[2])
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
             monitor="val_loss",
-            patience=15,
+            patience=20,
             restore_best_weights=True,
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
@@ -469,7 +522,7 @@ def main() -> None:
     evaluate_and_save_run(
         str(run_dir),
         model_name="gru",
-        feature_count=8,
+        feature_count=11,
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
         dates=pd.to_datetime(pred_df["date"]).values,

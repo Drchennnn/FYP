@@ -26,6 +26,8 @@ import chinese_calendar as cncal
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
+import xgboost as xgb
+from xgboost import XGBRegressor
 
 # ── 项目根路径 ────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -34,11 +36,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from models.common.core_evaluation import evaluate_and_save_run, compute_dynamic_peak_threshold
 from models.common.evaluator import calculate_metrics, save_metrics_to_files
-
-# ── TODO: Codex 需要安装并导入 xgboost ───────────────────────────────────────
-# pip install xgboost
-# import xgboost as xgb
-# from xgboost import XGBRegressor
 
 # ── 常量 ─────────────────────────────────────────────────────────────────────
 DEFAULT_DATA_PATH = (
@@ -94,13 +91,102 @@ def load_and_engineer_features(input_csv: Path) -> tuple[pd.DataFrame, MinMaxSca
         3. 删除因 lag/rolling 产生的 NaN 行（dropna）
         4. 返回 (df, scaler)
     """
-    # --- SKELETON ---
-    df = pd.read_csv(input_csv)
+    df = pd.read_csv(input_csv, encoding="utf-8-sig")
     df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
+    df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+    df = df[df["date"] >= "2023-06-01"].reset_index(drop=True)
 
-    # TODO: 构造 lag / rolling / 时间编码特征（见上方文档注释）
-    raise NotImplementedError("TODO: implement feature engineering in load_and_engineer_features()")
+    if "tourism_num" in df.columns:
+        target_col = "tourism_num"
+    elif "visitor_count" in df.columns:
+        target_col = "visitor_count"
+    else:
+        raise ValueError("未找到目标列，请包含 'tourism_num' 或 'visitor_count'。")
+
+    df["visitor_count"] = pd.to_numeric(df[target_col], errors="coerce")
+    df = df.dropna(subset=["visitor_count"]).reset_index(drop=True)
+
+    # 时间特征
+    df["month_norm"] = (df["date"].dt.month - 1) / 11.0
+    df["day_of_week_norm"] = df["date"].dt.weekday / 6.0
+    df["is_holiday"] = df["date"].apply(mark_core_holiday).astype(float)
+    df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
+
+    # 目标序列特征（先构造原始值）
+    df["tourism_num_lag_1"] = df["visitor_count"].shift(1)
+    df["tourism_num_lag_7"] = df["visitor_count"].shift(7)
+    df["tourism_num_lag_14"] = df["visitor_count"].shift(14)
+    df["tourism_num_lag_28"] = df["visitor_count"].shift(28)
+    df["tourism_num_rolling_mean_7"] = df["visitor_count"].rolling(7).mean()
+    df["tourism_num_rolling_mean_14"] = df["visitor_count"].rolling(14).mean()
+    df["tourism_num_rolling_std_7"] = df["visitor_count"].rolling(7).std()
+
+    # 天气原始列（统一命名便于后续评估）
+    def _pick_col(candidates: list[str]) -> str | None:
+        for col in candidates:
+            if col in df.columns:
+                return col
+        return None
+
+    precip_src = _pick_col(["meteo_precip_sum", "meteo_rain_sum", "precip_sum"])
+    temp_high_src = _pick_col(["meteo_temp_max", "temp_high_c", "temp_high"])
+    temp_low_src = _pick_col(["meteo_temp_min", "temp_low_c", "temp_low"])
+
+    if precip_src is None:
+        df["precip_raw"] = 0.0
+    else:
+        df["precip_raw"] = pd.to_numeric(df[precip_src], errors="coerce")
+
+    if temp_high_src is None:
+        df["temp_high_raw"] = 0.0
+    else:
+        df["temp_high_raw"] = pd.to_numeric(df[temp_high_src], errors="coerce")
+
+    if temp_low_src is None:
+        df["temp_low_raw"] = 0.0
+    else:
+        df["temp_low_raw"] = pd.to_numeric(df[temp_low_src], errors="coerce")
+
+    # 丢弃由 lag/rolling 或天气缺失导致的空值
+    required_raw_cols = [
+        "visitor_count",
+        "tourism_num_lag_1",
+        "tourism_num_lag_7",
+        "tourism_num_lag_14",
+        "tourism_num_lag_28",
+        "tourism_num_rolling_mean_7",
+        "tourism_num_rolling_mean_14",
+        "tourism_num_rolling_std_7",
+        "precip_raw",
+        "temp_high_raw",
+        "temp_low_raw",
+    ]
+    df = df.dropna(subset=required_raw_cols).reset_index(drop=True)
+
+    # 仅使用训练集拟合 scaler，再转换全量数据
+    train_end = int(len(df) * TRAIN_RATIO)
+    if train_end <= 0:
+        raise ValueError("数据量不足，无法完成训练集拟合。")
+
+    def _fit_transform_col(raw_col: str, scaled_col: str) -> MinMaxScaler:
+        scaler = MinMaxScaler()
+        scaler.fit(df.iloc[:train_end][[raw_col]])
+        df[scaled_col] = scaler.transform(df[[raw_col]]).reshape(-1)
+        return scaler
+
+    visitor_scaler = _fit_transform_col("visitor_count", "visitor_count_scaled")
+    _fit_transform_col("tourism_num_lag_1", "tourism_num_lag_1_scaled")
+    _fit_transform_col("tourism_num_lag_7", "tourism_num_lag_7_scaled")
+    _fit_transform_col("tourism_num_lag_14", "tourism_num_lag_14_scaled")
+    _fit_transform_col("tourism_num_lag_28", "tourism_num_lag_28_scaled")
+    _fit_transform_col("tourism_num_rolling_mean_7", "rolling_mean_7_scaled")
+    _fit_transform_col("tourism_num_rolling_mean_14", "rolling_mean_14_scaled")
+    _fit_transform_col("tourism_num_rolling_std_7", "rolling_std_7_scaled")
+    _fit_transform_col("precip_raw", "meteo_precip_sum_scaled")
+    _fit_transform_col("temp_high_raw", "temp_high_scaled")
+    _fit_transform_col("temp_low_raw", "temp_low_scaled")
+
+    return df, visitor_scaler
 
 
 # ── 训练/验证/测试切分 ────────────────────────────────────────────────────────
@@ -151,8 +237,19 @@ def build_model(args: argparse.Namespace):
         如果 args.sample_weight 为 True，在 fit() 时传入样本权重向量
         （COVID/地震异常期 2020-01-01~2022-12-31 权重=0.3，其余=1.0）
     """
-    # TODO: return XGBRegressor(...)
-    raise NotImplementedError("TODO: implement build_model()")
+    return XGBRegressor(
+        n_estimators=args.n_estimators,
+        max_depth=args.max_depth,
+        learning_rate=args.lr,
+        subsample=0.8,
+        colsample_bytree=0.7,
+        min_child_weight=3,
+        reg_alpha=0.3,
+        reg_lambda=1.5,
+        random_state=42,
+        n_jobs=-1,
+        early_stopping_rounds=40,
+    )
 
 
 def compute_sample_weights(train_df: pd.DataFrame) -> np.ndarray:
@@ -164,28 +261,35 @@ def compute_sample_weights(train_df: pd.DataFrame) -> np.ndarray:
         权重：异常期=0.3，其余=1.0
         返回 shape=(len(train_df),) 的 np.ndarray
     """
-    # TODO: implement
-    raise NotImplementedError("TODO: implement compute_sample_weights()")
+    mask = (train_df["date"] >= "2020-01-01") & (train_df["date"] <= "2022-12-31")
+    weights = np.where(mask, 0.3, 1.0)
+    return weights.astype(np.float32)
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description="XGBoost 客流预测基线")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA_PATH)
-    parser.add_argument("--n-estimators", type=int, default=300)
-    parser.add_argument("--max-depth", type=int, default=6)
-    parser.add_argument("--lr", type=float, default=0.05)
+    parser.add_argument("--n-estimators", type=int, default=500)
+    parser.add_argument("--max-depth", type=int, default=5)
+    parser.add_argument("--lr", type=float, default=0.03)
     parser.add_argument("--sample-weight", action="store_true", default=True,
                         help="对异常期赋低权重（默认开启）")
     parser.add_argument("--peak-quantile", type=float, default=0.75)
     args = parser.parse_args()
 
+    np.random.seed(42)
+
     # ── 数据准备 ────────────────────────────────────────────────────────────
-    # TODO (Codex): 调用 load_and_engineer_features()，拿到 df 和 scaler
-    # train_df, val_df, test_df = split_data(df)
-    # X_train, y_train = train_df[FEATURE_COLS], train_df[TARGET_COL]
-    # X_val,   y_val   = val_df[FEATURE_COLS],   val_df[TARGET_COL]
-    # X_test,  y_test  = test_df[FEATURE_COLS],  test_df[TARGET_COL]
+    df, scaler = load_and_engineer_features(args.data)
+    train_df, val_df, test_df = split_data(df)
+
+    X_train = train_df[FEATURE_COLS]
+    y_train = train_df[TARGET_COL]
+    X_val = val_df[FEATURE_COLS]
+    y_val = val_df[TARGET_COL]
+    X_test = test_df[FEATURE_COLS]
+    y_test = test_df[TARGET_COL]
 
     # ── 输出目录（与 GRU/LSTM 相同结构）────────────────────────────────────
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -197,50 +301,81 @@ def main() -> None:
     (run_dir / "figures").mkdir(exist_ok=True)
 
     # ── 训练 ────────────────────────────────────────────────────────────────
-    # TODO (Codex):
-    #   model = build_model(args)
-    #   weights = compute_sample_weights(train_df) if args.sample_weight else None
-    #   model.fit(X_train, y_train,
-    #             sample_weight=weights,
-    #             eval_set=[(X_val, y_val)],
-    #             verbose=50)
-    #   model.save_model(run_dir / "weights" / "xgboost_model.json")
+    model = build_model(args)
+    weights = compute_sample_weights(train_df) if args.sample_weight else None
+    fit_kwargs = {
+        "eval_set": [(X_val, y_val)],
+        "verbose": False,
+    }
+    if weights is not None:
+        fit_kwargs["sample_weight"] = weights
+    model.fit(X_train, y_train, **fit_kwargs)
+    model.save_model(run_dir / "weights" / "xgboost_model.json")
 
     # ── 预测与反归一化 ───────────────────────────────────────────────────────
-    # TODO (Codex):
-    #   y_pred_scaled = model.predict(X_test)
-    #   y_true = scaler.inverse_transform(y_test.values.reshape(-1,1)).ravel()
-    #   y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1,1)).ravel()
-    #   y_pred = np.clip(y_pred, 0, None)
+    y_pred_scaled = model.predict(X_test)
+    y_true = scaler.inverse_transform(y_test.values.reshape(-1, 1)).ravel()
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
+    y_pred = np.clip(y_pred, 0, None)
+
+    pred_df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(test_df["date"]),
+            "y_true": y_true,
+            "y_pred": y_pred,
+        }
+    ).sort_values("date")
+    pred_df.to_csv(run_dir / "xgboost_test_predictions.csv", index=False, encoding="utf-8-sig")
 
     # ── 评估（复用统一框架）────────────────────────────────────────────────
-    # TODO (Codex):
-    #   dynamic_peak_threshold = compute_dynamic_peak_threshold(
-    #       scaler.inverse_transform(train_df[TARGET_COL].values.reshape(-1,1)).ravel(),
-    #       args.peak_quantile
-    #   )
-    #   ... 提取 weather_test_precip, temp_high, temp_low（同 GRU 脚本）...
-    #   evaluate_and_save_run(
-    #       str(run_dir),
-    #       model_name="xgboost",
-    #       feature_count=len(FEATURE_COLS),
-    #       y_true=y_true,
-    #       y_pred=y_pred,
-    #       dates=pd.to_datetime(test_df["date"]).values,
-    #       horizon=1,
-    #       peak_threshold=dynamic_peak_threshold,
-    #       warning_temperature=1000.0,
-    #       fn_fp_cost_ratio=(5.0, 1.0),
-    #       weather_precip=...,
-    #       weather_temp_high=...,
-    #       weather_temp_low=...,
-    #       weather_train_precip=...,
-    #       weather_train_temp_high=...,
-    #       weather_train_temp_low=...,
-    #       extra_meta={"n_estimators": args.n_estimators, "max_depth": args.max_depth},
-    #   )
+    dynamic_peak_threshold = compute_dynamic_peak_threshold(
+        scaler.inverse_transform(train_df[TARGET_COL].values.reshape(-1, 1)).ravel(),
+        args.peak_quantile,
+    )
 
-    print("XGBoost 框架骨架已就绪，等待 Codex 补全 TODO 部分。")
+    weather_train_precip = train_df["precip_raw"].values.astype(float)
+    weather_train_temp_high = train_df["temp_high_raw"].values.astype(float)
+    weather_train_temp_low = train_df["temp_low_raw"].values.astype(float)
+    weather_test_precip = test_df["precip_raw"].values.astype(float)
+    weather_test_temp_high = test_df["temp_high_raw"].values.astype(float)
+    weather_test_temp_low = test_df["temp_low_raw"].values.astype(float)
+
+    evaluate_and_save_run(
+        str(run_dir),
+        model_name="xgboost",
+        feature_count=len(FEATURE_COLS),
+        y_true=np.asarray(y_true),
+        y_pred=np.asarray(y_pred),
+        dates=pd.to_datetime(test_df["date"]).values,
+        horizon=1,
+        peak_threshold=dynamic_peak_threshold,
+        warning_temperature=1000.0,
+        fn_fp_cost_ratio=(5.0, 1.0),
+        weather_precip=np.asarray(weather_test_precip),
+        weather_temp_high=np.asarray(weather_test_temp_high),
+        weather_temp_low=np.asarray(weather_test_temp_low),
+        weather_train_precip=np.asarray(weather_train_precip),
+        weather_train_temp_high=np.asarray(weather_train_temp_high),
+        weather_train_temp_low=np.asarray(weather_train_temp_low),
+        extra_meta={
+            "n_estimators": int(args.n_estimators),
+            "max_depth": int(args.max_depth),
+            "learning_rate": float(args.lr),
+            "sample_weight": bool(args.sample_weight),
+            "xgboost_version": xgb.__version__,
+        },
+    )
+
+    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
+    try:
+        save_metrics_to_files(metrics, str(run_dir), "xgboost_baseline")
+    except TypeError:
+        pass
+
+    print("XGBoost 训练完成！")
+    print(f"运行目录: {run_dir}")
+    print(f"特征维度: {len(FEATURE_COLS)}")
+    print(f"MAE: {metrics['regression']['mae']:.4f}")
 
 
 if __name__ == "__main__":

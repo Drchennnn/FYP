@@ -94,6 +94,7 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
 
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+    df = df[df["date"] >= "2023-06-01"].reset_index(drop=True)
     df["visitor_count"] = pd.to_numeric(df[target_col], errors="coerce")
     df = df.dropna(subset=["visitor_count"]).reset_index(drop=True)
 
