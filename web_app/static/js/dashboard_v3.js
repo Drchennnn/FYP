@@ -1603,6 +1603,70 @@
   }
 
   // ─────────────────────────────────────────────
+  // Analysis page — Confusion matrices
+  // ─────────────────────────────────────────────
+  function renderConfusionMatrices(allMetrics) {
+    const el = $('v3ConfusionMatrices');
+    if (!el) return;
+    const isDark = state.theme === 'dark';
+    const modelIds = ['champion', 'runner_up', 'third'];
+    const labels = { zh: ['预测正常', '预测预警'], en: ['Pred: Normal', 'Pred: Warning'] };
+    const rowLabels = { zh: ['实际正常', '实际预警'], en: ['Actual: Normal', 'Actual: Warning'] };
+
+    el.innerHTML = modelIds.map((id) => {
+      const d = allMetrics[id];
+      if (!d || !d.metrics) return '';
+      const ca = d.metrics.crowd_alert || {};
+      const tp = ca.tp ?? 0, fp = ca.fp ?? 0, tn = ca.tn ?? 0, fn = ca.fn ?? 0;
+      const total = tp + fp + tn + fn;
+      if (total === 0) return '';
+      const name = d.model_name || id;
+      const shortName = name.replace('_8features','').replace('_',' ');
+
+      function cell(val, isCorrect) {
+        const pct = total > 0 ? (val / total * 100).toFixed(1) : '0';
+        const bg = isCorrect
+          ? (isDark ? 'rgba(48,209,88,0.18)' : 'rgba(48,209,88,0.15)')
+          : (isDark ? 'rgba(255,69,58,0.18)' : 'rgba(255,69,58,0.12)');
+        return `<td style="background:${bg};text-align:center;padding:10px 14px;border-radius:6px">
+          <div style="font-size:1.1rem;font-weight:600">${val}</div>
+          <div style="font-size:0.65rem;opacity:0.6">${pct}%</div>
+        </td>`;
+      }
+
+      const colH = (state.lang === 'zh' ? labels.zh : labels.en);
+      const rowH = (state.lang === 'zh' ? rowLabels.zh : rowLabels.en);
+      const p = safeNum(ca.precision), r = safeNum(ca.recall), f = safeNum(ca.f1);
+
+      return `<div class="v3-confusion-card">
+        <div style="font-weight:600;font-size:0.8rem;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.7">${shortName}</div>
+        <table style="border-collapse:separate;border-spacing:4px;width:100%">
+          <thead><tr>
+            <th></th>
+            <th style="font-size:0.68rem;opacity:0.6;font-weight:500;text-align:center">${colH[0]}</th>
+            <th style="font-size:0.68rem;opacity:0.6;font-weight:500;text-align:center">${colH[1]}</th>
+          </tr></thead>
+          <tbody>
+            <tr>
+              <td style="font-size:0.68rem;opacity:0.6;font-weight:500;padding-right:8px;white-space:nowrap">${rowH[0]}</td>
+              ${cell(tn, true)}${cell(fp, false)}
+            </tr>
+            <tr>
+              <td style="font-size:0.68rem;opacity:0.6;font-weight:500;padding-right:8px;white-space:nowrap">${rowH[1]}</td>
+              ${cell(fn, false)}${cell(tp, true)}
+            </tr>
+          </tbody>
+        </table>
+        <div style="margin-top:8px;font-size:0.68rem;opacity:0.65;display:flex;gap:12px">
+          <span>P: <b>${p !== null ? fmtDec(p,3) : '—'}</b></span>
+          <span>R: <b>${r !== null ? fmtDec(r,3) : '—'}</b></span>
+          <span>F1: <b>${f !== null ? fmtDec(f,3) : '—'}</b></span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // ─────────────────────────────────────────────
   // Analysis page — Metrics comparison table
   // ─────────────────────────────────────────────
   function renderMetricsTable(allMetrics) {
@@ -1726,6 +1790,8 @@
     ]);
     const all = { champion: champ, runner_up: runner, third };
     renderMetricsTable(all);
+    renderConfusionMatrices(all);
+    renderCalibChart(champ);
     state.analysisLoaded = true;
   }
 

@@ -281,7 +281,7 @@
 
   <div class="v3-section-header">
     <h1 class="v3-section-title" data-i18n="analysis_title">模型分析</h1>
-    <p class="v3-section-sub" data-i18n="analysis_sub">三模型指标对比</p>
+    <p class="v3-section-sub">回归指标 · 预警混淆矩阵 · 校准可靠性图</p>
   </div>
 
   <div class="v3-analysis-grid">
@@ -294,6 +294,26 @@
       <div class="v3-metrics-table" id="v3MetricsTable">
         <!-- injected by JS -->
       </div>
+    </div>
+
+    <!-- Confusion matrices -->
+    <div class="v3-card v3-card--full">
+      <div class="v3-card__head">
+        <h2 class="v3-card__title">客流预警混淆矩阵</h2>
+        <p class="v3-card__sub">基于旺淡季阈值（旺季 32,800 / 淡季 18,400）</p>
+      </div>
+      <div id="v3ConfusionMatrices" class="v3-confusion-row">
+        <!-- injected by JS -->
+      </div>
+    </div>
+
+    <!-- Reliability diagram -->
+    <div class="v3-card v3-card--full">
+      <div class="v3-card__head">
+        <h2 class="v3-card__title" data-i18n="calib_title">校准可靠性图</h2>
+        <p class="v3-card__sub" data-i18n="calib_note">冠军模型预警概率校准质量</p>
+      </div>
+      <div class="v3-chart-box v3-chart-box--sm" id="v3CalibChart"></div>
     </div>
 
   </div>

@@ -289,7 +289,12 @@ def _clf_prf(y_true_bin: np.ndarray, y_pred_bin: np.ndarray) -> Dict[str, float]
     p, r, f1, _ = precision_recall_fscore_support(
         y_true_bin, y_pred_bin, average="binary", zero_division=0
     )
-    return {"precision": float(p), "recall": float(r), "f1": float(f1)}
+    tn = int(np.sum((y_true_bin == 0) & (y_pred_bin == 0)))
+    fp = int(np.sum((y_true_bin == 0) & (y_pred_bin == 1)))
+    fn = int(np.sum((y_true_bin == 1) & (y_pred_bin == 0)))
+    tp = int(np.sum((y_true_bin == 1) & (y_pred_bin == 1)))
+    return {"precision": float(p), "recall": float(r), "f1": float(f1),
+            "tp": tp, "fp": fp, "tn": tn, "fn": fn}
 
 
 def compute_core_metrics(
@@ -297,6 +302,7 @@ def compute_core_metrics(
     y_pred: np.ndarray,
     *,
     peak_threshold: float = DEFAULT_PEAK_THRESHOLD,
+    dates: Optional[np.ndarray] = None,   # 若提供，按日期动态取旺淡季阈值
     horizon: Optional[int] = None,
     warning_temperature: float = 1000.0,
     horizon_weights: Optional[Iterable[float]] = None,
@@ -350,17 +356,32 @@ def compute_core_metrics(
         "smape": _smape(y_true_flat, y_pred_flat),
     }
 
+    # crowd_alert + peak_mask — 按日期取旺淡季阈值（若提供 dates），否则用固定阈值
+    if dates is not None and len(dates) > 0:
+        import pandas as _pd
+        _dates_flat = np.asarray(dates).flatten()
+        _repeat = len(y_true_flat) // len(_dates_flat)
+        if _repeat > 1:
+            _dates_flat = np.repeat(_dates_flat, _repeat)
+        _thr_arr = np.array([
+            get_season_peak_threshold(_pd.Timestamp(d).date() if not hasattr(d, 'month') else d)
+            for d in _dates_flat[:len(y_true_flat)]
+        ], dtype=float)
+        y_true_peak = (y_true_flat >= _thr_arr).astype(int)
+        y_pred_peak = (y_pred_flat >= _thr_arr).astype(int)
+        peak_mask = y_true_flat >= _thr_arr
+    else:
+        _thr_arr = None
+        y_true_peak = (y_true_flat >= float(peak_threshold)).astype(int)
+        y_pred_peak = (y_pred_flat >= float(peak_threshold)).astype(int)
+        peak_mask = y_true_flat >= float(peak_threshold)
+    crowd_alert = _clf_prf(y_true_peak, y_pred_peak)
+
     # Peak-only MAE
-    peak_mask = y_true_flat >= float(peak_threshold)
     if np.any(peak_mask):
         peak_mae = _mae(y_true_flat[peak_mask], y_pred_flat[peak_mask])
     else:
         peak_mae = float("nan")
-
-    # crowd_alert (deterministic, from visitor volume)
-    y_true_peak = (y_true_flat >= float(peak_threshold)).astype(int)
-    y_pred_peak = (y_pred_flat >= float(peak_threshold)).astype(int)
-    crowd_alert = _clf_prf(y_true_peak, y_pred_peak)
 
     # --- Weather hazard (optional) ---
     weather_hazard_bin_flat = np.zeros_like(y_true_peak, dtype=int)
@@ -423,10 +444,16 @@ def compute_core_metrics(
     # suitability_warning = crowd_alert OR weather_hazard
     suitability_true = ((y_true_peak == 1) | (weather_hazard_bin_flat == 1)).astype(int)
 
-    # probabilistic warning: combine visitor-derived prob with weather hazard (deterministic)
-    p_crowd = visitor_count_to_warning_prob(
-        y_pred_flat, peak_threshold=float(peak_threshold), temperature=float(warning_temperature)
-    )
+    # probabilistic warning: 用日期阈值数组（若有）或固定阈值
+    if _thr_arr is not None:
+        p_crowd = np.array([
+            visitor_count_to_warning_prob(np.array([yp]), peak_threshold=thr, temperature=float(warning_temperature))[0]
+            for yp, thr in zip(y_pred_flat, _thr_arr)
+        ])
+    else:
+        p_crowd = visitor_count_to_warning_prob(
+            y_pred_flat, peak_threshold=float(peak_threshold), temperature=float(warning_temperature)
+        )
     p_weather = weather_hazard_bin_flat.astype(float)  # deterministic (0 or 1)
     y_prob_warn = 1.0 - (1.0 - p_crowd) * (1.0 - p_weather)
     y_pred_warn = (y_prob_warn >= 0.5).astype(int)
@@ -928,6 +955,7 @@ def evaluate_and_save_run(
         y_true,
         y_pred,
         peak_threshold=peak_threshold,
+        dates=np.asarray(dates) if dates is not None else None,
         horizon=horizon,
         warning_temperature=warning_temperature,
         horizon_weights=horizon_weights,

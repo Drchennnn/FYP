@@ -134,42 +134,7 @@ def _get_latest_backup_dir():
 
 
 def _load_compare_metrics(backup_dir: str):
-    """Load compare_metrics.csv.
-
-    Searches in order:
-      1. run_compare_* subdirectories inside backup_dir
-      2. run_compare_* subdirectories inside output/runs/ directly
-      3. Synthesise from individual metrics.json files in output/runs/
-    """
-    def _try_load_csv(path):
-        if os.path.exists(path):
-            try:
-                return pd.read_csv(path)
-            except Exception:
-                pass
-        return None
-
-    # 1. Legacy backup compare dirs
-    if backup_dir and os.path.isdir(backup_dir):
-        compare_dirs = glob.glob(os.path.join(backup_dir, 'run_compare_*'))
-        compare_dirs = [p for p in compare_dirs if os.path.isdir(p)]
-        if compare_dirs:
-            latest = max(compare_dirs, key=os.path.getmtime)
-            df = _try_load_csv(os.path.join(latest, 'compare_metrics.csv'))
-            if df is not None:
-                return df
-
-    # 2. run_compare_* directly in output/runs/
-    if os.path.isdir(OUTPUT_RUNS_DIR):
-        compare_dirs = glob.glob(os.path.join(OUTPUT_RUNS_DIR, 'run_compare_*'))
-        compare_dirs = [p for p in compare_dirs if os.path.isdir(p)]
-        if compare_dirs:
-            latest = max(compare_dirs, key=os.path.getmtime)
-            df = _try_load_csv(os.path.join(latest, 'compare_metrics.csv'))
-            if df is not None:
-                return df
-
-    # 3. Synthesise from individual metrics.json files
+    """항상 최신 metrics.json에서 직접 합성 (오래된 compare_metrics.csv 무시)."""
     return _synthesise_compare_metrics()
 
 

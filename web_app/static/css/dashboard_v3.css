@@ -638,6 +638,8 @@ body{
 .v3-section-title{font-size:1.8rem;font-weight:700;letter-spacing:-0.02em}
 .v3-section-sub{font-size:0.85rem;color:var(--text-2);margin-top:6px}
 .v3-analysis-grid{display:flex;flex-direction:column;gap:28px}
+.v3-confusion-row{display:flex;flex-wrap:wrap;gap:24px;padding:8px 0}
+.v3-confusion-card{flex:1;min-width:200px;max-width:320px}
 .v3-analysis-note{
   font-size:0.78rem;color:var(--text-2);margin-top:12px;
   line-height:1.6;padding:10px 12px;
