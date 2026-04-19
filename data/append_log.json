@@ -1,0 +1,86 @@
+[
+  {
+    "date": "2026-04-03",
+    "visitor_count": 21465,
+    "weather": {},
+    "appended_at": "2026-04-09T00:45:14.869853"
+  },
+  {
+    "date": "2026-04-04",
+    "visitor_count": 31037,
+    "weather": {},
+    "appended_at": "2026-04-09T00:45:14.869853"
+  },
+  {
+    "date": "2026-04-05",
+    "visitor_count": 38927,
+    "weather": {},
+    "appended_at": "2026-04-09T00:45:14.870934"
+  },
+  {
+    "date": "2026-04-06",
+    "visitor_count": 8569,
+    "weather": {},
+    "appended_at": "2026-04-09T00:45:14.870934"
+  },
+  {
+    "date": "2026-04-07",
+    "visitor_count": 7636,
+    "weather": {},
+    "appended_at": "2026-04-09T00:45:14.872063"
+  },
+  {
+    "date": "2026-04-08",
+    "visitor_count": 7857,
+    "weather": {},
+    "appended_at": "2026-04-11T01:19:24.181937"
+  },
+  {
+    "date": "2026-04-09",
+    "visitor_count": 9864,
+    "weather": {},
+    "appended_at": "2026-04-11T01:19:24.182944"
+  },
+  {
+    "date": "2026-04-10",
+    "visitor_count": 13309,
+    "weather": {},
+    "appended_at": "2026-04-11T01:19:24.183466"
+  },
+  {
+    "date": "2026-04-11",
+    "visitor_count": 13824,
+    "weather": {},
+    "appended_at": "2026-04-17T17:27:01.536230"
+  },
+  {
+    "date": "2026-04-12",
+    "visitor_count": 14042,
+    "weather": {},
+    "appended_at": "2026-04-17T17:27:01.536795"
+  },
+  {
+    "date": "2026-04-13",
+    "visitor_count": 13666,
+    "weather": {},
+    "appended_at": "2026-04-17T17:27:01.537863"
+  },
+  {
+    "date": "2026-04-14",
+    "visitor_count": 13179,
+    "weather": {},
+    "appended_at": "2026-04-17T17:27:01.538932"
+  },
+  {
+    "date": "2026-04-15",
+    "visitor_count": 14825,
+    "weather": {},
+    "appended_at": "2026-04-17T17:27:01.539939"
+  },
+  {
+    "date": "2026-04-16",
+    "visitor_count": 18183,
+    "weather": {},
+    "appended_at": "2026-04-17T17:27:01.540985"
+  }
+]

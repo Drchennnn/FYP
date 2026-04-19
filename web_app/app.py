@@ -831,7 +831,8 @@ def api_forecast():
     # 按日期排序，对 actual/weather 列中因 outer join 产生的新行填 NaN（已是默认行为）
     df_merge = df_base.sort_values('date').reset_index(drop=True)
     # 集成预测列（加权平均，缺任一模型则按可用模型归一化权重计算）
-    _ens_weights = {'gru_pred': 0.3, 'transformer_pred': 0.2, 'xgboost_pred': 0.5}
+    # 权重由网格搜索得出（XGB MAE最低，权重最高）
+    _ens_weights = {'gru_pred': 0.10, 'transformer_pred': 0.20, 'xgboost_pred': 0.70}
     _avail = {c: w for c, w in _ens_weights.items() if c in df_merge.columns}
     if _avail:
         _total_w = sum(_avail.values())
@@ -1172,39 +1173,80 @@ def api_forecast():
         else:
             lag7_window = list(hist_scaled)  # 降级：用 visitor_scaled 近似
 
-        def _build_window_feat(visitor_window, lag7_window, dates, n_features=8):
-            """构建 (look_back, n_features) 特征矩阵，支持8特征和11特征模型。
-            8特征: visitor, month, dow, holiday, lag7, precip, temp_high, temp_low
-            11特征: +is_peak_season, lag14, rolling_mean_14（均用近似值填充）
-            """
-            # 为11特征模型准备 rolling_mean_14 和 lag14：用历史 visitor_window 近似
+        def _days_to_next_hol(d):
+            try:
+                import chinese_calendar as _cc
+                for delta in range(1, 15):
+                    if _cc.is_holiday(d + timedelta(days=delta)):
+                        return delta / 14.0
+            except Exception:
+                pass
+            return 1.0
+
+        def _days_since_last_hol(d):
+            try:
+                import chinese_calendar as _cc
+                for delta in range(1, 15):
+                    if _cc.is_holiday(d - timedelta(days=delta)):
+                        return delta / 14.0
+            except Exception:
+                pass
+            return 1.0
+
+        def _build_window_feat(visitor_window, lag7_window, dates, n_features=12):
+            """构建 (look_back, n_features) 特征矩阵，默认12特征。"""
             rows = []
             for i, d in enumerate(dates):
                 m_norm = (d.month - 1) / 11.0
                 dow_norm = d.weekday() / 6.0
                 hol = float(_is_holiday(d))
-                row = [
-                    visitor_window[i],   # visitor_count_scaled
-                    m_norm,              # month_norm
-                    dow_norm,            # day_of_week_norm
-                    hol,                 # is_holiday
-                ]
-                if n_features == 11:
-                    m = d.month
-                    is_peak = float((4 <= m <= 10) or (m == 11 and d.day <= 15))
-                    row.append(is_peak)   # is_peak_season
-                row.append(lag7_window[i])  # tourism_num_lag_7_scaled
-                if n_features == 11:
+                m = d.month
+                is_peak = float((4 <= m <= 10) or (m == 11 and d.day <= 15))
+                d2n = _days_to_next_hol(d)
+                d2s = _days_since_last_hol(d)
+                if n_features >= 12:
+                    row = [
+                        visitor_window[i],   # visitor_count_scaled
+                        m_norm,              # month_norm
+                        dow_norm,            # day_of_week_norm
+                        hol,                 # is_holiday
+                        is_peak,             # is_peak_season
+                        d2n,                 # days_to_next_holiday
+                        d2s,                 # days_since_last_holiday
+                        lag7_window[i],      # tourism_num_lag_7_scaled
+                        visitor_window[max(0, i - 7)],  # tourism_num_lag_14_scaled (近似)
+                        0.0,                 # meteo_precip_sum_scaled
+                        0.5,                 # temp_high_scaled
+                        0.5,                 # temp_low_scaled
+                    ]
+                elif n_features == 11:
                     lag14_s = visitor_window[max(0, i - 7)]  # 近似 lag14
                     win14 = visitor_window[max(0, i - 13):i + 1]
                     roll14 = float(np.mean(win14)) if len(win14) > 0 else visitor_window[i]
-                    row.append(lag14_s)   # tourism_num_lag_14_scaled
-                    row.append(roll14)    # rolling_mean_14_scaled
-                row.extend([
-                    0.0,   # meteo_precip_sum_scaled
-                    0.5,   # temp_high_scaled
-                    0.5,   # temp_low_scaled
-                ])
+                    row = [
+                        visitor_window[i],
+                        m_norm,
+                        dow_norm,
+                        hol,
+                        is_peak,
+                        lag7_window[i],
+                        lag14_s,
+                        roll14,
+                        0.0,
+                        0.5,
+                        0.5,
+                    ]
+                else:
+                    row = [
+                        visitor_window[i],
+                        m_norm,
+                        dow_norm,
+                        hol,
+                        lag7_window[i],
+                        0.0,
+                        0.5,
+                        0.5,
+                    ]
                 rows.append(row)
             return np.array(rows, dtype=np.float32)
 
@@ -1223,10 +1265,10 @@ def api_forecast():
             except Exception:
                 n_feat = 8
                 m_look_back = look_back
-            # 天气特征在row中的位置
-            precip_idx = 5 if n_feat == 8 else 8
-            temp_h_idx = 6 if n_feat == 8 else 9
-            temp_l_idx = 7 if n_feat == 8 else 10
+            # 天气特征固定在最后3位
+            precip_idx = n_feat - 3
+            temp_h_idx = n_feat - 2
+            temp_l_idx = n_feat - 1
 
             # 如果模型 look_back 与全局不同，重新切窗口
             if m_look_back != look_back:
@@ -1388,12 +1430,7 @@ def api_forecast():
                 )
                 _hist_full['date'] = pd.to_datetime(_hist_full['date']).dt.date
                 _hist_full = _hist_full[_hist_full['tourism_num'].notna()].sort_values('date')
-                # XGBoost rolling inference — feature names must match training exactly:
-                # month_norm, day_of_week_norm, is_holiday, is_peak_season,
-                # tourism_num_lag_1_scaled, tourism_num_lag_7_scaled,
-                # tourism_num_lag_14_scaled, tourism_num_lag_28_scaled,
-                # rolling_mean_7_scaled, rolling_mean_14_scaled, rolling_std_7_scaled,
-                # meteo_precip_sum_scaled, temp_high_scaled, temp_low_scaled
+                # XGBoost rolling inference — feature names must match training exactly
                 _xgb_gap = max(0, (_today_cn() - last_date).days - 1)
                 _xgb_total = _xgb_gap + horizon
                 # 初始化滚动窗口（scaled visitor values），用来计算lag特征
@@ -1420,13 +1457,12 @@ def api_forecast():
                         'day_of_week_norm':          _dow_norm,
                         'is_holiday':                _hol,
                         'is_peak_season':            _is_peak,
+                        'days_to_next_holiday':      _days_to_next_hol(_pred_date),
+                        'days_since_last_holiday':   _days_since_last_hol(_pred_date),
                         'tourism_num_lag_1_scaled':  _lag(_win, 1),
                         'tourism_num_lag_7_scaled':  _lag(_win, 7),
                         'tourism_num_lag_14_scaled': _lag(_win, 14),
-                        'tourism_num_lag_28_scaled': _lag(_win, 28),
                         'rolling_mean_7_scaled':     float(np.mean(_win[-7:])) if len(_win) >= 7 else float(np.mean(_win)),
-                        'rolling_mean_14_scaled':    float(np.mean(_win[-14:])) if len(_win) >= 14 else float(np.mean(_win)),
-                        'rolling_std_7_scaled':      float(np.std(_win[-7:])) if len(_win) >= 7 else 0.0,
                         'meteo_precip_sum_scaled':   _scale_precip(_precip_raw),
                         'temp_high_scaled':          _scale_temp_high(_th_raw),
                         'temp_low_scaled':           _scale_temp_low(_tl_raw),

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Benchmark runner (LSTM/GRU/Seq2Seq+Attention) with unified core metrics.
+"""Benchmark runner (5 models) with unified core metrics.
+
+Models:
+  - LSTM (8 features)
+  - GRU (8 features)
+  - Seq2Seq+Attention (8 features)
+  - XGBoost
+  - Transformer
 
 Outputs:
   output/runs/run_compare_<timestamp>/
@@ -15,7 +22,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import pandas as pd
 
@@ -45,7 +52,6 @@ def required_artifacts_exist(run_dir: Path) -> Dict[str, bool]:
         "metrics.csv": (run_dir / "metrics.csv").exists(),
         "metrics_by_horizon.csv": (run_dir / "metrics_by_horizon.csv").exists(),
         "fig_true_vs_pred": (figs / "true_vs_pred.png").exists(),
-        "fig_error_by_horizon": (figs / "error_by_horizon.png").exists(),
         "fig_confusion_matrix_crowd_alert": (figs / "confusion_matrix_crowd_alert.png").exists(),
         "fig_suitability_warning_timeline": (figs / "suitability_warning_timeline.png").exists(),
         "fig_reliability_diagram": (figs / "reliability_diagram.png").exists(),
@@ -60,6 +66,7 @@ def metrics_to_row(model_label: str, m: Dict) -> Dict:
         "horizon": m.get("meta", {}).get("horizon"),
         "mae": m.get("regression", {}).get("mae"),
         "rmse": m.get("regression", {}).get("rmse"),
+        "nrmse": m.get("regression", {}).get("nrmse"),
         "smape": m.get("regression", {}).get("smape"),
         "peak_only_mae": m.get("peak_only_mae"),
         "crowd_alert_precision": m.get("crowd_alert", {}).get("precision"),
@@ -89,63 +96,128 @@ def metrics_to_row(model_label: str, m: Dict) -> Dict:
     }
 
 
+def find_latest_nested_run_dir(runs_root: Path, model_name: str, min_mtime: float | None = None) -> Path:
+    pattern = f"{model_name}_8features_*/runs/run_*_{model_name}_8features"
+    candidates = []
+    for p in runs_root.glob(pattern):
+        metrics_path = p / "metrics.json"
+        if not metrics_path.exists():
+            continue
+        mtime = metrics_path.stat().st_mtime
+        if min_mtime is not None and mtime < min_mtime:
+            continue
+        candidates.append((mtime, p))
+    if not candidates:
+        raise FileNotFoundError(f"未找到 {model_name} 的有效运行目录（pattern={pattern}）")
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def find_latest_direct_run_dir(runs_root: Path, model_suffix: str, min_mtime: float | None = None) -> Path:
+    pattern = f"run_*_{model_suffix}"
+    candidates = []
+    for p in runs_root.glob(pattern):
+        if not p.is_dir():
+            continue
+        metrics_path = p / "metrics.json"
+        if not metrics_path.exists():
+            continue
+        mtime = metrics_path.stat().st_mtime
+        if min_mtime is not None and mtime < min_mtime:
+            continue
+        candidates.append((mtime, p))
+    if not candidates:
+        raise FileNotFoundError(f"未找到 {model_suffix} 的有效运行目录（pattern={pattern}）")
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def find_latest_general_run_dir(runs_root: Path, model_name: str, min_mtime: float | None = None) -> Path:
+    candidates = []
+
+    # 结构1：output/runs/run_<...>_<model>_8features/
+    for p in runs_root.glob(f"run_*_{model_name}_8features"):
+        metrics_path = p / "metrics.json"
+        if not metrics_path.exists():
+            continue
+        mtime = metrics_path.stat().st_mtime
+        if min_mtime is not None and mtime < min_mtime:
+            continue
+        candidates.append((mtime, p))
+
+    # 结构2：output/runs/<model>_8features_<ts>/runs/run_<...>_<model>_8features/
+    for p in runs_root.glob(f"{model_name}_8features_*/runs/run_*_{model_name}_8features"):
+        metrics_path = p / "metrics.json"
+        if not metrics_path.exists():
+            continue
+        mtime = metrics_path.stat().st_mtime
+        if min_mtime is not None and mtime < min_mtime:
+            continue
+        candidates.append((mtime, p))
+
+    if not candidates:
+        raise FileNotFoundError(f"未找到 {model_name}_8features 的有效运行目录。")
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
+def find_latest_seq2seq_run_dir(runs_root: Path, min_mtime: float | None = None) -> Path:
+    candidates = []
+
+    # 结构1：output/runs/run_<...>_seq2seq_attention_8features/
+    for p in runs_root.glob("run_*_seq2seq_attention_8features"):
+        metrics_path = p / "metrics.json"
+        if metrics_path.exists():
+            mtime = metrics_path.stat().st_mtime
+            if min_mtime is None or mtime >= min_mtime:
+                candidates.append((mtime, p))
+
+    # 结构2：output/runs/seq2seq_attention_8features_<ts>/runs/run_<...>_seq2seq_attention_8features/
+    for p in runs_root.glob("seq2seq_attention_8features_*/runs/run_*_seq2seq_attention_8features"):
+        metrics_path = p / "metrics.json"
+        if metrics_path.exists():
+            mtime = metrics_path.stat().st_mtime
+            if min_mtime is None or mtime >= min_mtime:
+                candidates.append((mtime, p))
+
+    if not candidates:
+        raise FileNotFoundError("未找到 seq2seq_attention_8features 的有效运行目录。")
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Run benchmark for LSTM/GRU/Seq2Seq+Attention")
+    ap = argparse.ArgumentParser(description="Run benchmark for 5 models")
     ap.add_argument(
         "--skip-train",
-        action="store_true",
-        help="Skip training and only generate the compare report for the given --run-tag.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否跳过重训（默认 True，仅汇总 output/runs 下最新有效 run）。",
     )
-    ap.add_argument(
-        "--epochs",
-        type=int,
-        default=120,
-        help="Epochs for benchmark runs (default 120).",
-    )
+    ap.add_argument("--epochs", type=int, default=120, help="Epochs for DL benchmark runs.")
     ap.add_argument("--look-back", type=int, default=30)
     ap.add_argument("--decoder-steps", type=int, default=7)
     ap.add_argument("--output-dir", default="output")
     ap.add_argument("--model-dir", default="model")
-    ap.add_argument("--input-csv-4f", default="data/raw/jiuzhaigou_tourism_weather_2024_2026_latest.csv")
-    ap.add_argument("--input-csv-8f", default="data/processed/jiuzhaigou_8features_latest.csv")
+    ap.add_argument(
+        "--input-csv-8f",
+        default="data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv",
+    )
     ap.add_argument("--run-tag", default=None)
     args, _ = ap.parse_known_args()
 
     tag = args.run_tag or datetime.now().strftime("%Y%m%d_%H%M%S")
-
     runs_root = ROOT / args.output_dir / "runs"
     runs_root.mkdir(parents=True, exist_ok=True)
 
-    # --- Run training scripts ---
-    lstm4_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_lstm_4features"
     lstm8_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_lstm_8features"
-    gru4_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_gru_4features"
     gru8_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_gru_8features"
     seq_run = f"run_{tag}_lb{args.look_back}_ep{args.epochs}_seq2seq_attention_8features"
 
     py = sys.executable
+    train_start_ts = datetime.now().timestamp()
 
     if not args.skip_train:
-        run_cmd(
-            [
-                py,
-                str(ROOT / "models" / "lstm" / "train_lstm_4features.py"),
-                "--input-csv",
-                args.input_csv_4f,
-                "--look-back",
-                str(args.look_back),
-                "--epochs",
-                str(args.epochs),
-                "--output-dir",
-                args.output_dir,
-                "--model-dir",
-                args.model_dir,
-                "--run-name",
-                lstm4_run,
-            ],
-            "LSTM (4 features)",
-        )
-
         run_cmd(
             [
                 py,
@@ -169,26 +241,6 @@ def main() -> None:
         run_cmd(
             [
                 py,
-                str(ROOT / "models" / "gru" / "train_gru_4features.py"),
-                "--input-csv",
-                args.input_csv_4f,
-                "--look-back",
-                str(args.look_back),
-                "--epochs",
-                str(args.epochs),
-                "--output-dir",
-                args.output_dir,
-                "--model-dir",
-                args.model_dir,
-                "--run-name",
-                gru4_run,
-            ],
-            "GRU (4 features)",
-        )
-
-        run_cmd(
-            [
-                py,
                 str(ROOT / "models" / "gru" / "train_gru_8features.py"),
                 "--input-csv",
                 args.input_csv_8f,
@@ -206,7 +258,6 @@ def main() -> None:
             "GRU (8 features)",
         )
 
-        # Seq2Seq+Attention currently supports 8 features (encoder=8, decoder=7)
         run_cmd(
             [
                 py,
@@ -229,26 +280,60 @@ def main() -> None:
             "Seq2Seq+Attention (8 features)",
         )
 
-    # --- Load metrics ---
-    lstm4_dir = runs_root / lstm4_run
-    lstm8_dir = runs_root / lstm8_run
-    gru4_dir = runs_root / gru4_run
-    gru8_dir = runs_root / gru8_run
-    seq_dir = runs_root / seq_run
+        run_cmd(
+            [
+                py,
+                str(ROOT / "models" / "xgboost" / "train_xgboost_8features.py"),
+                "--data",
+                args.input_csv_8f,
+            ],
+            "XGBoost",
+        )
 
-    lstm4_m = load_metrics(lstm4_dir)
+        run_cmd(
+            [
+                py,
+                str(ROOT / "models" / "transformer" / "train_transformer_8features.py"),
+                "--data",
+                args.input_csv_8f,
+                "--look-back",
+                str(args.look_back),
+                "--epochs",
+                str(args.epochs),
+            ],
+            "Transformer",
+        )
+
+    # --- Resolve run directories ---
+    if args.skip_train:
+        lstm8_dir = find_latest_general_run_dir(runs_root, "lstm")
+        gru8_dir = find_latest_general_run_dir(runs_root, "gru")
+        seq_dir = find_latest_seq2seq_run_dir(runs_root)
+        xgb_dir = find_latest_nested_run_dir(runs_root, "xgboost")
+        transformer_dir = find_latest_nested_run_dir(runs_root, "transformer")
+    else:
+        lstm8_dir = find_latest_general_run_dir(runs_root, "lstm", min_mtime=train_start_ts - 2)
+        gru8_dir = find_latest_general_run_dir(runs_root, "gru", min_mtime=train_start_ts - 2)
+        seq_dir = find_latest_seq2seq_run_dir(runs_root, min_mtime=train_start_ts - 2)
+        xgb_dir = find_latest_nested_run_dir(runs_root, "xgboost", min_mtime=train_start_ts - 2)
+        transformer_dir = find_latest_nested_run_dir(
+            runs_root, "transformer", min_mtime=train_start_ts - 2
+        )
+
+    # --- Load metrics ---
     lstm8_m = load_metrics(lstm8_dir)
-    gru4_m = load_metrics(gru4_dir)
     gru8_m = load_metrics(gru8_dir)
     seq_m = load_metrics(seq_dir)
+    xgb_m = load_metrics(xgb_dir)
+    transformer_m = load_metrics(transformer_dir)
 
     df = pd.DataFrame(
         [
-            metrics_to_row("lstm_4features", lstm4_m),
             metrics_to_row("lstm_8features", lstm8_m),
-            metrics_to_row("gru_4features", gru4_m),
             metrics_to_row("gru_8features", gru8_m),
             metrics_to_row("seq2seq_attention_8features", seq_m),
+            metrics_to_row("xgboost_8features", xgb_m),
+            metrics_to_row("transformer_8features", transformer_m),
         ]
     )
 
@@ -256,7 +341,6 @@ def main() -> None:
     compare_dir.mkdir(parents=True, exist_ok=True)
     df.to_csv(compare_dir / "compare_metrics.csv", index=False)
 
-    # --- Report ---
     lines = []
     lines.append("# Benchmark Compare Report")
     lines.append("")
@@ -264,25 +348,24 @@ def main() -> None:
     lines.append("")
     lines.append("## Run Folders")
     lines.append("")
-    lines.append(f"- LSTM (4 features): {lstm4_dir}")
     lines.append(f"- LSTM (8 features): {lstm8_dir}")
-    lines.append(f"- GRU (4 features): {gru4_dir}")
     lines.append(f"- GRU (8 features): {gru8_dir}")
     lines.append(f"- Seq2Seq+Attention (8 features): {seq_dir}")
+    lines.append(f"- XGBoost: {xgb_dir}")
+    lines.append(f"- Transformer: {transformer_dir}")
     lines.append("")
     lines.append("## Artifact Checks")
     lines.append("")
     for label, rdir in [
-        ("lstm_4f", lstm4_dir),
         ("lstm_8f", lstm8_dir),
-        ("gru_4f", gru4_dir),
         ("gru_8f", gru8_dir),
         ("seq2seq", seq_dir),
+        ("xgboost", xgb_dir),
+        ("transformer", transformer_dir),
     ]:
         checks = required_artifacts_exist(rdir)
         lines.append(f"### {label}")
         for k, v in checks.items():
-            # metrics_by_horizon and error_by_horizon only required for multi-horizon
             lines.append(f"- {k}: {'OK' if v else 'MISSING'}")
         lines.append("")
 
@@ -294,10 +377,8 @@ def main() -> None:
     lines.append("")
     lines.append("## Notes")
     lines.append("")
-    lines.append(
-        "- Seq2Seq+Attention is evaluated as a multi-horizon model (metrics_by_horizon.csv + error_by_horizon.png)."
-    )
-    lines.append("- Seq2Seq+Attention currently requires 8 features (encoder=8, decoder=7); 4-feature mode is not supported.")
+    lines.append("- 该报告按 5 个模型类型汇总，不再按 4/8 特征变体展开。")
+    lines.append("- XGBoost 与 Transformer 的运行目录由 output/runs 下最新有效 metrics.json 自动发现。")
 
     (compare_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
 

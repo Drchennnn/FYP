@@ -52,7 +52,7 @@ def main() -> None:
         base[name] = df_m[name]
     base = base.dropna(subset=["gru", "transformer", "xgboost"])
 
-    w = {"gru": 0.3, "transformer": 0.2, "xgboost": 0.5}
+    w = {"gru": 0.10, "transformer": 0.20, "xgboost": 0.70}
     base["ensemble"] = sum(base[k] * wt for k, wt in w.items())
 
     mask = base["y_true"].notna()

@@ -10,13 +10,19 @@
 
 import argparse
 import datetime
-import os
 import sys
 from pathlib import Path
-import tensorflow as tf
 
 # ==================== 常量配置 ====================
-SUPPORTED_MODELS = ["lstm", "gru", "seq2seq_attention", "gru_mimo", "lstm_mimo"]
+SUPPORTED_MODELS = [
+    "lstm",
+    "gru",
+    "seq2seq_attention",
+    "gru_mimo",
+    "lstm_mimo",
+    "xgboost",
+    "transformer",
+]
 SUPPORTED_FEATURES = [4, 8]
 BASE_OUTPUT_DIR = Path("E:/openclaw/my_project/workspace/FYP/output/runs")
 ROOT_DIR = Path(__file__).resolve().parent
@@ -248,12 +254,41 @@ def run_seq2seq_attention(
     
     subprocess.run(cmd, check=True)
 
+
+def run_xgboost() -> None:
+    """运行 XGBoost 模型"""
+    print("Running XGBoost model...")
+    import subprocess
+
+    cmd = [
+        sys.executable,
+        "models/xgboost/train_xgboost_8features.py",
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def run_transformer(
+    epochs: int,
+    look_back: int,
+) -> None:
+    """运行 Transformer 模型"""
+    print("Running Transformer model...")
+    import subprocess
+
+    cmd = [
+        sys.executable,
+        "models/transformer/train_transformer_8features.py",
+        "--epochs", str(epochs),
+        "--look-back", str(look_back),
+    ]
+    subprocess.run(cmd, check=True)
+
 def main():
     """主函数"""
     args = parse_args()
     
     # 验证参数
-    if args.model in ("seq2seq_attention", "gru_mimo", "lstm_mimo") and args.features != 8:
+    if args.model in ("seq2seq_attention", "gru_mimo", "lstm_mimo", "xgboost", "transformer") and args.features != 8:
         print(f"Warning: {args.model} only supports 8 features, automatically set to 8")
         args.features = 8
     
@@ -297,6 +332,10 @@ def main():
             run_lstm_mimo(
                 args.epochs, args.look_back, output_dir, figures_dir, weights_dir, args.save_plots
             )
+        elif args.model == "xgboost":
+            run_xgboost()
+        elif args.model == "transformer":
+            run_transformer(args.epochs, args.look_back)
             
         print("\nTraining completed!")
         print(f"Output directory: {output_dir}")

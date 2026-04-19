@@ -111,14 +111,33 @@ def load_and_engineer_features(input_csv: Path) -> tuple[pd.DataFrame, MinMaxSca
     df["day_of_week_norm"] = df["date"].dt.weekday / 6.0
     df["is_holiday"] = df["date"].apply(mark_core_holiday).astype(float)
     df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
+    # 节假日距离特征
+    def days_to_next_hol(date_val: pd.Timestamp) -> float:
+        for delta in range(1, 15):
+            try:
+                if cncal.is_holiday((date_val + pd.Timedelta(days=delta)).date()):
+                    return delta / 14.0
+            except Exception:
+                pass
+        return 1.0
+
+    def days_since_last_hol(date_val: pd.Timestamp) -> float:
+        for delta in range(1, 15):
+            try:
+                if cncal.is_holiday((date_val - pd.Timedelta(days=delta)).date()):
+                    return delta / 14.0
+            except Exception:
+                pass
+        return 1.0
+
+    df["days_to_next_holiday"] = df["date"].apply(days_to_next_hol).astype(float)
+    df["days_since_last_holiday"] = df["date"].apply(days_since_last_hol).astype(float)
 
     # 目标序列特征（先构造原始值）
     df["tourism_num_lag_1"] = df["visitor_count"].shift(1)
     df["tourism_num_lag_7"] = df["visitor_count"].shift(7)
     df["tourism_num_lag_14"] = df["visitor_count"].shift(14)
-    df["tourism_num_lag_28"] = df["visitor_count"].shift(28)
     df["tourism_num_rolling_mean_7"] = df["visitor_count"].rolling(7).mean()
-    df["tourism_num_rolling_mean_14"] = df["visitor_count"].rolling(14).mean()
     df["tourism_num_rolling_std_7"] = df["visitor_count"].rolling(7).std()
 
     # 天气原始列（统一命名便于后续评估）
@@ -153,9 +172,7 @@ def load_and_engineer_features(input_csv: Path) -> tuple[pd.DataFrame, MinMaxSca
         "tourism_num_lag_1",
         "tourism_num_lag_7",
         "tourism_num_lag_14",
-        "tourism_num_lag_28",
         "tourism_num_rolling_mean_7",
-        "tourism_num_rolling_mean_14",
         "tourism_num_rolling_std_7",
         "precip_raw",
         "temp_high_raw",
@@ -178,9 +195,7 @@ def load_and_engineer_features(input_csv: Path) -> tuple[pd.DataFrame, MinMaxSca
     _fit_transform_col("tourism_num_lag_1", "tourism_num_lag_1_scaled")
     _fit_transform_col("tourism_num_lag_7", "tourism_num_lag_7_scaled")
     _fit_transform_col("tourism_num_lag_14", "tourism_num_lag_14_scaled")
-    _fit_transform_col("tourism_num_lag_28", "tourism_num_lag_28_scaled")
     _fit_transform_col("tourism_num_rolling_mean_7", "rolling_mean_7_scaled")
-    _fit_transform_col("tourism_num_rolling_mean_14", "rolling_mean_14_scaled")
     _fit_transform_col("tourism_num_rolling_std_7", "rolling_std_7_scaled")
     _fit_transform_col("precip_raw", "meteo_precip_sum_scaled")
     _fit_transform_col("temp_high_raw", "temp_high_scaled")
@@ -207,13 +222,12 @@ FEATURE_COLS = [
     "day_of_week_norm",
     "is_holiday",
     "is_peak_season",
+    "days_to_next_holiday",
+    "days_since_last_holiday",
     "tourism_num_lag_1_scaled",
     "tourism_num_lag_7_scaled",
     "tourism_num_lag_14_scaled",
-    "tourism_num_lag_28_scaled",
     "rolling_mean_7_scaled",
-    "rolling_mean_14_scaled",
-    "rolling_std_7_scaled",
     "meteo_precip_sum_scaled",
     "temp_high_scaled",
     "temp_low_scaled",

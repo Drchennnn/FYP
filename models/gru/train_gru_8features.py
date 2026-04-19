@@ -113,6 +113,27 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     df["day_of_week"] = df["date"].dt.weekday
     df["is_holiday"] = df["date"].apply(mark_core_holiday).astype(float)
     df["is_peak_season"] = df["date"].apply(is_peak_season).astype(float)
+    # 节假日距离特征
+    def days_to_next_hol(date_val: pd.Timestamp) -> float:
+        for delta in range(1, 15):
+            try:
+                if cncal.is_holiday((date_val + pd.Timedelta(days=delta)).date()):
+                    return delta / 14.0
+            except Exception:
+                pass
+        return 1.0
+
+    def days_since_last_hol(date_val: pd.Timestamp) -> float:
+        for delta in range(1, 15):
+            try:
+                if cncal.is_holiday((date_val - pd.Timedelta(days=delta)).date()):
+                    return delta / 14.0
+            except Exception:
+                pass
+        return 1.0
+
+    df["days_to_next_holiday"] = df["date"].apply(days_to_next_hol).astype(float)
+    df["days_since_last_holiday"] = df["date"].apply(days_since_last_hol).astype(float)
 
     # 时间特征归一化
     df["month_norm"] = (df["month"] - 1) / 11.0
@@ -121,7 +142,6 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     # 构造 lag / rolling 原始特征（P0 扩展）
     df["tourism_num_lag_7"] = df["visitor_count"].shift(7)
     df["tourism_num_lag_14"] = df["visitor_count"].shift(14)
-    df["tourism_num_rolling_mean_14"] = df["visitor_count"].rolling(14).mean()
 
     # 检查并确保天气缩放特征存在
     required_features = [
@@ -140,7 +160,6 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
             "visitor_count",
             "tourism_num_lag_7",
             "tourism_num_lag_14",
-            "tourism_num_rolling_mean_14",
             "meteo_precip_sum_scaled",
             "temp_high_scaled",
             "temp_low_scaled",
@@ -160,12 +179,6 @@ def load_and_engineer_features(input_csv: Path) -> pd.DataFrame:
     lag14_scaler = MinMaxScaler()
     lag14_scaler.fit(train_df[["tourism_num_lag_14"]])
     df["tourism_num_lag_14_scaled"] = lag14_scaler.transform(df[["tourism_num_lag_14"]]).reshape(-1)
-
-    rolling14_scaler = MinMaxScaler()
-    rolling14_scaler.fit(train_df[["tourism_num_rolling_mean_14"]])
-    df["rolling_mean_14_scaled"] = rolling14_scaler.transform(
-        df[["tourism_num_rolling_mean_14"]]
-    ).reshape(-1)
 
     return df
 
@@ -199,9 +212,10 @@ def build_sequences(
         "day_of_week_norm",
         "is_holiday",
         "is_peak_season",
+        "days_to_next_holiday",
+        "days_since_last_holiday",
         "tourism_num_lag_7_scaled",
         "tourism_num_lag_14_scaled",
-        "rolling_mean_14_scaled",
         "meteo_precip_sum_scaled",
         "temp_high_scaled",
         "temp_low_scaled",
@@ -277,7 +291,7 @@ def compute_sample_weights(months: np.ndarray) -> np.ndarray:
     return weights.astype(np.float32)
 
 
-def create_gru_model(look_back: int, n_features: int = 11) -> tf.keras.Model:
+def create_gru_model(look_back: int, n_features: int = 12) -> tf.keras.Model:
     """创建GRU模型（8特征版本）
     
     输入形状: (look_back, 8)
@@ -541,7 +555,7 @@ def main() -> None:
     evaluate_and_save_run(
         str(run_dir),
         model_name="gru",
-        feature_count=11,
+        feature_count=int(x_train.shape[2]),
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
         dates=pd.to_datetime(pred_df["date"]).values,
