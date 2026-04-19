@@ -98,27 +98,18 @@
   // State
   // ─────────────────────────────────────────────
   const state = {
-    h: 7,
-    mode: 'online',  // 始终在线：所有模型（MIMO/Seq2Seq/单步）均实时推理
+    h: 3,
+    mode: 'online',
     lang: 'zh',
     theme: 'dark',
-    modelView: 'both',
-    curveFilter: 'all',
-    // 方案B：独立 chip 多选状态
-    activeChips: new Set(['actual']),
-    devMode: false,  // when true: show all 5 model comparison lines
     selectedIdx: null,
     payload: null,
     chart: null,
     weatherChart: null,
-    wfChart: null,
-    calibChart: null,
     metricsCache: {},
     analysisLoaded: false,
     modelsLoaded: false,
-    // 前端直接从 Open-Meteo 获取的天气数据：date string → weather object
     wxData: {},
-    // 后端 payload 历史天气（2016~今天）：date string → weather object
     histWxData: {}
   };
 
@@ -220,9 +211,7 @@
       zones: { historyEnd: null, gapEnd: null, forecastStart: null, forecastEnd: null },
       meta: {}, series: {
         actual: [],
-        gru_single: [], gru_mimo: [],
-        lstm_single: [], lstm_mimo: [],
-        seq2seq: []
+        gru: [], transformer: [], xgboost: [], ensemble: []
       },
       thresholds: { crowd: null, weather: {} },
       weather: { precipMm: [], tempHighC: [], tempLowC: [], weatherCodeEn: [],
@@ -256,11 +245,10 @@
 
     const s = raw.series || {};
     out.series.actual      = safeArr(s.actual || [], n, safeNum);
-    out.series.gru_single  = safeArr(s.gru_single_pred || [], n, safeNum);
-    out.series.gru_mimo    = safeArr(s.gru_mimo_pred || [], n, safeNum);
-    out.series.lstm_single = safeArr(s.lstm_single_pred || [], n, safeNum);
-    out.series.lstm_mimo   = safeArr(s.lstm_mimo_pred || [], n, safeNum);
-    out.series.seq2seq     = safeArr(s.seq2seq_pred || [], n, safeNum);
+    out.series.gru         = safeArr(s.gru_pred || s.gru_single_pred || [], n, safeNum);
+    out.series.transformer = safeArr(s.transformer_pred || [], n, safeNum);
+    out.series.xgboost     = safeArr(s.xgboost_pred || [], n, safeNum);
+    out.series.ensemble    = safeArr(s.ensemble_pred || [], n, safeNum);
 
     const thr = raw.thresholds || {};
     out.thresholds.crowd      = safeNum(thr.crowd);
@@ -291,30 +279,8 @@
     })).filter((h) => h.start && h.end);
 
     const r = raw.risk || {};
-    out.risk = r;  // 直接存整个 risk 对象
+    out.risk = r;
     out.warning = raw.warning || null;
-
-    // Uncertainty interval (step-wise conformal from Deep Ensemble)
-    const unc = raw.uncertainty || {};
-    const lowerArr = safeArr(unc.lower || [], n, safeNum).map((v) => v === null ? null : Math.max(0, v));
-    const upperArr = safeArr(unc.upper || [], n, safeNum).map((v, i) => {
-      if (v === null) return null;
-      const vv = Math.max(0, v);
-      const lo = lowerArr[i];
-      return lo !== null && vv < lo ? lo : vv;
-    });
-    const halfWArr = safeArr(unc.half_width || [], n, safeNum).map((v) => v === null ? null : Math.max(0, v));
-    out.uncertainty = {
-      available: !!unc.available,
-      nMembers: safeNum(unc.n_members) || 0,
-      calSize: safeNum(unc.cal_size) || 0,
-      alpha: safeNum(unc.alpha) || 0.10,
-      qhatByHorizon: unc.qhat_by_horizon || {},
-      halfWidthByHorizon: unc.half_width_by_horizon || {},
-      lower: lowerArr,
-      upper: upperArr,
-      halfWidth: halfWArr,
-    };
     return out;
   }
 
@@ -368,16 +334,25 @@
 
   async function fetchWeatherDirect() {
     try {
-      const params = new URLSearchParams({
-        latitude: '33.2', longitude: '103.9',
-        daily: 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max',
-        timezone: 'Asia/Shanghai',
-        past_days: '14',
-        forecast_days: '14'
-      });
-      const res = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { cache: 'no-store' });
-      if (!res.ok) return;
-      const json = await res.json();
+      // 优先走后端代理（避免中国大陆直连 Open-Meteo 被阻断）
+      let json = null;
+      try {
+        const res = await fetch('/api/weather', { cache: 'no-store' });
+        if (res.ok) json = await res.json();
+      } catch (_) {}
+      // fallback: 直连 Open-Meteo
+      if (!json || json.error) {
+        const params = new URLSearchParams({
+          latitude: '33.2', longitude: '103.9',
+          daily: 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max',
+          timezone: 'Asia/Shanghai',
+          past_days: '14',
+          forecast_days: '14'
+        });
+        const res2 = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`, { cache: 'no-store' });
+        if (!res2.ok) return;
+        json = await res2.json();
+      }
       const d = json.daily || {};
       const times = d.time || [];
       const th = d.temperature_2m_max || [];
@@ -439,7 +414,7 @@
     setStatus('', t('status_loading'));
 
     // 缓存 key：固定 online 模式，30分钟 TTL
-    const cacheKey = `v3_forecast_v7_h${state.h}`;
+    const cacheKey = `v3_forecast_v10_h${state.h}`;
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -530,8 +505,8 @@
     return RISK_BADGE_CLASSES[v] || '';
   }
 
-  // 从5条曲线中取第一个有值的预测（用于 KPI/Reco/Strip 的"最佳可用预测"）
-  const PRED_KEYS = ['gru_single', 'gru_mimo', 'lstm_single', 'lstm_mimo', 'seq2seq'];
+  // 从3条曲线中取第一个有值的预测（用于 Reco/Strip 的"最佳可用预测"）
+  const PRED_KEYS = ['gru', 'transformer', 'xgboost'];
   function bestPred(series, i) {
     for (const k of PRED_KEYS) {
       const v = series[k] && series[k][i];
@@ -639,19 +614,13 @@
     const tooltipBg = isDark ? '#1c1c1e' : '#ffffff';
     const tooltipBorder = isDark ? '#3a3a3c' : '#e0e0e0';
 
-    // 5条曲线配置：key, 显示名, 颜色
+    // 4条曲线配置
     const CURVE_DEFS = [
-      { key: 'gru_single',  nameZh: 'GRU (单步)',       nameEn: 'GRU (Single)',    color: '#0a84ff' },
-      { key: 'gru_mimo',    nameZh: 'GRU (多步)',        nameEn: 'GRU (MIMO)',      color: '#5ac8fa' },
-      { key: 'lstm_single', nameZh: 'LSTM (单步)',       nameEn: 'LSTM (Single)',   color: '#ff9f0a' },
-      { key: 'lstm_mimo',   nameZh: 'LSTM (多步)',       nameEn: 'LSTM (MIMO)',     color: '#ffd60a' },
-      { key: 'seq2seq',     nameZh: 'Seq2Seq+Attention', nameEn: 'Seq2Seq+Attn',   color: '#30d158' },
+      { key: 'gru',         nameZh: 'GRU',         nameEn: 'GRU',         color: '#0a84ff' },
+      { key: 'transformer', nameZh: 'Transformer',  nameEn: 'Transformer', color: '#30d158' },
+      { key: 'xgboost',     nameZh: 'XGBoost',      nameEn: 'XGBoost',     color: '#ffd60a' },
+      { key: 'ensemble',    nameZh: '集成预测',      nameEn: 'Ensemble',    color: '#bf5af2' },
     ];
-
-    // "Developer mode": if off, only show actual + ensemble mean (gru_mimo) + CI band
-    const devMode = state.devMode === true;
-    const chips = state.activeChips;
-    const showActual = devMode ? chips.has('actual') : true;
 
     // Holiday markAreas (event-level: label floats into top empty grid area)
     const markAreaData = (holidays || []).map((h) => {
@@ -688,27 +657,37 @@
     })();
     let gapStartIdx = -1;
     let gapEndIdx = -1;
-    // Gap zone: day after lastRealDate up to gapEnd (inclusive)
+    // Gap zone: day after lastRealDate up to today (exclusive)
+    // ECharts category axis requires exact string match — find nearest axis date
+    function nearestAxisDate(dateStr, after) {
+      // after=true: find first timeAxis entry >= dateStr; false: last entry <= dateStr
+      if (after) {
+        return timeAxis.find(d => d >= dateStr) || null;
+      } else {
+        let result = null;
+        for (const d of timeAxis) { if (d <= dateStr) result = d; else break; }
+        return result;
+      }
+    }
     if (lastRealDate && lastRealDate < todayStr) {
-      const dayAfterLast = new Date(lastRealDate);
+      const dayAfterLast = new Date(lastRealDate + 'T00:00:00');
       dayAfterLast.setDate(dayAfterLast.getDate() + 1);
       const gapStart = dayAfterLast.toISOString().slice(0, 10);
       if (gapStart < todayStr) {
-        gapStartIdx = timeAxis.indexOf(gapStart);
-        gapEndIdx = timeAxis.indexOf(gapEndStr);
+        // Use nearest axis dates so markArea renders even when gap days not in axis
+        const axisGapStart = nearestAxisDate(gapStart, true);
+        const axisGapEnd = nearestAxisDate(todayStr, false) || lastRealDate;
+        gapStartIdx = axisGapStart ? timeAxis.indexOf(axisGapStart) : -1;
+        gapEndIdx = axisGapEnd ? timeAxis.indexOf(axisGapEnd) : -1;
+        // Draw from lastRealDate to todayStr using exact strings (ECharts interpolates)
         markAreaData.push([
           {
-            xAxis: gapStart,
-            itemStyle: {
-              color: 'rgba(200, 200, 200, 0.2)'
-            },
+            xAxis: lastRealDate,
+            itemStyle: { color: 'rgba(200, 200, 200, 0.2)' },
             label: {
-              show: true,
-              position: 'insideTop',
-              padding: [20, 0, 0, 0],
-              color: '#999',
-              opacity: 0.4,
-              formatter: state.lang === 'zh' ? '数据滞后推演区' : 'Latency Inference'
+              show: true, position: 'insideTop',
+              padding: [20, 0, 0, 0], color: '#999', opacity: 0.4,
+              formatter: state.lang === 'zh' ? '数据滞后区' : 'Data Latency'
             }
           },
           { xAxis: todayStr }
@@ -726,23 +705,17 @@
             padding: [20, 0, 0, 0],
             color: isDark ? 'rgba(10,132,255,0.7)' : 'rgba(10,132,255,0.8)',
             fontSize: 10,
-            formatter: state.lang === 'zh' ? '未来7天预测区' : 'Forecast (7d)'
+            formatter: state.lang === 'zh' ? '未来3天预测区' : 'Forecast (3d)'
           }
         },
         { xAxis: timeAxis[forecast.endIndex] }
       ]);
     }
 
-    // ── Ensemble mean series (gru_mimo used as "primary" prediction) ──
-    const ensembleMeanColor = '#ff9f0a';  // amber — stands out from all 5 model colors
-    const latencyAnchor = (gapStartIdx >= 0 && gapEndIdx >= gapStartIdx)
-      ? timeAxis.map((_, i) => (i >= gapStartIdx && i <= gapEndIdx ? 0 : null))
-      : timeAxis.map(() => null);
-
     const seriesList = [
       {
         name: state.lang === 'zh' ? '实际客流' : 'Actual',
-        type: 'line', data: showActual ? series.actual : series.actual.map(() => null),
+        type: 'line', data: series.actual,
         symbol: 'none', connectNulls: false,
         lineStyle: { color: isDark ? '#ffffff' : '#1c1c1e', width: 2 },
         itemStyle: { color: isDark ? '#ffffff' : '#1c1c1e' },
@@ -750,64 +723,6 @@
         markLine: {
           silent: true,
           data: [
-            // 季节性预警阈值：按 timeAxis 日期判断淡/旺季，分段画线
-            ...(() => {
-              const peakThr = thresholds.crowd_peak;
-              const offThr  = thresholds.crowd_off;
-              if (!peakThr && !offThr) return [];
-              function isPeakSeason(dateStr) {
-                const d = new Date(dateStr + 'T00:00:00');
-                const m = d.getMonth() + 1, day = d.getDate();
-                return (m >= 4 && m <= 10) || (m === 11 && day <= 15);
-              }
-              // 找出每段连续同季节的起止日期，生成分段 markLine
-              const lines = [];
-              let segStart = null, segIsPeak = null;
-              for (let i = 0; i < timeAxis.length; i++) {
-                const d = timeAxis[i];
-                const peak = isPeakSeason(d);
-                if (segIsPeak === null) { segStart = d; segIsPeak = peak; }
-                const isLast = (i === timeAxis.length - 1);
-                const nextPeak = isLast ? null : isPeakSeason(timeAxis[i + 1]);
-                if (isLast || nextPeak !== segIsPeak) {
-                  const thr = segIsPeak ? peakThr : offThr;
-                  const label = segIsPeak
-                    ? (state.lang === 'zh' ? `旺季预警 ${fmtVisitors(thr)}` : `Peak alert ${fmtVisitors(thr)}`)
-                    : (state.lang === 'zh' ? `淡季预警 ${fmtVisitors(thr)}` : `Off-peak alert ${fmtVisitors(thr)}`);
-                  lines.push([
-                    { xAxis: segStart, yAxis: thr,
-                      lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
-                      label: { show: true, position: 'insideEndTop',
-                               color: '#ff453a', fontSize: 10, fontWeight: 500,
-                               formatter: label } },
-                    { xAxis: d, yAxis: thr }
-                  ]);
-                  segStart = timeAxis[i + 1] || null;
-                  segIsPeak = nextPeak;
-                }
-              }
-              // ECharts markLine data 中分段线需要用 coords 格式，转换为单点 yAxis 标注
-              // 实际用 markLine 的 [from, to] 方式无法按 x 分段，改用 markArea 叠一条细线效果
-              // 简化：只输出两条独立 yAxis 线，label 只在末尾显示一次
-              const result = [];
-              const hasPeak = timeAxis.some(isPeakSeason);
-              const hasOff  = timeAxis.some(d => !isPeakSeason(d));
-              if (hasPeak && peakThr) result.push({
-                yAxis: peakThr, name: 'Peak Threshold',
-                lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
-                label: { show: true, position: 'insideEndTop',
-                         color: '#ff453a', fontSize: 10, fontWeight: 500,
-                         formatter: state.lang === 'zh' ? `旺季预警 ${fmtVisitors(peakThr)}` : `Peak alert ${fmtVisitors(peakThr)}` }
-              });
-              if (hasOff && offThr && offThr !== peakThr) result.push({
-                yAxis: offThr, name: 'Off-peak Threshold',
-                lineStyle: { color: '#ff9f0a', type: 'dashed', width: 1.5 },
-                label: { show: true, position: 'insideEndTop',
-                         color: '#ff9f0a', fontSize: 10, fontWeight: 500,
-                         formatter: state.lang === 'zh' ? `淡季预警 ${fmtVisitors(offThr)}` : `Off-peak alert ${fmtVisitors(offThr)}` }
-              });
-              return result;
-            })(),
             // Vertical line at today marking start of future predictions
             ...(todayStr && timeAxis.includes(todayStr) ? [{
               xAxis: todayStr,
@@ -832,102 +747,56 @@
           ]
         }
       },
-      {
-        name: '_latency_anchor',
+      // ── model prediction lines ──
+      ...CURVE_DEFS.map(({ key, nameZh, nameEn, color }) => ({
+        name: state.lang === 'zh' ? nameZh : nameEn,
         type: 'line',
-        data: latencyAnchor,
-        symbol: 'none', showSymbol: false, connectNulls: false,
-        lineStyle: { color: 'transparent', width: 0 },
-        itemStyle: { color: 'transparent' },
-        legendHoverLink: false,
-        z: 0,
-      },
-      // ── Primary prediction line: Ensemble mean (gru_mimo) ──
-      // Respects the gru_mimo chip toggle so the button actually works.
-      // When hidden: render transparent so the CI band stacking still has a centre reference.
-      {
-        name: state.lang === 'zh' ? 'GRU 集成均值' : 'GRU Ensemble Mean',
-        type: 'line',
-        data: series.gru_mimo || [],
-        symbol: 'none', showSymbol: false, connectNulls: false,
-        lineStyle: {
-          color: (!devMode || chips.has('gru_mimo')) ? ensembleMeanColor : 'transparent',
-          width: (!devMode || chips.has('gru_mimo')) ? (devMode ? 1.5 : 2.5) : 0,
-        },
-        itemStyle: { color: ensembleMeanColor },
         z: 10,
-      },
-      // ── Model comparison lines: only in devMode ──
-      ...CURVE_DEFS
-        .filter(({ key }) => devMode && key !== 'gru_mimo')  // gru_mimo already rendered above
-        .map(({ key, nameZh, nameEn, color }) => ({
-          name: state.lang === 'zh' ? nameZh : nameEn,
-          type: 'line',
-          data: chips.has(key) ? (series[key] || []) : (series[key] || []).map(() => null),
-          symbol: 'none', showSymbol: false, connectNulls: false,
-          lineStyle: { color, width: 1.5, opacity: 0.75 },
-          itemStyle: { color }
-        })),
-      // ── Uncertainty fan chart (Deep Ensemble + Conformal step-wise q̂_h) ──
-      // Rendered as two boundary lines with areaStyle between them.
-      // Only visible in the forecast window (today ~ today+6), non-null elsewhere.
-      ...(payload.uncertainty && payload.uncertainty.available ? (() => {
-        const unc = payload.uncertainty;
-        const bandColor = isDark ? 'rgba(255,159,10,0.18)' : 'rgba(255,159,10,0.15)';
-        const lineColor = isDark ? 'rgba(255,159,10,0.55)' : 'rgba(255,159,10,0.50)';
-        return [
-          // Lower bound (invisible line, anchor for areaStyle stack)
-          {
-            name: '_unc_lower',
-            type: 'line',
-            data: unc.lower,
-            symbol: 'none', showSymbol: false, connectNulls: false,
-            lineStyle: { color: 'transparent', width: 0 },
-            itemStyle: { color: 'transparent' },
-            stack: 'unc_band',
-            areaStyle: { color: 'transparent' },
-            tooltip: { show: false },
-            silent: true,
-            legendHoverLink: false,
-          },
-          // Upper bound — stacks on lower, fills the fan area
-          {
-            name: state.lang === 'zh' ? '90% 置信区间（共形预测）' : '90% CI (Conformal)',
-            type: 'line',
-            data: unc.upper.map((v, i) => {
-              // For stacked area: value = upper - lower
-              const lo = unc.lower[i];
-              return (v !== null && lo !== null) ? Math.max(0, (v - lo)) : null;
-            }),
-            symbol: 'none', showSymbol: false, connectNulls: false,
-            lineStyle: { color: lineColor, width: 1, type: 'dotted' },
-            itemStyle: { color: lineColor },
-            stack: 'unc_band',
-            areaStyle: { color: bandColor },
-            legendHoverLink: false,
-          }
-        ];
-      })() : [])
-    ];
-
-    // ── Suitability warning probability curve (secondary Y-axis) ──
-    const riskData = payload.risk || {};
-    const pWarnArr = riskData.p_warn;
-    if (devMode && Array.isArray(pWarnArr) && pWarnArr.length > 0) {
-      seriesList.push({
-        name: state.lang === 'zh' ? '预警概率' : 'Warn Prob.',
-        type: 'line',
-        data: pWarnArr,
-        yAxisIndex: 1,
+        data: series[key] || [],
         symbol: 'none', showSymbol: false, connectNulls: false,
-        lineStyle: {
-          color: isDark ? 'rgba(191,90,242,0.75)' : 'rgba(150,60,210,0.65)',
-          width: 1.5, type: 'dashed'
-        },
-        itemStyle: { color: isDark ? 'rgba(191,90,242,0.75)' : 'rgba(150,60,210,0.65)' },
-        z: 5,
-      });
-    }
+        lineStyle: { color, width: 2 },
+        itemStyle: { color }
+      })),
+      // ── 分段阈值线：每个日期对应当天季节的阈值，旺淡季各自只在对应区间显示 ──
+      ...(() => {
+        const peakThr = thresholds.crowd_peak;
+        const offThr  = thresholds.crowd_off;
+        if (!peakThr && !offThr) return [];
+        function isPeak(dateStr) {
+          const d = new Date(dateStr + 'T00:00:00');
+          const m = d.getMonth() + 1, day = d.getDate();
+          return (m >= 4 && m <= 10) || (m === 11 && day <= 15);
+        }
+        // 旺季线：只在旺季日期有值，淡季日期为null
+        const peakData = timeAxis.map(d => isPeak(d) ? peakThr : null);
+        // 淡季线：只在淡季日期有值，旺季日期为null
+        const offData  = timeAxis.map(d => isPeak(d) ? null : offThr);
+        const result = [];
+        if (peakThr && peakData.some(v => v !== null)) result.push({
+          name: state.lang === 'zh' ? `旺季预警 ${fmtVisitors(peakThr)}` : `Peak alert ${fmtVisitors(peakThr)}`,
+          type: 'line', z: 5,
+          data: peakData,
+          symbol: 'none', connectNulls: false,
+          lineStyle: { color: '#ff453a', type: 'dashed', width: 1.5 },
+          itemStyle: { color: '#ff453a' },
+          tooltip: { show: false },
+          label: { show: false },
+          silent: true,
+        });
+        if (offThr && offData.some(v => v !== null) && offThr !== peakThr) result.push({
+          name: state.lang === 'zh' ? `淡季预警 ${fmtVisitors(offThr)}` : `Off-peak alert ${fmtVisitors(offThr)}`,
+          type: 'line', z: 5,
+          data: offData,
+          symbol: 'none', connectNulls: false,
+          lineStyle: { color: '#ff9f0a', type: 'dashed', width: 1.5 },
+          itemStyle: { color: '#ff9f0a' },
+          tooltip: { show: false },
+          label: { show: false },
+          silent: true,
+        });
+        return result;
+      })()
+    ];
 
     return {
       backgroundColor: 'transparent',
@@ -951,22 +820,10 @@
       yAxis: [
         {
           type: 'value',
-          min: 0,   // visitor count cannot be negative
+          min: 0,
           splitLine: { lineStyle: { color: gridColor } },
           axisLabel: { color: mutedColor, fontSize: 11,
             formatter: (v) => v >= 10000 ? (v / 10000).toFixed(1) + 'w' : String(v) }
-        },
-        {
-          // Secondary axis: warning probability [0, 1]
-          type: 'value', min: 0, max: 1,
-          splitLine: { show: false },
-          axisLine: { show: false },
-          axisTick: { show: false },
-          axisLabel: {
-            color: isDark ? 'rgba(255,69,58,0.55)' : 'rgba(180,40,30,0.50)',
-            fontSize: 10,
-            formatter: (v) => v === 0 ? '' : (v === 1 ? '100%' : Math.round(v * 100) + '%')
-          }
         }
       ],
       tooltip: {
@@ -976,46 +833,37 @@
         formatter: (params) => {
           if (!params || !params.length) return '';
           const date = params[0].axisValue || '';
-          const unc = payload && payload.uncertainty;
           const si = payload && payload.forecast ? payload.forecast.startIndex : -1;
           const dateIdx = payload && payload.timeAxis ? payload.timeAxis.indexOf(date) : -1;
-          // Determine prediction horizon step (h=1 for today, h=7 for today+6)
           const hStep = (si >= 0 && dateIdx >= si) ? (dateIdx - si + 1) : null;
-          const isForecastZone = hStep !== null && hStep >= 1 && hStep <= 7;
+          const isForecastZone = hStep !== null && hStep >= 1 && hStep <= 3;
           const isGapZone = gapStartIdx >= 0 && gapEndIdx >= gapStartIdx && dateIdx >= gapStartIdx && dateIdx <= gapEndIdx;
 
           let html = `<div style="font-weight:600;margin-bottom:4px">${date}`;
           if (isForecastZone) html += ` <span style="font-size:10px;opacity:0.55;font-weight:500">${state.lang === 'zh' ? `预测 · 第${hStep}天` : `Forecast · h=${hStep}`}</span>`;
           html += `</div>`;
           if (isGapZone) {
-            html += `<div style="font-size:11px;opacity:0.75;padding:6px 8px;border-radius:10px;background:${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'};border:1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)'};margin-bottom:6px">${state.lang === 'zh' ? '官方数据滞后，滚动推演中' : 'Official data delayed, rolling inference.'}</div>`;
+            html += `<div style="font-size:11px;opacity:0.75;padding:6px 8px;border-radius:10px;background:${isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)'};border:1px solid ${isDark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)'};margin-bottom:6px">${state.lang === 'zh' ? '官方数据滞后区' : 'Official data delayed.'}</div>`;
           }
 
           params.forEach((p) => {
-            // Skip internal stacking series
-            if (!p.seriesName || p.seriesName.startsWith('_unc_') || p.seriesName.startsWith('_latency_')) return;
+            if (!p.seriesName) return;
             if (p.value === null || p.value === undefined) return;
-            // For the CI band series, skip display value (shown separately below)
-            if (p.seriesName === '90% 置信区间（共形预测）' || p.seriesName === '90% CI (Conformal)') return;
+            // 过滤阈值线（不在tooltip里显示）
+            if (p.seriesName.includes('预警') || p.seriesName.includes('alert')) return;
             const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px"></span>`;
             html += `<div>${dot}${p.seriesName}: <b>${fmtVisitors(p.value)}</b></div>`;
           });
-
-          // Append uncertainty interval info for forecast zone
-          if (isForecastZone && unc && unc.available && dateIdx >= 0) {
-            const lo = unc.lower[dateIdx];
-            const hi = unc.upper[dateIdx];
-            if (lo !== null && hi !== null) {
-              const ciLabel = state.lang === 'zh' ? '90% 置信区间' : '90% Conf. Interval';
-              html += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.12)">`;
-              html += `<div style="color:rgba(255,159,10,0.9)">■ ${ciLabel}: <b>[${fmtVisitors(lo)}, ${fmtVisitors(hi)}]</b></div>`;
-              html += `</div>`;
-            }
-          }
           return html;
         }
       },
-      legend: { show: false },
+      legend: {
+        show: false,
+        data: [
+          state.lang === 'zh' ? '实际客流' : 'Actual',
+          ...CURVE_DEFS.map(d => state.lang === 'zh' ? d.nameZh : d.nameEn)
+        ]
+      },
       dataZoom: [
         { type: 'inside', start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: false, moveOnMouseWheel: false },
         { type: 'slider', bottom: 4, height: 20, borderColor: gridColor,
@@ -1258,19 +1106,32 @@
     const activeRisk = pickActiveRisk(payload);
     const threshold = payload.thresholds.crowd;
 
-    // 推荐窗口 = forecast window（在线预测的未来7天，或离线最新7天）
-    const h = forecast.h || 7;
-    const recoEnd = forecast.endIndex;
+    // 推荐窗口：优先用在线预测未来3天，若未来无数据则回退到最后有预测值的3天
+    const h = forecast.h || 3;
+
+    function latestNonNullEndReco(arr) {
+      for (let i = arr.length - 1; i >= 0; i--) { if (arr[i] !== null) return i; }
+      return -1;
+    }
+    const anyEndReco = Math.max(...PRED_KEYS.map(k => latestNonNullEndReco(series[k] || [])));
+    // 优先用服务端endIndex，若未来窗口全是null则退到最后有数据的索引
+    const serverEnd = forecast.endIndex;
+    const hasFutureData = PRED_KEYS.some(k => {
+      const arr = series[k] || [];
+      return arr.slice(Math.max(0, serverEnd - h + 1), serverEnd + 1).some(v => v !== null);
+    });
+    const recoEnd = hasFutureData ? serverEnd : (anyEndReco >= 0 ? anyEndReco : serverEnd);
     const recoStart = Math.max(0, recoEnd - h + 1);
 
     const candidates = [];
     for (let i = recoStart; i <= recoEnd; i++) {
       const pred = safeNum(bestPred(series, i));
-      if (pred === null) continue;  // 跳过无预测值的日期
-      // 取 risk 等级（来自后端 risk_main 数组）
+      if (pred === null) continue;
       const lv = activeRisk && Array.isArray(activeRisk.risk_level)
         ? (safeNum(activeRisk.risk_level[i]) ?? 0) : 0;
-      candidates.push({ idx: i, date: timeAxis[i], lv, pred });
+      const drivers = activeRisk && Array.isArray(activeRisk.drivers)
+        ? (activeRisk.drivers[i] || []) : [];
+      candidates.push({ idx: i, date: timeAxis[i], lv, pred, drivers });
     }
 
     const good = candidates.filter((c) => c.lv === 0).sort((a, b) => (a.pred || 0) - (b.pred || 0));
@@ -1286,6 +1147,7 @@
       const lvText = riskLevelText(c.lv);
       const badgeCls = riskBadgeClass(c.lv);
       const predStr = c.pred !== null ? fmtVisitors(c.pred) : '—';
+      // 主要原因文字
       let reason;
       if (c.lv === 0 && threshold !== null && c.pred !== null && c.pred < threshold * 0.7) {
         reason = t('reco_reason_low');
@@ -1294,10 +1156,15 @@
       } else {
         reason = t('reco_reason_watch');
       }
+      // 影响因素标签
+      const driverTags = (c.drivers || []).map(k => {
+        const label = driverLabel(k);
+        return `<span class="v3-reco-driver">${label}</span>`;
+      }).join('');
       return `<div class="v3-reco-item" data-idx="${c.idx}">
         <div class="v3-reco-left">
           <span class="v3-reco-date">${c.date}</span>
-          <span class="v3-reco-reason">${reason}</span>
+          <span class="v3-reco-reason">${reason}${driverTags ? ' · ' + driverTags : ''}</span>
         </div>
         <div class="v3-reco-right">
           <span class="v3-reco-pred">${predStr} ${t('kpi_unit')}</span>
@@ -1327,7 +1194,7 @@
     // latest index that has ANY prediction (champion > runner > third).
     // This fixes the case where champion (Seq2Seq) only reaches 2/24 but
     // runner/third (GRU/LSTM) extend to 4/2.
-    const h = forecast.h || 7;
+    const h = forecast.h || 3;
 
     function latestNonNullEnd(arr) {
       for (let i = arr.length - 1; i >= 0; i--) {
@@ -1399,8 +1266,7 @@
   // Update curve toggle labels to show actual model names
   // ─────────────────────────────────────────────
   function updateCurveToggleLabels(_payload) {
-    // chip labels are static; sync active state only
-    _syncChipUI();
+    // no-op: chip toggles removed
   }
 
   // ─────────────────────────────────────────────
@@ -1580,22 +1446,44 @@
   // ─────────────────────────────────────────────
   // Render all forecast page components
   // ─────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // Chart legend toggle buttons
+  // ─────────────────────────────────────────────
+  function initLegendToggles() {
+    // Map data-series-name → ECharts series name (language-aware)
+    function resolveSeriesName(key) {
+      if (key === 'actual') return state.lang === 'zh' ? '实际客流' : 'Actual';
+      if (key === 'ensemble') return state.lang === 'zh' ? '集成预测' : 'Ensemble';
+      return key; // GRU / Transformer / XGBoost — same in both langs
+    }
+    const btns = document.querySelectorAll('.v3-chart-key__item--toggle');
+    btns.forEach((btn) => {
+      if (btn._legendBound) return;
+      btn._legendBound = true;
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-series-name');
+        if (!key || !state.chart) return;
+        const seriesName = resolveSeriesName(key);
+        const active = btn.classList.toggle('v3-chart-key__item--active');
+        state.chart.dispatchAction({
+          type: active ? 'legendSelect' : 'legendUnSelect',
+          name: seriesName
+        });
+      });
+    });
+  }
+
   function renderAll(payload) {
-    buildHistWxData(payload);  // 先把后端历史天气建成 date map，供 getWxForDate 使用
+    buildHistWxData(payload);
     renderWxStrip(payload);
     renderChartSub(payload);
     renderChart(payload);
+    initLegendToggles();
     renderWeatherChart(payload);
     renderForecastStrip(payload);
     renderReco(payload);
-    renderCalibCard(payload);
-    renderAttrCard(payload);
-    updateCurveToggleLabels(payload);
-    // 默认选中今天（forecast.startIndex），等 wxData 拉到后会自动刷新
     const defaultIdx = payload.forecast.startIndex;
     updateSelection(defaultIdx);
-
-    // 异步拉取天气（前端直连 Open-Meteo），完成后重新触发 updateSelection 刷新侧边天气卡片
     fetchWeatherDirect();
   }
 
@@ -1837,8 +1725,6 @@
       loadMetrics('champion'), loadMetrics('runner_up'), loadMetrics('third')
     ]);
     const all = { champion: champ, runner_up: runner, third };
-    renderWfChart(all);
-    renderCalibChart(all);
     renderMetricsTable(all);
     state.analysisLoaded = true;
   }
@@ -1884,11 +1770,6 @@
     if (sun) sun.style.display = state.theme === 'light' ? '' : 'none';
     if (state.payload && state.chart) renderChart(state.payload);
     if (state.payload && state.weatherChart) renderWeatherChart(state.payload);
-    if (state.wfChart && state.analysisLoaded) {
-      const all = { champion: state.metricsCache.champion, runner_up: state.metricsCache.runner_up, third: state.metricsCache.third };
-      renderWfChart(all);
-      renderCalibChart(all);
-    }
   }
 
   // ─────────────────────────────────────────────
@@ -1911,37 +1792,7 @@
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Curve chip toggle（多选）
-  // ─────────────────────────────────────────────
-  const ALL_CHIPS = ['actual', 'gru_single', 'gru_mimo', 'lstm_single', 'lstm_mimo', 'seq2seq'];
-
-  function toggleChip(key) {
-    if (key === 'all') {
-      // 全选/全取消
-      if (state.activeChips.size === ALL_CHIPS.length) {
-        state.activeChips.clear();
-      } else {
-        ALL_CHIPS.forEach(k => state.activeChips.add(k));
-      }
-    } else {
-      if (state.activeChips.has(key)) {
-        state.activeChips.delete(key);
-      } else {
-        state.activeChips.add(key);
-      }
-    }
-    _syncChipUI();
-    if (state.payload) renderChart(state.payload);
-  }
-
-  function _syncChipUI() {
-    const allActive = state.activeChips.size === ALL_CHIPS.length;
-    $$('[data-chip="all"]').forEach(el => el.classList.toggle('v3-chip--active', allActive));
-    ALL_CHIPS.forEach(key => {
-      $$(`[data-chip="${key}"]`).forEach(el => el.classList.toggle('v3-chip--active', state.activeChips.has(key)));
-    });
-  }
+  const ALL_CHIPS = ['actual', 'gru', 'transformer', 'xgboost'];
 
   // ─────────────────────────────────────────────
   // Event bindings (FIX 2,7,9)
@@ -1950,11 +1801,6 @@
     // Tabs
     $$('[data-page]').forEach((btn) => {
       btn.addEventListener('click', () => showPage(btn.getAttribute('data-page')));
-    });
-
-    // Curve chip toggle
-    $$('[data-chip]').forEach((el) => {
-      el.addEventListener('click', () => toggleChip(el.getAttribute('data-chip')));
     });
 
     // Lang
@@ -2002,25 +1848,6 @@
       if (el) el.addEventListener('change', () => { if (state.payload) renderWeatherChart(state.payload); });
     });
 
-    const devSwitch = $('v3DevModeSwitch');
-    if (devSwitch) {
-      devSwitch.addEventListener('change', () => {
-        state.devMode = !!devSwitch.checked;
-        const devChips = $('v3DevChips');
-        if (devChips) devChips.style.display = state.devMode ? 'flex' : 'none';
-        const label = $('v3DevModeLabel');
-        if (label) label.textContent = state.lang === 'zh' ? '开发者模式' : 'Dev Mode';
-        if (state.devMode) {
-          ALL_CHIPS.forEach(k => state.activeChips.add(k));
-        } else {
-          state.activeChips.clear();
-          state.activeChips.add('actual');
-        }
-        _syncChipUI();
-        if (state.payload) renderChart(state.payload);
-      });
-    }
-
     // Glossary: separated button row + single content panel below
     // activeGloss: key string of active button, or null
     let activeGloss = null;
@@ -2058,8 +1885,21 @@
   // ─────────────────────────────────────────────
   // Init
   // ─────────────────────────────────────────────
+  const CURRENT_CACHE_VER = 'v10';
   function init() {
     console.log('dashboard_v3.js loaded');
+    // 清除所有旧版本 forecast 缓存（v1~v8）
+    try {
+      const oldKeys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('v3_forecast_') && !k.startsWith(`v3_forecast_${CURRENT_CACHE_VER}_`)) {
+          oldKeys.push(k);
+        }
+      }
+      oldKeys.forEach(k => localStorage.removeItem(k));
+      if (oldKeys.length) console.log('[cache] cleared old keys:', oldKeys);
+    } catch (_) {}
     applyI18n();
     bindEvents();
     bindWxArrows();

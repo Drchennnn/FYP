@@ -23,10 +23,8 @@ from datetime import datetime
 from pathlib import Path
 
 import chinese_calendar as cncal
-import joblib
 import numpy as np
 import pandas as pd
-from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import MinMaxScaler
 import xgboost as xgb
 from xgboost import XGBRegressor
@@ -49,7 +47,6 @@ OUTPUT_BASE = PROJECT_ROOT / "output" / "runs"
 TRAIN_RATIO = 0.80
 VAL_RATIO = 0.10
 TEST_RATIO = 0.10
-ROLLING_STEPS = 3
 
 # ── 节假日标记（与 GRU 保持一致）─────────────────────────────────────────────
 def mark_core_holiday(date_val: pd.Timestamp) -> int:
@@ -254,6 +251,7 @@ def build_model(args: argparse.Namespace):
         reg_lambda=1.5,
         random_state=42,
         n_jobs=-1,
+        early_stopping_rounds=40,
     )
 
 
@@ -269,56 +267,6 @@ def compute_sample_weights(train_df: pd.DataFrame) -> np.ndarray:
     mask = (train_df["date"] >= "2020-01-01") & (train_df["date"] <= "2022-12-31")
     weights = np.where(mask, 0.3, 1.0)
     return weights.astype(np.float32)
-
-
-def build_direct_multi_output(df_split: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    y_df = pd.concat(
-        [
-            df_split[TARGET_COL].shift(-1).rename("h1"),
-            df_split[TARGET_COL].shift(-2).rename("h2"),
-            df_split[TARGET_COL].shift(-3).rename("h3"),
-        ],
-        axis=1,
-    )
-    valid_mask = y_df.notna().all(axis=1)
-    X = df_split.loc[valid_mask, FEATURE_COLS]
-    y = y_df.loc[valid_mask].values.astype(np.float32)
-    dates = pd.to_datetime(df_split.loc[valid_mask, "date"]).values
-
-    weather_precip = pd.concat(
-        [
-            df_split["precip_raw"].shift(-1).rename("h1"),
-            df_split["precip_raw"].shift(-2).rename("h2"),
-            df_split["precip_raw"].shift(-3).rename("h3"),
-        ],
-        axis=1,
-    ).loc[valid_mask].values.astype(float)
-    weather_temp_high = pd.concat(
-        [
-            df_split["temp_high_raw"].shift(-1).rename("h1"),
-            df_split["temp_high_raw"].shift(-2).rename("h2"),
-            df_split["temp_high_raw"].shift(-3).rename("h3"),
-        ],
-        axis=1,
-    ).loc[valid_mask].values.astype(float)
-    weather_temp_low = pd.concat(
-        [
-            df_split["temp_low_raw"].shift(-1).rename("h1"),
-            df_split["temp_low_raw"].shift(-2).rename("h2"),
-            df_split["temp_low_raw"].shift(-3).rename("h3"),
-        ],
-        axis=1,
-    ).loc[valid_mask].values.astype(float)
-    valid_index = np.where(valid_mask.values)[0]
-    return X, y, dates, weather_precip, weather_temp_high, weather_temp_low, valid_index
-
-
-def build_flat_horizon_dates(dates: np.ndarray, steps: int) -> np.ndarray:
-    out = []
-    for d in pd.to_datetime(dates):
-        for h in range(steps):
-            out.append(pd.Timestamp(d) + pd.Timedelta(days=h))
-    return np.asarray(out, dtype="datetime64[ns]")
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
@@ -339,9 +287,12 @@ def main() -> None:
     df, scaler = load_and_engineer_features(args.data)
     train_df, val_df, test_df = split_data(df)
 
-    X_train, y_train, train_dates, _, _, _, train_valid_idx = build_direct_multi_output(train_df)
-    X_val, y_val, _, _, _, _, _ = build_direct_multi_output(val_df)
-    X_test, y_test, test_dates, weather_test_precip, weather_test_temp_high, weather_test_temp_low, _ = build_direct_multi_output(test_df)
+    X_train = train_df[FEATURE_COLS]
+    y_train = train_df[TARGET_COL]
+    X_val = val_df[FEATURE_COLS]
+    y_val = val_df[TARGET_COL]
+    X_test = test_df[FEATURE_COLS]
+    y_test = test_df[TARGET_COL]
 
     # ── 输出目录（与 GRU/LSTM 相同结构）────────────────────────────────────
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -353,38 +304,28 @@ def main() -> None:
     (run_dir / "figures").mkdir(exist_ok=True)
 
     # ── 训练 ────────────────────────────────────────────────────────────────
-    base_model = build_model(args)
-    model = MultiOutputRegressor(base_model)
-    weights = compute_sample_weights(train_df)[train_valid_idx] if args.sample_weight else None
-    fit_kwargs = {}
+    model = build_model(args)
+    weights = compute_sample_weights(train_df) if args.sample_weight else None
+    fit_kwargs = {
+        "eval_set": [(X_val, y_val)],
+        "verbose": False,
+    }
     if weights is not None:
         fit_kwargs["sample_weight"] = weights
     model.fit(X_train, y_train, **fit_kwargs)
-    joblib.dump(model, run_dir / "weights" / "xgboost_multioutput.pkl")
+    model.save_model(run_dir / "weights" / "xgboost_model.json")
 
     # ── 预测与反归一化 ───────────────────────────────────────────────────────
     y_pred_scaled = model.predict(X_test)
-    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).reshape(-1, ROLLING_STEPS)
-    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, ROLLING_STEPS)
+    y_true = scaler.inverse_transform(y_test.values.reshape(-1, 1)).ravel()
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
     y_pred = np.clip(y_pred, 0, None)
-
-    mae_h = []
-    for h in range(ROLLING_STEPS):
-        v = float(np.mean(np.abs(y_true[:, h] - y_pred[:, h])))
-        mae_h.append(v)
-        print(f"day+{h+1} MAE: {v:.2f}")
-    overall_mae = float(np.mean(np.abs(y_true.reshape(-1) - y_pred.reshape(-1))))
-    print(f"overall MAE: {overall_mae:.2f}")
 
     pred_df = pd.DataFrame(
         {
-            "date": pd.to_datetime(test_dates),
-            "y_true_h1": y_true[:, 0],
-            "y_true_h2": y_true[:, 1],
-            "y_true_h3": y_true[:, 2],
-            "y_pred_h1": y_pred[:, 0],
-            "y_pred_h2": y_pred[:, 1],
-            "y_pred_h3": y_pred[:, 2],
+            "date": pd.to_datetime(test_df["date"]),
+            "y_true": y_true,
+            "y_pred": y_pred,
         }
     ).sort_values("date")
     pred_df.to_csv(run_dir / "xgboost_test_predictions.csv", index=False, encoding="utf-8-sig")
@@ -398,6 +339,9 @@ def main() -> None:
     weather_train_precip = train_df["precip_raw"].values.astype(float)
     weather_train_temp_high = train_df["temp_high_raw"].values.astype(float)
     weather_train_temp_low = train_df["temp_low_raw"].values.astype(float)
+    weather_test_precip = test_df["precip_raw"].values.astype(float)
+    weather_test_temp_high = test_df["temp_high_raw"].values.astype(float)
+    weather_test_temp_low = test_df["temp_low_raw"].values.astype(float)
 
     evaluate_and_save_run(
         str(run_dir),
@@ -405,8 +349,8 @@ def main() -> None:
         feature_count=len(FEATURE_COLS),
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
-        dates=build_flat_horizon_dates(test_dates, ROLLING_STEPS),
-        horizon=ROLLING_STEPS,
+        dates=pd.to_datetime(test_df["date"]).values,
+        horizon=1,
         peak_threshold=dynamic_peak_threshold,
         warning_temperature=1000.0,
         fn_fp_cost_ratio=(5.0, 1.0),
@@ -421,28 +365,14 @@ def main() -> None:
             "max_depth": int(args.max_depth),
             "learning_rate": float(args.lr),
             "sample_weight": bool(args.sample_weight),
-            "target_mode": "direct_multi_output_h1_h2_h3",
             "xgboost_version": xgb.__version__,
         },
     )
 
-    metrics = calculate_metrics(y_true=y_true.reshape(-1), y_pred=y_pred.reshape(-1), scaler=scaler)
+    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
     try:
         save_metrics_to_files(metrics, str(run_dir), "xgboost_baseline")
     except TypeError:
-        pass
-
-    core_metrics_path = run_dir / "metrics.json"
-    try:
-        with open(core_metrics_path, "r", encoding="utf-8") as f:
-            core_metrics = json.load(f)
-        core_metrics.setdefault("regression", {})
-        core_metrics["regression"]["h1"] = {"mae": float(mae_h[0])}
-        core_metrics["regression"]["h2"] = {"mae": float(mae_h[1])}
-        core_metrics["regression"]["h3"] = {"mae": float(mae_h[2])}
-        with open(core_metrics_path, "w", encoding="utf-8") as f:
-            json.dump(core_metrics, f, ensure_ascii=False, indent=2)
-    except Exception:
         pass
 
     print("XGBoost 训练完成！")

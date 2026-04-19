@@ -38,7 +38,6 @@ matplotlib.use("Agg")
 TRAIN_RATIO = 0.80
 VAL_RATIO = 0.10
 TEST_RATIO = 0.10
-ROLLING_STEPS = 3
 
 
 def mark_core_holiday(date_val: pd.Timestamp) -> int:
@@ -278,42 +277,6 @@ def compute_sample_weights(months: np.ndarray) -> np.ndarray:
     return weights.astype(np.float32)
 
 
-def build_3step_truth(df: pd.DataFrame, dates: np.ndarray, target_col: str) -> np.ndarray:
-    """按 d_test 对应日期取 t+1/t+2/t+3 真实值。"""
-    date_to_idx = {pd.Timestamp(d): i for i, d in enumerate(pd.to_datetime(df["date"]).values)}
-    target_vals = df[target_col].values.astype(float)
-    out = []
-    for d in pd.to_datetime(dates):
-        idx = date_to_idx.get(pd.Timestamp(d))
-        if idx is None or idx + ROLLING_STEPS > len(target_vals):
-            out.append([np.nan] * ROLLING_STEPS)
-            continue
-        out.append(target_vals[idx : idx + ROLLING_STEPS].tolist())
-    return np.asarray(out, dtype=float)
-
-
-def build_3step_weather(df: pd.DataFrame, dates: np.ndarray, col: str) -> np.ndarray:
-    """按 d_test 对应日期取 t+1/t+2/t+3 天气特征。"""
-    date_to_idx = {pd.Timestamp(d): i for i, d in enumerate(pd.to_datetime(df["date"]).values)}
-    vals = df[col].values.astype(float)
-    out = []
-    for d in pd.to_datetime(dates):
-        idx = date_to_idx.get(pd.Timestamp(d))
-        if idx is None or idx + ROLLING_STEPS > len(vals):
-            out.append([np.nan] * ROLLING_STEPS)
-            continue
-        out.append(vals[idx : idx + ROLLING_STEPS].tolist())
-    return np.asarray(out, dtype=float)
-
-
-def build_flat_horizon_dates(dates: np.ndarray, steps: int) -> np.ndarray:
-    out = []
-    for d in pd.to_datetime(dates):
-        for h in range(steps):
-            out.append(pd.Timestamp(d) + pd.Timedelta(days=h))
-    return np.asarray(out, dtype="datetime64[ns]")
-
-
 def create_gru_model(look_back: int, n_features: int = 11) -> tf.keras.Model:
     """创建GRU模型（8特征版本）
     
@@ -540,58 +503,24 @@ def main() -> None:
         verbose=1,
     )
 
-    # 5. 3步滚动推理（训练保持单步）
-    all_preds = []
-    for i in range(len(x_test)):
-        window = x_test[i].copy()
-        preds = []
-        for _ in range(ROLLING_STEPS):
-            pred_scaled = float(model.predict(window[np.newaxis, :, :], verbose=0)[0, 0])
-            preds.append(pred_scaled)
-            new_row = window[-1].copy()
-            new_row[0] = pred_scaled  # visitor_count_scaled
-            window = np.vstack([window[1:], new_row])
-        all_preds.append(preds)
-
-    y_pred_scaled = np.asarray(all_preds, dtype=float)
-    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, ROLLING_STEPS)
-    y_true = build_3step_truth(df, d_test, "visitor_count")
-    print(f"y_pred shape: {y_pred.shape}")
-
-    # 过滤尾部未来不足3天的样本
-    valid_mask = ~np.isnan(y_true).any(axis=1)
-    y_true = y_true[valid_mask]
-    y_pred = y_pred[valid_mask]
-    d_test = d_test[valid_mask]
-    weather_test_precip_roll = build_3step_weather(df, d_test, precip_col)
-    weather_test_temp_high_roll = build_3step_weather(df, d_test, temp_high_col)
-    weather_test_temp_low_roll = build_3step_weather(df, d_test, temp_low_col)
-
-    mae_h = []
-    for h in range(ROLLING_STEPS):
-        v = float(np.mean(np.abs(y_true[:, h] - y_pred[:, h])))
-        mae_h.append(v)
-        print(f"day+{h+1} MAE: {v:.2f}")
-    overall_mae = float(np.mean(np.abs(y_true.reshape(-1) - y_pred.reshape(-1))))
-    print(f"overall MAE: {overall_mae:.2f}")
+    # 5. 预测并反归一化
+    y_pred_scaled = model.predict(x_test, verbose=0).reshape(-1, 1)
+    y_pred = scaler.inverse_transform(y_pred_scaled).reshape(-1)
+    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).reshape(-1)
 
     # 6. 保存预测结果
     pred_df = pd.DataFrame(
         {
             "date": pd.to_datetime(d_test),
-            "y_true_h1": y_true[:, 0],
-            "y_true_h2": y_true[:, 1],
-            "y_true_h3": y_true[:, 2],
-            "y_pred_h1": y_pred[:, 0],
-            "y_pred_h2": y_pred[:, 1],
-            "y_pred_h3": y_pred[:, 2],
+            "y_true": y_true,
+            "y_pred": y_pred,
         }
     ).sort_values("date")
     pred_df.to_csv(pred_path, index=False, encoding="utf-8-sig")
 
     # 7. 使用通用评估器计算指标
     # NOTE: keep evaluator API stable (no train-split arguments here).
-    metrics = calculate_metrics(y_true=y_true.reshape(-1), y_pred=y_pred.reshape(-1), scaler=scaler)
+    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
 
     # 8. 保存模型和指标
     model.save(model_path)
@@ -615,14 +544,14 @@ def main() -> None:
         feature_count=11,
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
-        dates=build_flat_horizon_dates(pred_df["date"].values, ROLLING_STEPS),
-        horizon=ROLLING_STEPS,
+        dates=pd.to_datetime(pred_df["date"]).values,
+        horizon=1,
         peak_threshold=dynamic_peak_threshold,
         warning_temperature=1000.0,
         fn_fp_cost_ratio=(5.0, 1.0),
-        weather_precip=np.asarray(weather_test_precip_roll),
-        weather_temp_high=np.asarray(weather_test_temp_high_roll),
-        weather_temp_low=np.asarray(weather_test_temp_low_roll),
+        weather_precip=np.asarray(weather_test_precip),
+        weather_temp_high=np.asarray(weather_test_temp_high),
+        weather_temp_low=np.asarray(weather_test_temp_low),
         weather_train_precip=np.asarray(weather_train_precip),
         weather_train_temp_high=np.asarray(weather_train_temp_high),
         weather_train_temp_low=np.asarray(weather_train_temp_low),
@@ -634,20 +563,6 @@ def main() -> None:
             "peak_quantile": float(args.peak_quantile),
         },
     )
-
-    # 追加 h1/h2/h3 到 core metrics.json.regression
-    core_metrics_path = run_dir / "metrics.json"
-    try:
-        with open(core_metrics_path, "r", encoding="utf-8") as f:
-            core_metrics = json.load(f)
-        core_metrics.setdefault("regression", {})
-        core_metrics["regression"]["h1"] = {"mae": float(mae_h[0])}
-        core_metrics["regression"]["h2"] = {"mae": float(mae_h[1])}
-        core_metrics["regression"]["h3"] = {"mae": float(mae_h[2])}
-        with open(core_metrics_path, "w", encoding="utf-8") as f:
-            json.dump(core_metrics, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
 
     # 11. 输出结果
     print(f"GRU训练完成！")

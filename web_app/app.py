@@ -98,6 +98,14 @@ static_dir = os.path.join(current_dir, 'static')
 app = Flask(__name__, template_folder=template_dir, static_folder=static_dir)
 app.config.from_object(Config)
 
+@app.after_request
+def _no_cache_static(response):
+    """开发模式：禁用 JS/CSS 静态文件缓存，确保每次都拿最新版本。"""
+    if request.path.startswith('/static/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+    return response
+
 # Initialize Database
 db.init_app(app)
 
@@ -176,11 +184,9 @@ def _synthesise_compare_metrics():
         return None
 
     model_patterns = {
-        'gru_mimo_8features': 'gru_mimo_8features_*',
-        'lstm_mimo_8features': 'lstm_mimo_8features_*',
-        'gru_8features': 'gru_8features_*',
-        'lstm_8features': 'lstm_8features_*',
-        'seq2seq_attention_8features': 'seq2seq_attention_8features_*',
+        'gru_8features':         'gru_8features_*',
+        'transformer_8features': 'transformer_8features_*',
+        'xgboost_8features':     'xgboost_8features_*',
     }
 
     rows = []
@@ -552,18 +558,12 @@ def _load_master_history_from_processed():
 def _pretty_model_name(raw_key: str):
     """Convert internal model key to a professional UI label."""
     k = (raw_key or '').lower()
-    if 'seq2seq' in k and ('att' in k or 'attention' in k):
-        return 'Seq2Seq+Attention (8 features)'
-    if 'seq2seq' in k:
-        return 'Seq2Seq (8 features)'
-    if 'gru_mimo' in k or ('gru' in k and 'mimo' in k):
-        return 'GRU-MIMO (8 features)'
-    if 'lstm_mimo' in k or ('lstm' in k and 'mimo' in k):
-        return 'LSTM-MIMO (8 features)'
+    if 'transformer' in k:
+        return 'Transformer (8 features)'
+    if 'xgboost' in k:
+        return 'XGBoost (8 features)'
     if 'gru' in k:
         return 'GRU (8 features)'
-    if 'lstm' in k:
-        return 'LSTM (8 features)'
     return raw_key or 'Model'
 
 def mark_core_holiday(date_val):
@@ -641,6 +641,28 @@ def test_weather():
 def test_risk():
     """Minimal risk + thermo interaction test page."""
     return render_template('test_risk.html')
+
+
+@app.route('/api/weather', methods=['GET'])
+def api_weather():
+    """代理 Open-Meteo 天气请求，避免前端直连被防火墙阻断。
+    返回近 14 天历史 + 未来 14 天预报，格式与前端 WMO_CODE_MAP 兼容。
+    """
+    try:
+        import requests as _req
+        params = {
+            'latitude': 33.2, 'longitude': 103.9,
+            'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode,windspeed_10m_max',
+            'timezone': 'Asia/Shanghai',
+            'past_days': 14,
+            'forecast_days': 14,
+        }
+        r = _req.get('https://api.open-meteo.com/v1/forecast', params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
 
 
 @app.route('/api/models', methods=['GET'])
@@ -730,13 +752,11 @@ def api_forecast():
     # mode 参数保留兼容性，但不再区分 online/offline 逻辑
     mode = str(request.args.get('mode', 'online')).strip().lower()
 
-    # ── 固定5个模型 key，直接从 output/runs 加载 ──
+    # ── 3个模型 key，直接从 output/runs 加载 ──
     MODEL_KEYS = [
         'gru_8features',
-        'gru_mimo_8features',
-        'lstm_8features',
-        'lstm_mimo_8features',
-        'seq2seq_attention_8features',
+        'transformer_8features',
+        'xgboost_8features',
     ]
 
     def _find_latest_run_dir(model_key: str):
@@ -773,7 +793,6 @@ def api_forecast():
     df_master = _load_master_history_from_processed()
     if df_master is None or df_master.empty:
         warning = 'Processed history not available.'
-        # fallback: 用第一个有数据的模型的日期轴
         for mk in MODEL_KEYS:
             if model_data[mk]['df'] is not None and not model_data[mk]['df'].empty:
                 df_master = model_data[mk]['df'][['date']].copy()
@@ -783,17 +802,22 @@ def api_forecast():
                     df_master[col] = np.nan
                 break
 
+    # 仅展示2023-06-01以后的数据（与训练集对齐，避免2016-2022异常数据污染图表）
+    from datetime import date as _date_cls
+    _CHART_START = _date_cls(2023, 6, 1)
+    if df_master is not None and not df_master.empty:
+        df_master['date'] = pd.to_datetime(df_master['date']).dt.date
+        df_master = df_master[df_master['date'] >= _CHART_START].reset_index(drop=True)
+
     df_base = df_master[['date','actual','precip_mm','temp_high_c','temp_low_c',
                           'weather_code_en','wind_level','wind_dir_en','wind_max',
                           'aqi_value','aqi_level_en']].copy()
 
     # 合并各模型预测
     col_map = {
-        'gru_8features':              'gru_single_pred',
-        'gru_mimo_8features':         'gru_mimo_pred',
-        'lstm_8features':             'lstm_single_pred',
-        'lstm_mimo_8features':        'lstm_mimo_pred',
-        'seq2seq_attention_8features':'seq2seq_pred',
+        'gru_8features':         'gru_pred',
+        'transformer_8features': 'transformer_pred',
+        'xgboost_8features':     'xgboost_pred',
     }
     for mk, col_name in col_map.items():
         df_m = model_data[mk]['df']
@@ -806,6 +830,17 @@ def api_forecast():
 
     # 按日期排序，对 actual/weather 列中因 outer join 产生的新行填 NaN（已是默认行为）
     df_merge = df_base.sort_values('date').reset_index(drop=True)
+    # 集成预测列（加权平均，缺任一模型则按可用模型归一化权重计算）
+    _ens_weights = {'gru_pred': 0.3, 'transformer_pred': 0.2, 'xgboost_pred': 0.5}
+    _avail = {c: w for c, w in _ens_weights.items() if c in df_merge.columns}
+    if _avail:
+        _total_w = sum(_avail.values())
+        df_merge['ensemble_pred'] = sum(
+            pd.to_numeric(df_merge[c], errors='coerce') * (w / _total_w)
+            for c, w in _avail.items()
+        )
+    else:
+        df_merge['ensemble_pred'] = np.nan
 
     def _fetch_weather_forecast(horizon: int) -> pd.DataFrame:
         """从 Open-Meteo 获取天气数据（含最近7天历史 + 未来 horizon 天预报）。
@@ -1137,57 +1172,97 @@ def api_forecast():
         else:
             lag7_window = list(hist_scaled)  # 降级：用 visitor_scaled 近似
 
-        def _build_window_8feat(visitor_window, lag7_window, dates):
-            """构建 (look_back, 8) 特征矩阵"""
+        def _build_window_feat(visitor_window, lag7_window, dates, n_features=8):
+            """构建 (look_back, n_features) 特征矩阵，支持8特征和11特征模型。
+            8特征: visitor, month, dow, holiday, lag7, precip, temp_high, temp_low
+            11特征: +is_peak_season, lag14, rolling_mean_14（均用近似值填充）
+            """
+            # 为11特征模型准备 rolling_mean_14 和 lag14：用历史 visitor_window 近似
             rows = []
             for i, d in enumerate(dates):
                 m_norm = (d.month - 1) / 11.0
                 dow_norm = d.weekday() / 6.0
                 hol = float(_is_holiday(d))
-                rows.append([
+                row = [
                     visitor_window[i],   # visitor_count_scaled
                     m_norm,              # month_norm
                     dow_norm,            # day_of_week_norm
                     hol,                 # is_holiday
-                    lag7_window[i],      # tourism_num_lag_7_scaled
-                    0.0,                 # meteo_precip_sum_scaled (历史窗口用0，无未来天气)
-                    0.5,                 # temp_high_scaled
-                    0.5,                 # temp_low_scaled
+                ]
+                if n_features == 11:
+                    m = d.month
+                    is_peak = float((4 <= m <= 10) or (m == 11 and d.day <= 15))
+                    row.append(is_peak)   # is_peak_season
+                row.append(lag7_window[i])  # tourism_num_lag_7_scaled
+                if n_features == 11:
+                    lag14_s = visitor_window[max(0, i - 7)]  # 近似 lag14
+                    win14 = visitor_window[max(0, i - 13):i + 1]
+                    roll14 = float(np.mean(win14)) if len(win14) > 0 else visitor_window[i]
+                    row.append(lag14_s)   # tourism_num_lag_14_scaled
+                    row.append(roll14)    # rolling_mean_14_scaled
+                row.extend([
+                    0.0,   # meteo_precip_sum_scaled
+                    0.5,   # temp_high_scaled
+                    0.5,   # temp_low_scaled
                 ])
+                rows.append(row)
             return np.array(rows, dtype=np.float32)
 
         # 历史窗口的日期
         hist_dates = [last_date - timedelta(days=look_back - 1 - i) for i in range(look_back)]
 
         def _predict_single_step_model(model, visitor_window, lag7_window, hist_dates, steps=None):
-            """单步模型（LSTM/GRU）滚动预测，默认 horizon 步，可指定 steps 扩展推理。"""
+            """单步模型（LSTM/GRU/Transformer）滚动预测，自动检测输入形状（look_back, n_features）。"""
             if steps is None:
                 steps = horizon
-            preds = []
-            v_win = list(visitor_window)
-            l7_win = list(lag7_window)
-            cur_dates = list(hist_dates)
+            # 自动检测模型输入维度
+            try:
+                _in_shape = model.input_shape  # (None, lb, n_feat)
+                n_feat = _in_shape[-1]
+                m_look_back = _in_shape[-2] if len(_in_shape) >= 3 and _in_shape[-2] else look_back
+            except Exception:
+                n_feat = 8
+                m_look_back = look_back
+            # 天气特征在row中的位置
+            precip_idx = 5 if n_feat == 8 else 8
+            temp_h_idx = 6 if n_feat == 8 else 9
+            temp_l_idx = 7 if n_feat == 8 else 10
 
+            # 如果模型 look_back 与全局不同，重新切窗口
+            if m_look_back != look_back:
+                m_hist_vals = s.values[-m_look_back:]
+                m_hist_scaled = visitor_scaler.transform(m_hist_vals.reshape(-1, 1)).flatten()
+                if lag7_vals is not None and len(lag7_vals) >= m_look_back:
+                    m_lag7 = list(lag7_vals[-m_look_back:].astype(float))
+                else:
+                    m_lag7 = list(m_hist_scaled)
+                m_dates = [last_date - timedelta(days=m_look_back - 1 - i) for i in range(m_look_back)]
+                v_win = list(m_hist_scaled)
+                l7_win = m_lag7
+                cur_dates = m_dates
+            else:
+                v_win = list(visitor_window)
+                l7_win = list(lag7_window)
+                cur_dates = list(hist_dates)
+
+            preds = []
             for step in range(steps):
                 pred_date = last_date + timedelta(days=step + 1)
-                # 获取该日天气预报
                 wrow = weather_df[weather_df['date'] == pred_date]
                 p_s = _scale_precip(float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'))
                 th_s = _scale_temp_high(float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'))
                 tl_s = _scale_temp_low(float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'))
 
-                X = _build_window_8feat(v_win, l7_win, cur_dates)
-                # 覆盖最后一行的天气（最近一天用预报天气）
-                X[-1, 5] = p_s
-                X[-1, 6] = th_s
-                X[-1, 7] = tl_s
+                X = _build_window_feat(v_win, l7_win, cur_dates, n_features=n_feat)
+                X[-1, precip_idx] = p_s
+                X[-1, temp_h_idx] = th_s
+                X[-1, temp_l_idx] = tl_s
 
-                x_in = X.reshape(1, look_back, 8)
+                x_in = X.reshape(1, m_look_back, n_feat)
                 y_s = float(model.predict(x_in, verbose=0)[0][0])
                 y_val = float(visitor_scaler.inverse_transform([[y_s]])[0][0])
                 preds.append(y_val)
 
-                # 滚动窗口
                 v_win = v_win[1:] + [y_s]
                 lag7_s = v_win[-7] if len(v_win) >= 7 else y_s
                 l7_win = l7_win[1:] + [lag7_s]
@@ -1195,12 +1270,10 @@ def api_forecast():
 
             return preds
 
-        # ── 5. 在线推理：仅 MIMO 和 Seq2Seq ──
-        # 单步 GRU/LSTM 不做在线推理，只读离线 backfill CSV。
+        # ── 5. 在线推理：GRU / Transformer 滚动单步，XGBoost 表格推理 ──
         ONLINE_MODELS = [
-            ('gru_mimo_8features',          'gru_mimo_pred',    'mimo'),
-            ('lstm_mimo_8features',         'lstm_mimo_pred',   'mimo'),
-            ('seq2seq_attention_8features', 'seq2seq_pred',     'seq2seq'),
+            ('gru_8features',         'gru_pred',         'single'),
+            ('transformer_8features', 'transformer_pred',  'single'),
         ]
 
         def _load_model_by_key(model_key: str):
@@ -1236,6 +1309,18 @@ def api_forecast():
                         except Exception as e:
                             print(f"Seq2Seq load_weights failed ({wfiles[0]}): {e}")
                 # GRU/LSTM（及 Seq2Seq fallback）：标准 load_model
+                # 为 Transformer 注入 PositionalEncoding 自定义层
+                _extra_custom_objs = {}
+                if 'transformer' in model_key:
+                    try:
+                        from models.transformer.train_transformer_8features import (
+                            PositionalEncoding, TransformerEncoderBlock
+                        )
+                        _extra_custom_objs['PositionalEncoding'] = PositionalEncoding
+                        _extra_custom_objs['TransformerEncoderBlock'] = TransformerEncoderBlock
+                    except Exception:
+                        pass
+                _all_custom_objs = {**(_seq2seq_custom_objects or {}), **_extra_custom_objs} or None
                 for pattern in ['weights/*.keras', 'weights/*.h5']:
                     matches = [p for p in glob.glob(os.path.join(run_dir, pattern))
                                if '_weights.h5' not in p]  # 排除 _weights.h5
@@ -1243,7 +1328,7 @@ def api_forecast():
                         try:
                             m = tf.keras.models.load_model(
                                 matches[0],
-                                custom_objects=_seq2seq_custom_objects or None,
+                                custom_objects=_all_custom_objs,
                                 compile=False
                             ) if tf else None
                             return m
@@ -1258,146 +1343,112 @@ def api_forecast():
                 results[col_name] = None
                 continue
             try:
-                if infer_type == 'seq2seq':
-                    enc_input = _build_window_8feat(
-                        list(hist_scaled), list(lag7_window), hist_dates
-                    ).reshape(1, look_back, 8)
-                    dec_steps = min(horizon, 7)
-                    dec_rows = []
-                    for step in range(dec_steps):
-                        pred_date = last_date + timedelta(days=step + 1)
-                        wrow = weather_df[weather_df['date'] == pred_date]
-                        p_s = _scale_precip(float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'))
-                        th_s = _scale_temp_high(float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'))
-                        tl_s = _scale_temp_low(float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'))
-                        m_norm = (pred_date.month - 1) / 11.0
-                        dow_norm = pred_date.weekday() / 6.0
-                        hol = float(_is_holiday(pred_date))
-                        lag7_s = lag7_window[-1] if lag7_window else 0.5
-                        dec_rows.append([m_norm, dow_norm, hol, lag7_s, p_s, th_s, tl_s])
-                    dec_input = np.array(dec_rows, dtype=np.float32).reshape(1, dec_steps, 7)
-                    y_scaled = model_obj.predict([enc_input, dec_input], verbose=0)
-                    preds = visitor_scaler.inverse_transform(
-                        y_scaled[0, :dec_steps, 0].reshape(-1, 1)
-                    ).flatten().tolist()
-                    while len(preds) < horizon:
-                        preds.append(preds[-1])
-
-                elif infer_type == 'mimo':
-                    enc_input = _build_window_8feat(
-                        list(hist_scaled), list(lag7_window), hist_dates
-                    ).reshape(1, look_back, 8)
-                    y_scaled = model_obj.predict(enc_input, verbose=0)  # (1, 7)
-                    preds = visitor_scaler.inverse_transform(
-                        y_scaled[0].reshape(-1, 1)
-                    ).flatten().tolist()[:horizon]
-                    while len(preds) < horizon:
-                        preds.append(preds[-1])
-
-                else:  # single-step rolling
-                    preds = _predict_single_step_model(
-                        model_obj, list(hist_scaled), list(lag7_window), list(hist_dates)
-                    )
-
+                # GRU / Transformer: rolling single-step inference
+                # 需要推理 gap_days + horizon 步才能覆盖 today+horizon-1
+                _gap = max(0, (_today_cn() - last_date).days - 1)
+                _total_steps = _gap + horizon
+                preds = _predict_single_step_model(
+                    model_obj, list(hist_scaled), list(lag7_window), list(hist_dates),
+                    steps=_total_steps
+                )
                 results[col_name] = preds
             except Exception as e:
                 print(f"Online prediction failed for {col_name} ({mk}): {e}")
                 results[col_name] = None
 
-        # ── 6. 组装结果 DataFrame ──
-        # 展示窗口：today ~ today+6（共 horizon 天）
-        # MIMO/Seq2Seq：推理结果直接映射到 today 起的 horizon 天
-        # 单步（GRU/LSTM）：
-        #   改进算法 — 空白段（last_date+1 ~ today-1）用 MIMO 均值填充滚动窗口，
-        #   而非用上一步预测值回填。这样 gap_days 步的误差不会自累积，
-        #   只有 today 起的 horizon 步才是单步模型的真实贡献。
-        #   在学术上对应"考虑数据滞伏期（Latency）的多视界不确定性校准"。
-        today = _today_cn()
-        gap_days = max(0, (today - last_date).days - 1)  # last_date+1 到 today 之间的天数
-        single_total_steps = gap_days + horizon
-
-        # 构建 gap 段的 MIMO 均值填充序列（scaled）
-        # 取 gru_mimo 和 lstm_mimo 均值；若都不可用则回退到上一步滚动值
-        def _gap_fill_from_mimo() -> list | None:
-            """Return scaled gap-segment predictions from MIMO ensemble mean, or None."""
-            if gap_days == 0:
-                return []
-            mimo_preds = []
-            for _mc in ['gru_mimo_pred', 'lstm_mimo_pred']:
-                _p = results.get(_mc)
-                if _p and len(_p) >= gap_days:
-                    # MIMO output: step 0 = today, so gap fills come from steps BEFORE today
-                    # However MIMO is trained from last_date, so its step 0 ~ last_date+1
-                    # We use the first gap_days steps of MIMO as the gap fill
-                    mimo_preds.append(_p[:gap_days])
-            if not mimo_preds:
-                return None
-            # Average across available MIMO models, convert to scaled
-            gap_raw = np.mean(mimo_preds, axis=0)  # (gap_days,) in raw visitor units
-            gap_scaled = visitor_scaler.transform(
-                np.array(gap_raw).reshape(-1, 1)
-            ).flatten().tolist()
-            return gap_scaled
-
-        gap_scaled_fill = _gap_fill_from_mimo()
-
-        def _predict_single_step_with_gap_fill(model, visitor_window, lag7_win, h_dates, steps):
-            """
-            Single-step rolling with improved gap handling.
-            For gap steps (last_date+1 ~ today-1), use MIMO-derived scaled values
-            to advance the rolling window instead of using the model's own prediction.
-            This prevents error snowball during the data-latency period.
-            """
-            preds_all = []
-            v_win = list(visitor_window)
-            l7_win = list(lag7_win)
-            cur_dates = list(h_dates)
-
-            for step_i in range(steps):
-                pred_date = last_date + timedelta(days=step_i + 1)
-                wrow = weather_df[weather_df['date'] == pred_date]
-                p_s = _scale_precip(float(wrow['precip_sum'].iloc[0]) if len(wrow) else float('nan'))
-                th_s = _scale_temp_high(float(wrow['temp_high'].iloc[0]) if len(wrow) else float('nan'))
-                tl_s = _scale_temp_low(float(wrow['temp_low'].iloc[0]) if len(wrow) else float('nan'))
-
-                X = _build_window_8feat(v_win, l7_win, cur_dates)
-                X[-1, 5] = p_s
-                X[-1, 6] = th_s
-                X[-1, 7] = tl_s
-                x_in = X.reshape(1, look_back, 8)
-                y_s = float(model.predict(x_in, verbose=0)[0][0])
-                y_val = float(visitor_scaler.inverse_transform([[y_s]])[0][0])
-                preds_all.append(y_val)
-
-                # Determine what to feed back into the rolling window
-                # For gap steps: use MIMO fill (scaled) to suppress error accumulation
-                is_gap_step = step_i < gap_days
-                if is_gap_step and gap_scaled_fill and step_i < len(gap_scaled_fill):
-                    feed_scaled = gap_scaled_fill[step_i]
+        # ── XGBoost 在线推理（表格模型，3步滚动）──
+        xgb_preds = None
+        try:
+            import joblib as _joblib
+            import xgboost as _xgb_lib
+            xgb_top_dirs = sorted(
+                glob.glob(os.path.join(OUTPUT_RUNS_DIR, 'xgboost_8features_*')),
+                key=os.path.getmtime, reverse=True
+            )
+            for _xd in xgb_top_dirs:
+                _run_subdirs = glob.glob(os.path.join(_xd, 'runs', 'run_*'))
+                _run_dir = max(_run_subdirs, key=os.path.getmtime) if _run_subdirs else _xd
+                # 优先 pkl/joblib，再找 xgboost 原生 .json
+                _model_files = (glob.glob(os.path.join(_run_dir, 'weights', '*.pkl')) +
+                                glob.glob(os.path.join(_run_dir, 'weights', '*.joblib')))
+                _json_files  = [p for p in glob.glob(os.path.join(_run_dir, 'weights', '*.json'))
+                                if 'metrics' not in os.path.basename(p)]
+                if _model_files:
+                    _xgb_model = _joblib.load(_model_files[0])
+                elif _json_files:
+                    _xgb_model = _xgb_lib.XGBRegressor()
+                    _xgb_model.load_model(_json_files[0])
                 else:
-                    feed_scaled = y_s  # normal: use model's own prediction
+                    continue
+                # Build feature row for last_date (same as training feature set)
+                # Use last 45 rows of df_hist for lag features
+                _hist_full = pd.read_csv(
+                    os.path.join(base_dir, 'data', 'processed',
+                                 'jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv')
+                )
+                _hist_full['date'] = pd.to_datetime(_hist_full['date']).dt.date
+                _hist_full = _hist_full[_hist_full['tourism_num'].notna()].sort_values('date')
+                # XGBoost rolling inference — feature names must match training exactly:
+                # month_norm, day_of_week_norm, is_holiday, is_peak_season,
+                # tourism_num_lag_1_scaled, tourism_num_lag_7_scaled,
+                # tourism_num_lag_14_scaled, tourism_num_lag_28_scaled,
+                # rolling_mean_7_scaled, rolling_mean_14_scaled, rolling_std_7_scaled,
+                # meteo_precip_sum_scaled, temp_high_scaled, temp_low_scaled
+                _xgb_gap = max(0, (_today_cn() - last_date).days - 1)
+                _xgb_total = _xgb_gap + horizon
+                # 初始化滚动窗口（scaled visitor values），用来计算lag特征
+                _xgb_win = list(hist_scaled.copy())  # scaled visitor history
+                xgb_preds = []
+                for _step in range(_xgb_total):
+                    _pred_date = last_date + timedelta(days=_step + 1)
+                    _m_norm = (_pred_date.month - 1) / 11.0
+                    _dow_norm = _pred_date.weekday() / 6.0
+                    _hol = float(_is_holiday(_pred_date))
+                    _m = _pred_date.month
+                    _is_peak = float((4 <= _m <= 10) or (_m == 11 and _pred_date.day <= 15))
+                    _wrow = weather_df[weather_df['date'] == _pred_date]
+                    _precip_raw = float(_wrow['precip_sum'].iloc[0]) if len(_wrow) else 0.0
+                    _th_raw = float(_wrow['temp_high'].iloc[0]) if len(_wrow) else 15.0
+                    _tl_raw = float(_wrow['temp_low'].iloc[0]) if len(_wrow) else 5.0
 
-                v_win = v_win[1:] + [feed_scaled]
-                lag7_new = v_win[-7] if len(v_win) >= 7 else feed_scaled
-                l7_win = l7_win[1:] + [lag7_new]
-                cur_dates = cur_dates[1:] + [pred_date]
+                    def _lag(win, k):
+                        return float(win[-k]) if len(win) >= k else float(win[-1])
 
-            return preds_all
+                    _win = _xgb_win
+                    _feat = {
+                        'month_norm':                _m_norm,
+                        'day_of_week_norm':          _dow_norm,
+                        'is_holiday':                _hol,
+                        'is_peak_season':            _is_peak,
+                        'tourism_num_lag_1_scaled':  _lag(_win, 1),
+                        'tourism_num_lag_7_scaled':  _lag(_win, 7),
+                        'tourism_num_lag_14_scaled': _lag(_win, 14),
+                        'tourism_num_lag_28_scaled': _lag(_win, 28),
+                        'rolling_mean_7_scaled':     float(np.mean(_win[-7:])) if len(_win) >= 7 else float(np.mean(_win)),
+                        'rolling_mean_14_scaled':    float(np.mean(_win[-14:])) if len(_win) >= 14 else float(np.mean(_win)),
+                        'rolling_std_7_scaled':      float(np.std(_win[-7:])) if len(_win) >= 7 else 0.0,
+                        'meteo_precip_sum_scaled':   _scale_precip(_precip_raw),
+                        'temp_high_scaled':          _scale_temp_high(_th_raw),
+                        'temp_low_scaled':           _scale_temp_low(_tl_raw),
+                    }
+                    try:
+                        _feat_df = pd.DataFrame([_feat])
+                        _y_s = float(_xgb_model.predict(_feat_df)[0])
+                        _y_val = float(visitor_scaler.inverse_transform([[_y_s]])[0][0])
+                    except Exception as _pe:
+                        print(f"XGBoost step {_step} predict error: {_pe}")
+                        _y_s = _xgb_win[-1]
+                        _y_val = float(visitor_scaler.inverse_transform([[_y_s]])[0][0])
+                    xgb_preds.append(_y_val)
+                    _xgb_win = _xgb_win[1:] + [_y_s]  # 滚动更新 scaled 窗口
+                break
+        except Exception as _xe:
+            print(f"XGBoost online inference failed: {_xe}")
+            xgb_preds = None
 
-        # 单步推理（改进版：gap段用MIMO填充）
-        single_results = {}
-        for mk_single, col_single in [('gru_8features', 'gru_single_pred'),
-                                       ('lstm_8features', 'lstm_single_pred')]:
-            m_single = _load_model_by_key(mk_single)
-            if m_single is not None:
-                try:
-                    single_results[col_single] = _predict_single_step_with_gap_fill(
-                        m_single, list(hist_scaled), list(lag7_window),
-                        list(hist_dates), steps=single_total_steps
-                    )
-                except Exception as e:
-                    print(f"Single-step extended inference failed ({col_single}): {e}")
-                    single_results[col_single] = None
+        # ── 6. 组装结果 DataFrame ──
+        today = _today_cn()
+        gap_days = max(0, (today - last_date).days - 1)
 
         out_rows = []
         for step in range(horizon):
@@ -1417,15 +1468,17 @@ def api_forecast():
                 'wind_level': _windspeed_to_level(_wspd),
                 'wind_max': _wspd if not (isinstance(_wspd, float) and np.isnan(_wspd)) else None,
             }
-            # MIMO/Seq2Seq：推理结果直接对应 today+step（第0步=today）
-            for col_name in ['gru_mimo_pred', 'lstm_mimo_pred', 'seq2seq_pred']:
+            # GRU / Transformer: step 0 = today = last_date + gap_days + 1
+            for col_name in ['gru_pred', 'transformer_pred']:
                 preds = results.get(col_name)
-                row[col_name] = preds[step] if preds and step < len(preds) else float('nan')
-            # 单步：从 last_date+1 开始滚动，gap_days 步后才到 today
-            single_step_idx = gap_days + step
-            for col_name in ['gru_single_pred', 'lstm_single_pred']:
-                preds = single_results.get(col_name)
-                row[col_name] = preds[single_step_idx] if preds and single_step_idx < len(preds) else float('nan')
+                # results starts from last_date+1; slice from gap_days to get today+step
+                _idx = gap_days + step
+                row[col_name] = preds[_idx] if preds and _idx < len(preds) else float('nan')
+            # XGBoost: step 0 = last_date+1, need gap_days offset too
+            row['xgboost_pred'] = xgb_preds[gap_days + step] if xgb_preds and (gap_days + step) < len(xgb_preds) else float('nan')
+            _ens_vals = [row.get(c, float('nan')) for c in ['gru_pred', 'transformer_pred', 'xgboost_pred']]
+            _ens_valid = [v for v in _ens_vals if not (isinstance(v, float) and np.isnan(v))]
+            row['ensemble_pred'] = float(np.mean(_ens_valid)) if _ens_valid else float('nan')
             out_rows.append(row)
         return pd.DataFrame(out_rows)
 
@@ -1455,88 +1508,33 @@ def api_forecast():
                 if _c not in df_future.columns:
                     df_future[_c] = np.nan
             # 确保 df_merge 有所有预测列
-            for _c in ['gru_single_pred', 'gru_mimo_pred', 'lstm_single_pred',
-                       'lstm_mimo_pred', 'seq2seq_pred']:
+            for _c in ['gru_pred', 'transformer_pred', 'xgboost_pred', 'ensemble_pred']:
                 if _c not in df_merge.columns:
                     df_merge[_c] = np.nan
-            # today 이후의 모든 행 제거（backfill CSV의 4/12~4/19 등 포함）
-            # df_future(today~today+6)로 완전히 대체
             _today = _today_cn()
             df_merge['date'] = pd.to_datetime(df_merge['date']).dt.date
             df_merge = df_merge[df_merge['date'] < _today]
+            # 确保 df_future 也有所有预测列
+            for _c in ['gru_pred', 'transformer_pred', 'xgboost_pred', 'ensemble_pred']:
+                if _c not in df_future.columns:
+                    df_future[_c] = np.nan
             df_merge = pd.concat([
                 df_merge,
                 df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c',
                             'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max',
                             'aqi_value', 'aqi_level_en',
-                            'gru_single_pred', 'gru_mimo_pred',
-                            'lstm_single_pred', 'lstm_mimo_pred', 'seq2seq_pred']]
+                            'gru_pred', 'transformer_pred', 'xgboost_pred', 'ensemble_pred']]
             ], ignore_index=True)
             df_merge = df_merge.sort_values('date').reset_index(drop=True)
     except Exception as e:
         warning = (warning + ' | ' if warning else '') + f'MIMO/Seq2Seq online forecast failed: {e}'
         online_used = False
 
-    # ── Step-wise Conformal q̂_h (Deep Ensemble calibration) ──
-    # Compute per-horizon uncertainty intervals for the forecast window.
-    # Only computed when ensemble weights are available; gracefully skipped otherwise.
-    unc_meta = None
-    try:
-        unc_meta = _compute_stepwise_qhat(alpha=0.10, max_horizon=h)
-    except Exception as _ue:
-        print(f'[uncertainty] stepwise qhat failed: {_ue}')
-
-    # Build uncertainty series aligned to time_axis (non-null only in forecast window)
-    # qhat_by_h values are NOW directly in visitor units (post-fix), no mean_std multiply needed.
-    def _build_unc_series(center_col: str, qhat_by_h: dict):
-        """Build lower/upper arrays over time_axis. Only forecast window has values.
-        lower is clamped to 0 (visitor count cannot be negative).
-        Also returns capped_by_h dict {h: capped_half_width} for payload."""
-        n = len(df_merge)
-        lower_arr = [None] * n
-        upper_arr = [None] * n
-        half_w_arr = [None] * n
-        capped_by_h = {}
-        if not qhat_by_h:
-            return lower_arr, upper_arr, half_w_arr, capped_by_h
-        _today = _today_cn()
-        for _i, _row in df_merge.iterrows():
-            _d = _row['date']
-            if isinstance(_d, str):
-                _d = pd.to_datetime(_d).date()
-            elif hasattr(_d, 'date'):
-                _d = _d.date() if isinstance(_d, _date_type) else _d.date()
-            if _d < _today:
-                continue
-            _step = (_d - _today).days + 1  # h=1 for today, h=7 for today+6
-            _hw = qhat_by_h.get(_step) or qhat_by_h.get(str(_step))
-            _center = _row.get(center_col)
-            if _hw is None or _center is None or (isinstance(_center, float) and np.isnan(_center)):
-                continue
-            _hw = float(_hw)
-            _center_f = float(_center)
-            # Cap half-width at 40% of centre value (same rule shown in calib card)
-            if _center_f > 0:
-                _hw = min(_hw, _center_f * 0.40)
-            _lo = max(0.0, _center_f - _hw)   # clamp: visitors >= 0
-            _hi = _center_f + _hw
-            lower_arr[_i] = round(_lo, 1)
-            upper_arr[_i] = round(_hi, 1)
-            half_w_arr[_i] = round(_hw, 1)
-            capped_by_h[_step] = round(_hw, 1)
-        return lower_arr, upper_arr, half_w_arr, capped_by_h
-
-    unc_lower, unc_upper, unc_half_w = [None]*len(df_merge), [None]*len(df_merge), [None]*len(df_merge)
-    unc_capped_by_h = {}
-    if unc_meta and unc_meta.get('available'):
-        unc_lower, unc_upper, unc_half_w, unc_capped_by_h = _build_unc_series(
-            'gru_mimo_pred',
-            unc_meta['qhat_by_horizon'],
-        )
+    # uncertainty removed (CI band not shown in simplified frontend)
 
     # Thresholds — 从任意有数据的模型 metrics 里取，优先 gru
     _ref_metrics = {}
-    for _mk in ['gru_8features', 'gru_mimo_8features', 'lstm_8features', 'seq2seq_attention_8features']:
+    for _mk in ['gru_8features', 'transformer_8features', 'xgboost_8features']:
         if model_data.get(_mk, {}).get('metrics'):
             _ref_metrics = model_data[_mk]['metrics']
             break
@@ -1554,17 +1552,15 @@ def api_forecast():
     quantiles = {}
 
     def _compute_risk(pred_col: str):
-        """基于客流和天气计算逐日风险。
-        历史段（actual 非 NaN）用真实客流判断 crowd_alert，预测段用模型预测值。
+        """客流为主的风险计算：超阈值即预警，天气仅作辅助说明不单独触发预警。
+        risk_level: 0=正常, 1=关注(天气异常但客流正常), 2=预警(客流超阈值)
         """
         actual_s = pd.to_numeric(df_merge['actual'], errors='coerce')
         if pred_col not in df_merge.columns:
             y_pred = actual_s.fillna(0)
         else:
             pred_s = pd.to_numeric(df_merge[pred_col], errors='coerce')
-            # 有真实数据的行用 actual，否则用预测值
             y_pred = actual_s.where(actual_s.notna(), pred_s)
-        # 逐日按季节取阈值
         dates_for_thr = pd.to_datetime(df_merge['date']).dt.date
         daily_thr = dates_for_thr.map(get_season_peak_threshold)
         crowd_alert = pd.Series(y_pred.values if hasattr(y_pred,'values') else y_pred) >= daily_thr.values
@@ -1573,30 +1569,42 @@ def api_forecast():
             (df_merge['temp_high_c'].fillna(0) >= temp_high) |
             (df_merge['temp_low_c'].fillna(0) <= temp_low)
         )
-        suitability = (crowd_alert | weather_hazard)
+        # suitability_warning 以客流为主：客流超阈值即触发，天气不单独触发
+        suitability = crowd_alert.copy()
         ca_list = [bool(x) if not pd.isna(x) else False for x in crowd_alert]
         wh_list = [bool(x) if not pd.isna(x) else False for x in weather_hazard]
         sw_list = [1 if bool(x) else 0 for x in suitability]
         risk_level, drivers = [], []
         for ca, whz, pr, th, tl in zip(ca_list, wh_list,
                 df_merge['precip_mm'].tolist(), df_merge['temp_high_c'].tolist(), df_merge['temp_low_c'].tolist()):
-            lv, d = 0, []
-            if ca: lv += 2; d.append('crowd_over_threshold')
-            if whz:
-                lv += 1
+            if ca:
+                lv = 2  # 客流超阈值 → 预警
+                d = ['crowd_over_threshold']
+                # 天气异常作为附加说明，不影响level
+                if whz:
+                    if pr is not None and not (isinstance(pr,float) and np.isnan(pr)) and pr >= precip_high: d.append('precip_high')
+                    if th is not None and not (isinstance(th,float) and np.isnan(th)) and th >= temp_high: d.append('temp_high')
+                    if tl is not None and not (isinstance(tl,float) and np.isnan(tl)) and tl <= temp_low: d.append('temp_low')
+            elif whz:
+                lv = 1  # 仅天气异常 → 关注（不触发预警）
+                d = []
                 if pr is not None and not (isinstance(pr,float) and np.isnan(pr)) and pr >= precip_high: d.append('precip_high')
                 if th is not None and not (isinstance(th,float) and np.isnan(th)) and th >= temp_high: d.append('temp_high')
                 if tl is not None and not (isinstance(tl,float) and np.isnan(tl)) and tl <= temp_low: d.append('temp_low')
+            else:
+                lv, d = 0, []
             risk_level.append(int(lv)); drivers.append(d)
-        p_warn = [0.85 if s else 0.15 for s in suitability]
-        risk_score = [round(max(0.0,min(1.0,(lv/3.0)*0.65+float(pw)*0.35))*100.0,1) for lv,pw in zip(risk_level,p_warn)]
+        # risk_score 完全由客流决定（天气不参与评分）
+        p_warn = [0.90 if ca else 0.10 for ca in ca_list]
+        risk_score = [round(max(0.0, min(1.0, (lv / 2.0) * 0.80 + float(pw) * 0.20)) * 100.0, 1)
+                      for lv, pw in zip(risk_level, p_warn)]
         return {'crowd_alert':ca_list,'weather_hazard':wh_list,'suitability_warning_bin':sw_list,
                 'risk_level':risk_level,'p_warn':p_warn,'drivers':drivers,'risk_score':risk_score}
 
-    # 用 GRU 单步作为主风险计算基准（优先级：gru_single > gru_mimo > seq2seq）
-    _risk_col = next((c for c in ['gru_single_pred','gru_mimo_pred','seq2seq_pred','lstm_single_pred']
+    # 用 GRU 作为主风险计算基准（优先级：gru > transformer > xgboost）
+    _risk_col = next((c for c in ['gru_pred', 'transformer_pred', 'xgboost_pred']
                       if c in df_merge.columns and not df_merge[c].isna().all()), None)
-    risk_main = _compute_risk(_risk_col) if _risk_col else _compute_risk('gru_single_pred')
+    risk_main = _compute_risk(_risk_col) if _risk_col else _compute_risk('gru_pred')
 
     # Holiday intervals (for markArea), with CN/EN names
     holiday_ranges = []
@@ -1651,11 +1659,9 @@ def api_forecast():
     # 模型元信息列表
     models_meta = []
     display_names = {
-        'gru_8features':               ('GRU', 'GRU (单步)'),
-        'gru_mimo_8features':          ('GRU-MIMO', 'GRU (多步)'),
-        'lstm_8features':              ('LSTM', 'LSTM (单步)'),
-        'lstm_mimo_8features':         ('LSTM-MIMO', 'LSTM (多步)'),
-        'seq2seq_attention_8features': ('Seq2Seq', 'Seq2Seq+Attention'),
+        'gru_8features':         ('GRU',         'GRU'),
+        'transformer_8features': ('Transformer',  'Transformer'),
+        'xgboost_8features':     ('XGBoost',      'XGBoost'),
     }
     for mk in MODEL_KEYS:
         short, full = display_names.get(mk, (mk, mk))
@@ -1681,12 +1687,11 @@ def api_forecast():
             'end_index': forecast_end_idx
         },
         'series': {
-            'actual': _to_num_list('actual'),
-            'gru_single_pred':  _to_num_list('gru_single_pred'),
-            'gru_mimo_pred':    _to_num_list('gru_mimo_pred'),
-            'lstm_single_pred': _to_num_list('lstm_single_pred'),
-            'lstm_mimo_pred':   _to_num_list('lstm_mimo_pred'),
-            'seq2seq_pred':     _to_num_list('seq2seq_pred'),
+            'actual':           _to_num_list('actual'),
+            'gru_pred':         _to_num_list('gru_pred'),
+            'transformer_pred': _to_num_list('transformer_pred'),
+            'xgboost_pred':     _to_num_list('xgboost_pred'),
+            'ensemble_pred':    _to_num_list('ensemble_pred'),
         },
         'thresholds': {
             'crowd': threshold_crowd,
@@ -1716,21 +1721,6 @@ def api_forecast():
         },
         'holidays': holiday_ranges,
         'risk': risk_main,
-        'uncertainty': {
-            'available': bool(unc_meta and unc_meta.get('available')),
-            'method': 'deep_ensemble_conformal_stepwise',
-            'alpha': 0.10,
-            'n_members': (unc_meta or {}).get('n_members', 0),
-            'cal_size': (unc_meta or {}).get('cal_size', 0),
-            'qhat_by_horizon': (unc_meta or {}).get('qhat_by_horizon', {}),
-            # half_width_by_horizon now returns capped values (40% of centre prediction)
-            # so renderCalibCard reads the same values used in the ECharts band
-            'half_width_by_horizon': unc_capped_by_h if unc_capped_by_h else (unc_meta or {}).get('half_width_by_horizon', {}),
-            # Aligned to time_axis, non-null only in forecast window
-            'lower': unc_lower,
-            'upper': unc_upper,
-            'half_width': unc_half_w,
-        },
         'zones': {
             'history_end': _last_date_outer.isoformat() if _last_date_outer else None,
             'gap_end': (_outer_today - timedelta(days=1)).isoformat() if _gap_days_outer > 0 else None,

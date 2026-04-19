@@ -1,107 +1,230 @@
-# Codex 任务书 v4 — 近三年数据集重训五模型
+# Codex 任务书 v10 — 集成预测（Ensemble）
 
-> **当前状态**（2026-04-18）：
-> - ✅ 五个训练脚本已由 Claude 加入日期过滤 `df[df["date"] >= "2023-06-01"]`
-> - ✅ 调参已在 v3 完成（lookback=45，dropout↓，patience=20，XGB n_est=500）
-> - ❌ 五个模型尚未用新数据集重训
-> - ❌ 对比报告尚未生成
->
-> **背景**：全量10年数据训练集均值 9,044 vs 测试集均值 21,341，分布严重不匹配。
-> 改用 2023-06-01 起的近三年数据（约 1,016 天连续记录），训练/测试分布对齐，
-> 预期 MAE 可从 ~3,700 降至 ~2,000-2,500。
->
-> **你的任务**：直接重训五个模型 → 跑对比报告
+> **当前状态**（2026-04-20）：
+> - ✅ 三模型已训练完毕，权重文件存在，CSV预测文件存在
+> - ✅ 在线推理已修复（GRU/Transformer/XGBoost 均可滚动推理3步）
+> - ✅ 预警逻辑已改为客流主导（超阈值即预警，天气仅辅助）
+> - ❌ 尚无集成预测列（ensemble_pred），前端无第四条曲线
 
 ---
 
-## 数据集信息（供参考）
+## 当前模型状态（重要，必读）
 
+### 已训练模型及权重路径
+
+| 模型 | 权重文件 | 输入形状 | 特征数 | MAE | NRMSE | Suit-Recall |
+|------|---------|---------|--------|-----|-------|-------------|
+| GRU | `output/runs/gru_8features_20260418_194417/runs/run_20260418_194417_lb30_ep150_gru_8features/weights/gru_jiuzhaigou.h5` | (30, 11) | 11 | 2,871 | 13.0% | 0.960 |
+| Transformer | `output/runs/transformer_8features_20260418_195030/runs/run_20260418_195030_lb45_ep150_transformer_8features/weights/transformer_8features.h5` | (45, 11) | 11 | 3,100 | 13.5% | 0.960 |
+| XGBoost | `output/runs/xgboost_8features_20260418_181137/runs/run_20260418_181137_xgboost_8features/weights/xgboost_model.json` | 14维表格 | 14 | 2,531 | 12.1% | 0.963 |
+
+### 预测CSV路径
+
+| 模型 | 预测CSV |
+|------|---------|
+| GRU | `output/runs/gru_8features_20260418_194417/runs/run_20260418_194417_lb30_ep150_gru_8features/gru_test_predictions.csv` |
+| Transformer | `output/runs/transformer_8features_20260418_195030/runs/run_20260418_195030_lb45_ep150_transformer_8features/transformer_test_predictions.csv` |
+| XGBoost | `output/runs/xgboost_8features_20260418_181137/runs/run_20260418_181137_xgboost_8features/xgboost_test_predictions.csv` |
+
+CSV格式：`date, y_true, y_pred`（列名固定，BOM UTF-8）
+
+### 特征说明
+
+**GRU / Transformer（11特征，顺序固定）**：
 ```
-原始 CSV：data/processed/jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv
-过滤后范围：2023-06-01 ~ 2026-04-16，约 1,016 天
-  训练集（80%）：2023-06-01 ~ 2025-09-XX，约 812 天，mean≈15,604
-  验证集（10%）：约 101 天
-  测试集（10%）：约 101 天，mean≈12,160
-缺失说明：2023-03~05 为冬季闭园，已通过 2023-06-01 起点自动跳过
+visitor_count_scaled, month_norm, day_of_week_norm, is_holiday, is_peak_season,
+tourism_num_lag_7_scaled, tourism_num_lag_14_scaled, rolling_mean_14_scaled,
+meteo_precip_sum_scaled, temp_high_scaled, temp_low_scaled
+```
+
+**XGBoost（14特征，model.feature_names_in_ 顺序）**：
+```
+month_norm, day_of_week_norm, is_holiday, is_peak_season,
+tourism_num_lag_1_scaled, tourism_num_lag_7_scaled, tourism_num_lag_14_scaled, tourism_num_lag_28_scaled,
+rolling_mean_7_scaled, rolling_mean_14_scaled, rolling_std_7_scaled,
+meteo_precip_sum_scaled, temp_high_scaled, temp_low_scaled
 ```
 
 ---
 
-## 任务 1：重训五个模型
+## 本轮目标：集成预测（无需重训）
 
-**直接运行，不需要改任何脚本**（日期过滤已内置）：
+**方案**：加权平均集成
+
+```
+ensemble_pred = XGBoost × 0.5 + GRU × 0.3 + Transformer × 0.2
+```
+
+权重依据：MAE反比加权（MAE越低权重越高）。
+
+---
+
+## 任务 1：离线CSV集成脚本
+
+新建 `scripts/ensemble_predict.py`，读取三个模型的预测CSV，按日期对齐后计算加权均值，输出集成预测CSV并打印MAE对比：
+
+```python
+import pandas as pd
+import numpy as np
+from sklearn.metrics import mean_absolute_error
+import glob, os
+
+def find_latest_pred_csv(model_prefix):
+    pattern = f'output/runs/{model_prefix}_*/runs/run_*/*_test_predictions.csv'
+    files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+    return files[0] if files else None
+
+gru_csv  = find_latest_pred_csv('gru_8features')
+tr_csv   = find_latest_pred_csv('transformer_8features')
+xgb_csv  = find_latest_pred_csv('xgboost_8features')
+
+dfs = {}
+for name, path in [('gru', gru_csv), ('transformer', tr_csv), ('xgboost', xgb_csv)]:
+    if path:
+        df = pd.read_csv(path)
+        df['date'] = pd.to_datetime(df['date']).dt.date
+        dfs[name] = df.set_index('date')[['y_true', 'y_pred']].rename(columns={'y_pred': name})
+
+# 对齐日期
+base = dfs['gru'][['y_true']].copy()
+for name, df in dfs.items():
+    base[name] = df[name]
+base = base.dropna(subset=['gru', 'transformer', 'xgboost'])
+
+# 加权集成
+W = {'gru': 0.3, 'transformer': 0.2, 'xgboost': 0.5}
+base['ensemble'] = sum(base[k] * w for k, w in W.items())
+
+# MAE对比
+mask = base['y_true'].notna()
+for col in ['gru', 'transformer', 'xgboost', 'ensemble']:
+    mae = mean_absolute_error(base.loc[mask, 'y_true'], base.loc[mask, col])
+    print(f'{col:12s} MAE: {mae:.2f}')
+
+# 保存
+out = base.reset_index().rename(columns={'index': 'date'})
+out.to_csv('output/ensemble_test_predictions.csv', index=False)
+print('Saved: output/ensemble_test_predictions.csv')
+```
+
+---
+
+## 任务 2：app.py 加入 ensemble_pred 列
+
+在 `web_app/app.py` 的 `api_forecast` 函数里，找到：
+
+```python
+df_merge = df_base.sort_values('date').reset_index(drop=True)
+```
+
+在这行**之后**插入：
+
+```python
+# 集成预测列（加权平均，缺任一模型则按可用模型归一化权重计算）
+_ens_weights = {'gru_pred': 0.3, 'transformer_pred': 0.2, 'xgboost_pred': 0.5}
+_avail = {c: w for c, w in _ens_weights.items() if c in df_merge.columns}
+if _avail:
+    _total_w = sum(_avail.values())
+    df_merge['ensemble_pred'] = sum(
+        pd.to_numeric(df_merge[c], errors='coerce') * (w / _total_w)
+        for c, w in _avail.items()
+    )
+else:
+    df_merge['ensemble_pred'] = np.nan
+```
+
+在返回的 `series` 字典里加入（找到 `'xgboost_pred': _to_num_list('xgboost_pred'),` 这行后面）：
+```python
+'ensemble_pred':    _to_num_list('ensemble_pred'),
+```
+
+在线推理的 `out_rows` 组装循环里（找到 `out_rows.append(row)` 前面），加：
+```python
+_ens_vals = [row.get(c, float('nan')) for c in ['gru_pred', 'transformer_pred', 'xgboost_pred']]
+_ens_valid = [v for v in _ens_vals if not (isinstance(v, float) and np.isnan(v))]
+row['ensemble_pred'] = float(np.mean(_ens_valid)) if _ens_valid else float('nan')
+```
+
+在 `df_future` 的 concat 列表里加 `'ensemble_pred'`：
+```python
+df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c',
+           'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max',
+           'aqi_value', 'aqi_level_en',
+           'gru_pred', 'transformer_pred', 'xgboost_pred', 'ensemble_pred']]
+```
+
+---
+
+## 任务 3：前端加第四条集成曲线
+
+### dashboard_v3.js
+
+**normalizeForecastPayload** 里加（紧接 xgboost 那行后面）：
+```javascript
+out.series.ensemble = safeArr(s.ensemble_pred || [], n, safeNum);
+```
+
+**CURVE_DEFS** 里加第四条：
+```javascript
+{ key: 'ensemble', nameZh: '集成预测', nameEn: 'Ensemble', color: '#bf5af2' },
+```
+
+**initLegendToggles** 的 `resolveSeriesName` 函数里加：
+```javascript
+if (key === 'ensemble') return state.lang === 'zh' ? '集成预测' : 'Ensemble';
+```
+
+**buildChartOption** 里 hidden legend data 改为：
+```javascript
+legend: { show: false, data: [
+  state.lang === 'zh' ? '实际客流' : 'Actual',
+  'GRU', 'Transformer', 'XGBoost',
+  state.lang === 'zh' ? '集成预测' : 'Ensemble'
+]},
+```
+
+### dashboard_v3.html
+
+在 XGBoost 图例按钮后面加：
+```html
+<button class="v3-chart-key__item v3-chart-key__item--toggle v3-chart-key__item--active"
+        type="button" data-series-name="ensemble" title="点击显示/隐藏">
+  <span class="v3-chart-key__swatch" style="background:#bf5af2"></span>
+  <span class="v3-chart-key__label">集成预测（三模型加权均值）</span>
+</button>
+```
+
+---
+
+## 任务 4：验证
 
 ```bash
-# GRU（约10分钟）
-python run_pipeline.py --model gru --features 8 --epochs 150
+# 离线集成MAE
+python scripts/ensemble_predict.py
+# 期望：Ensemble MAE < XGBoost MAE (2531)
 
-# LSTM（约15分钟）
-python run_pipeline.py --model lstm --features 8 --epochs 150
-
-# Seq2Seq（约20分钟）
-python run_pipeline.py --model seq2seq_attention --epochs 150
-
-# Transformer（约20分钟）
-python models/transformer/train_transformer_8features.py
-
-# XGBoost（约5分钟）
-python models/xgboost/train_xgboost_8features.py
-```
-
-**预期训练样本数**：
-- GRU/LSTM/Transformer：序列约 767 个（812 - lookback=45）
-- Seq2Seq：编码器序列约 767 个，7步输出
-- XGBoost：表格样本约 784 行（812 - lag_28=28）
-
----
-
-## 任务 2：重跑五模型对比
-
-```bash
-python run_benchmark.py
-```
-
-生成：`output/runs/run_compare_<timestamp>/report.md`
-
----
-
-## 完成验证
-
-```bash
-python -c "
-import json, glob
-models = {
-    'gru':         'output/runs/gru_8features_*/runs/*/metrics.json',
-    'lstm':        'output/runs/lstm_8features_*/runs/*/metrics.json',
-    'seq2seq':     'output/runs/seq2seq_attention_8features_*/runs/*/metrics.json',
-    'transformer': 'output/runs/transformer_8features_*/runs/*/metrics.json',
-    'xgboost':     'output/runs/xgboost_8features_*/runs/*/metrics.json',
-}
-for name, pattern in models.items():
-    files = sorted(glob.glob(pattern))
-    if files:
-        d = json.load(open(files[-1]))
-        r = d['regression']
-        m = d['meta']
-        sw = d.get('suitability_warning', {})
-        n = m.get('n_samples', '?')
-        ep = m.get('epochs_trained', '?')
-        print(f'{name:12s} n={n:>4}  MAE={r[\"mae\"]:6.0f}  NRMSE={r.get(\"nrmse\",float(\"nan\")):.3f}  Recall={sw.get(\"recall\",\"?\")!s:>5}  epochs={ep}')
-"
-# 成功标准：
-# - 所有模型 n_samples < 300（说明用的是近三年测试集，不是全量）
-# - GRU/LSTM/Transformer MAE < 3000
-# - Suit-Recall 全部 > 0.88
+# 启动服务验证前端
+cd web_app && python app.py
+# 访问 http://localhost:5000/dashboard/v3
+# 验证：图表出现第四条紫色曲线（集成预测），可通过图例按钮切换
 ```
 
 ---
 
-## 目标指标（近三年数据预期）
+## 成功标准
 
-| 模型 | MAE 目标 | NRMSE 目标 | Suit-Recall 目标 |
-|------|---------|-----------|----------------|
-| Transformer | < 2,200 | < 9% | > 0.97 |
-| GRU | < 2,500 | < 10% | > 0.92 |
-| LSTM | < 2,800 | < 11% | > 0.92 |
-| Seq2Seq | < 3,000 | — | > 0.95 |
-| XGBoost | < 3,200 | < 13% | > 0.88 |
+- `scripts/ensemble_predict.py` 打印四行MAE对比，Ensemble MAE < 2,531
+- `/api/forecast` 响应的 `series.ensemble_pred` 非全null（离线模式下有100+个值）
+- 前端图表出现紫色集成预测曲线，在线模式下延伸至未来3天
+- 图例按钮可切换集成曲线显示/隐藏
+
+---
+
+## 目标指标
+
+| 模型 | 整体 MAE | 备注 |
+|------|---------|------|
+| XGBoost（当前最优） | 2,531 | 基准 |
+| GRU | 2,871 | |
+| Transformer | 3,100 | |
+| **集成（目标）** | **< 2,400** | 加权平均，无需重训 |
