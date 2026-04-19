@@ -47,6 +47,7 @@ LOOK_BACK   = 45          # 与 GRU/LSTM 保持一致
 TRAIN_RATIO = 0.80
 VAL_RATIO = 0.10
 TEST_RATIO = 0.10
+PRED_HORIZON = 3
 
 
 # ── 节假日 / 旺季标记（与 GRU 保持一致）─────────────────────────────────────
@@ -182,9 +183,9 @@ def build_sequences(
         逻辑与 GRU 脚本完全相同，可直接复制。
     """
     x_list, y_list = [], []
-    for i in range(look_back, len(data)):
+    for i in range(look_back, len(data) - PRED_HORIZON + 1):
         x_list.append(data[i - look_back : i, :])
-        y_list.append(data[i, 0])  # 目标始终是第0列 visitor_count_scaled
+        y_list.append(data[i : i + PRED_HORIZON, 0])
     return np.asarray(x_list, dtype=np.float32), np.asarray(y_list, dtype=np.float32)
 
 
@@ -296,7 +297,7 @@ def build_model(
     x = tf.keras.layers.GlobalAveragePooling1D()(x)
     x = tf.keras.layers.Dense(64, activation="relu")(x)
     x = tf.keras.layers.Dropout(dropout_rate)(x)
-    out = tf.keras.layers.Dense(1)(x)
+    out = tf.keras.layers.Dense(PRED_HORIZON)(x)
 
     model = tf.keras.Model(inp, out)
     model.compile(
@@ -342,10 +343,23 @@ def main() -> None:
 
     data = df[feature_cols].values.astype(np.float32)
     X_all, y_all = build_sequences(data, args.look_back)
-    all_dates = pd.to_datetime(df["date"]).values[args.look_back:]
-    weather_precip_all = df["precip_raw"].values[args.look_back:].astype(float)
-    weather_temp_high_all = df["temp_high_raw"].values[args.look_back:].astype(float)
-    weather_temp_low_all = df["temp_low_raw"].values[args.look_back:].astype(float)
+    n_samples = len(X_all)
+    all_dates = pd.to_datetime(df["date"]).values[args.look_back : args.look_back + n_samples]
+    precip_raw_all = df["precip_raw"].values.astype(float)
+    temp_high_raw_all = df["temp_high_raw"].values.astype(float)
+    temp_low_raw_all = df["temp_low_raw"].values.astype(float)
+    weather_precip_all = np.stack(
+        [precip_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
+        axis=1,
+    )
+    weather_temp_high_all = np.stack(
+        [temp_high_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
+        axis=1,
+    )
+    weather_temp_low_all = np.stack(
+        [temp_low_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
+        axis=1,
+    )
 
     n = len(X_all)
     train_end = int(n * TRAIN_RATIO)
@@ -418,18 +432,31 @@ def main() -> None:
     model.save(weights_dir / "transformer_8features.h5")
 
     # ── 预测与反归一化 ───────────────────────────────────────────────────────
-    y_pred_scaled = model.predict(X_test, verbose=0).ravel()
-    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).ravel()
-    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
+    y_pred_scaled = model.predict(X_test, verbose=0)
+    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
     y_pred = np.clip(y_pred, 0, None)
+    print(f"y_pred shape: {y_pred.shape}")
+    for h in range(PRED_HORIZON):
+        mae_h = np.mean(np.abs(y_true[:, h] - y_pred[:, h]))
+        print(f"day+{h+1} MAE: {mae_h:.2f}")
 
-    pred_df = pd.DataFrame(
-        {
-            "date": pd.to_datetime(d_test),
-            "y_true": y_true,
-            "y_pred": y_pred,
-        }
-    ).sort_values("date")
+    pred_rows = []
+    pred_dates = []
+    for i in range(len(d_test)):
+        base_date = pd.to_datetime(d_test[i])
+        for h in range(PRED_HORIZON):
+            target_date = base_date + pd.Timedelta(days=h)
+            pred_dates.append(target_date)
+            pred_rows.append(
+                {
+                    "date": target_date,
+                    "horizon": h + 1,
+                    "y_true": y_true[i, h],
+                    "y_pred": y_pred[i, h],
+                }
+            )
+    pred_df = pd.DataFrame(pred_rows).sort_values(["date", "horizon"])
     pred_df.to_csv(run_dir / "transformer_test_predictions.csv", index=False, encoding="utf-8-sig")
 
     # ── 评估（复用统一框架）────────────────────────────────────────────────
@@ -439,8 +466,8 @@ def main() -> None:
         feature_count=n_features,
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
-        dates=pd.to_datetime(d_test),
-        horizon=1,
+        dates=pred_dates,
+        horizon=PRED_HORIZON,
         peak_threshold=dynamic_peak_threshold,
         warning_temperature=1000.0,
         fn_fp_cost_ratio=(5.0, 1.0),
@@ -464,7 +491,7 @@ def main() -> None:
         },
     )
 
-    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
+    metrics = calculate_metrics(y_true=y_true.reshape(-1), y_pred=y_pred.reshape(-1), scaler=scaler)
     try:
         save_metrics_to_files(metrics, str(run_dir), "transformer_baseline")
     except TypeError:

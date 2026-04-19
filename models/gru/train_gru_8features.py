@@ -38,6 +38,7 @@ matplotlib.use("Agg")
 TRAIN_RATIO = 0.80
 VAL_RATIO = 0.10
 TEST_RATIO = 0.10
+PRED_HORIZON = 3
 
 
 def mark_core_holiday(date_val: pd.Timestamp) -> int:
@@ -217,9 +218,9 @@ def build_sequences(
     dates = df["date"].values
 
     x_list, y_list, d_list = [], [], []
-    for i in range(look_back, len(df)):
+    for i in range(look_back, len(df) - PRED_HORIZON + 1):
         x_list.append(values[i - look_back : i, :])  # shape: (look_back, 8)
-        y_list.append(target[i])
+        y_list.append(target[i : i + PRED_HORIZON])
         d_list.append(dates[i])
     
     print(f"序列构建完成: {len(x_list)} 个样本，特征维度: {len(feature_cols)}")
@@ -304,7 +305,7 @@ def create_gru_model(look_back: int, n_features: int = 11) -> tf.keras.Model:
             ),
             tf.keras.layers.GRU(96, dropout=0.1, recurrent_dropout=0.1, implementation=1),
             tf.keras.layers.Dense(32, activation="relu"),
-            tf.keras.layers.Dense(1),
+            tf.keras.layers.Dense(PRED_HORIZON),
         ]
     )
     model.compile(
@@ -445,9 +446,22 @@ def main() -> None:
             f"Missing required weather columns for hazard: precip={precip_col}, temp_high={temp_high_col}, temp_low={temp_low_col}"
         )
 
-    weather_precip_all = df[precip_col].values[args.look_back :].astype(float)
-    weather_temp_high_all = df[temp_high_col].values[args.look_back :].astype(float)
-    weather_temp_low_all = df[temp_low_col].values[args.look_back :].astype(float)
+    n_samples = len(x)
+    precip_raw_all = df[precip_col].values.astype(float)
+    temp_high_raw_all = df[temp_high_col].values.astype(float)
+    temp_low_raw_all = df[temp_low_col].values.astype(float)
+    weather_precip_all = np.stack(
+        [precip_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
+        axis=1,
+    )
+    weather_temp_high_all = np.stack(
+        [temp_high_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
+        axis=1,
+    )
+    weather_temp_low_all = np.stack(
+        [temp_low_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
+        axis=1,
+    )
 
     x_train, y_train, d_train, x_val, y_val, d_val, x_test, y_test, d_test = split_by_time(
         x, y, d, test_ratio=args.test_ratio, val_ratio=args.val_ratio
@@ -504,23 +518,36 @@ def main() -> None:
     )
 
     # 5. 预测并反归一化
-    y_pred_scaled = model.predict(x_test, verbose=0).reshape(-1, 1)
-    y_pred = scaler.inverse_transform(y_pred_scaled).reshape(-1)
-    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).reshape(-1)
+    y_pred_scaled = model.predict(x_test, verbose=0)
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
+    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
+    print(f"y_pred shape: {y_pred.shape}")
+    for h in range(PRED_HORIZON):
+        mae_h = np.mean(np.abs(y_true[:, h] - y_pred[:, h]))
+        print(f"day+{h+1} MAE: {mae_h:.2f}")
 
     # 6. 保存预测结果
-    pred_df = pd.DataFrame(
-        {
-            "date": pd.to_datetime(d_test),
-            "y_true": y_true,
-            "y_pred": y_pred,
-        }
-    ).sort_values("date")
+    pred_rows = []
+    pred_dates = []
+    for i in range(len(d_test)):
+        base_date = pd.to_datetime(d_test[i])
+        for h in range(PRED_HORIZON):
+            target_date = base_date + pd.Timedelta(days=h)
+            pred_dates.append(target_date)
+            pred_rows.append(
+                {
+                    "date": target_date,
+                    "horizon": h + 1,
+                    "y_true": y_true[i, h],
+                    "y_pred": y_pred[i, h],
+                }
+            )
+    pred_df = pd.DataFrame(pred_rows).sort_values(["date", "horizon"])
     pred_df.to_csv(pred_path, index=False, encoding="utf-8-sig")
 
     # 7. 使用通用评估器计算指标
     # NOTE: keep evaluator API stable (no train-split arguments here).
-    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
+    metrics = calculate_metrics(y_true=y_true.reshape(-1), y_pred=y_pred.reshape(-1), scaler=scaler)
 
     # 8. 保存模型和指标
     model.save(model_path)
@@ -544,8 +571,8 @@ def main() -> None:
         feature_count=11,
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
-        dates=pd.to_datetime(pred_df["date"]).values,
-        horizon=1,
+        dates=pred_dates,
+        horizon=PRED_HORIZON,
         peak_threshold=dynamic_peak_threshold,
         warning_temperature=1000.0,
         fn_fp_cost_ratio=(5.0, 1.0),

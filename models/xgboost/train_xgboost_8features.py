@@ -26,6 +26,7 @@ import chinese_calendar as cncal
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.multioutput import MultiOutputRegressor
 import xgboost as xgb
 from xgboost import XGBRegressor
 
@@ -201,6 +202,32 @@ def split_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFra
     return train_df, val_df, test_df
 
 
+def add_multi_horizon_targets(df: pd.DataFrame) -> pd.DataFrame:
+    """构造 direct multi-output 标签 t+1/t+2/t+3。"""
+    out = df.copy()
+    out["t1"] = out[TARGET_COL].shift(-1)
+    out["t2"] = out[TARGET_COL].shift(-2)
+    out["t3"] = out[TARGET_COL].shift(-3)
+    out["precip_h1"] = out["precip_raw"].shift(-1)
+    out["precip_h2"] = out["precip_raw"].shift(-2)
+    out["precip_h3"] = out["precip_raw"].shift(-3)
+    out["temp_high_h1"] = out["temp_high_raw"].shift(-1)
+    out["temp_high_h2"] = out["temp_high_raw"].shift(-2)
+    out["temp_high_h3"] = out["temp_high_raw"].shift(-3)
+    out["temp_low_h1"] = out["temp_low_raw"].shift(-1)
+    out["temp_low_h2"] = out["temp_low_raw"].shift(-2)
+    out["temp_low_h3"] = out["temp_low_raw"].shift(-3)
+    out = out.dropna(
+        subset=[
+            "t1", "t2", "t3",
+            "precip_h1", "precip_h2", "precip_h3",
+            "temp_high_h1", "temp_high_h2", "temp_high_h3",
+            "temp_low_h1", "temp_low_h2", "temp_low_h3",
+        ]
+    ).reset_index(drop=True)
+    return out
+
+
 # ── 特征列定义 ────────────────────────────────────────────────────────────────
 FEATURE_COLS = [
     "month_norm",
@@ -219,6 +246,7 @@ FEATURE_COLS = [
     "temp_low_scaled",
 ]
 TARGET_COL = "visitor_count_scaled"
+PRED_HORIZON = 3
 
 
 # ── 模型定义 ──────────────────────────────────────────────────────────────────
@@ -240,19 +268,16 @@ def build_model(args: argparse.Namespace):
         如果 args.sample_weight 为 True，在 fit() 时传入样本权重向量
         （COVID/地震异常期 2020-01-01~2022-12-31 权重=0.3，其余=1.0）
     """
-    return XGBRegressor(
+    base_model = XGBRegressor(
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
         learning_rate=args.lr,
         subsample=0.8,
-        colsample_bytree=0.7,
-        min_child_weight=3,
-        reg_alpha=0.3,
-        reg_lambda=1.5,
+        colsample_bytree=0.8,
         random_state=42,
         n_jobs=-1,
-        early_stopping_rounds=40,
     )
+    return MultiOutputRegressor(base_model)
 
 
 def compute_sample_weights(train_df: pd.DataFrame) -> np.ndarray:
@@ -285,14 +310,15 @@ def main() -> None:
 
     # ── 数据准备 ────────────────────────────────────────────────────────────
     df, scaler = load_and_engineer_features(args.data)
+    df = add_multi_horizon_targets(df)
     train_df, val_df, test_df = split_data(df)
 
     X_train = train_df[FEATURE_COLS]
-    y_train = train_df[TARGET_COL]
+    y_train = train_df[["t1", "t2", "t3"]]
     X_val = val_df[FEATURE_COLS]
-    y_val = val_df[TARGET_COL]
+    y_val = val_df[["t1", "t2", "t3"]]
     X_test = test_df[FEATURE_COLS]
-    y_test = test_df[TARGET_COL]
+    y_test = test_df[["t1", "t2", "t3"]]
 
     # ── 输出目录（与 GRU/LSTM 相同结构）────────────────────────────────────
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -307,41 +333,52 @@ def main() -> None:
     model = build_model(args)
     weights = compute_sample_weights(train_df) if args.sample_weight else None
     fit_kwargs = {
-        "eval_set": [(X_val, y_val)],
         "verbose": False,
     }
     if weights is not None:
         fit_kwargs["sample_weight"] = weights
     model.fit(X_train, y_train, **fit_kwargs)
-    model.save_model(run_dir / "weights" / "xgboost_model.json")
 
     # ── 预测与反归一化 ───────────────────────────────────────────────────────
-    y_pred_scaled = model.predict(X_test)
-    y_true = scaler.inverse_transform(y_test.values.reshape(-1, 1)).ravel()
-    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
+    y_pred_scaled = model.predict(X_test)  # shape: (N, 3)
+    y_true = scaler.inverse_transform(y_test.values.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
     y_pred = np.clip(y_pred, 0, None)
+    print(f"y_pred shape: {y_pred.shape}")
+    for h in range(PRED_HORIZON):
+        mae_h = np.mean(np.abs(y_true[:, h] - y_pred[:, h]))
+        print(f"day+{h+1} MAE: {mae_h:.2f}")
 
-    pred_df = pd.DataFrame(
-        {
-            "date": pd.to_datetime(test_df["date"]),
-            "y_true": y_true,
-            "y_pred": y_pred,
-        }
-    ).sort_values("date")
+    pred_rows = []
+    pred_dates = []
+    for i in range(len(test_df)):
+        base_date = pd.to_datetime(test_df.iloc[i]["date"])
+        for h in range(PRED_HORIZON):
+            target_date = base_date + pd.Timedelta(days=h)
+            pred_dates.append(target_date)
+            pred_rows.append(
+                {
+                    "date": target_date,
+                    "horizon": h + 1,
+                    "y_true": y_true[i, h],
+                    "y_pred": y_pred[i, h],
+                }
+            )
+    pred_df = pd.DataFrame(pred_rows).sort_values(["date", "horizon"])
     pred_df.to_csv(run_dir / "xgboost_test_predictions.csv", index=False, encoding="utf-8-sig")
 
     # ── 评估（复用统一框架）────────────────────────────────────────────────
     dynamic_peak_threshold = compute_dynamic_peak_threshold(
-        scaler.inverse_transform(train_df[TARGET_COL].values.reshape(-1, 1)).ravel(),
+        scaler.inverse_transform(train_df[["t1", "t2", "t3"]].values.reshape(-1, 1)).ravel(),
         args.peak_quantile,
     )
 
     weather_train_precip = train_df["precip_raw"].values.astype(float)
     weather_train_temp_high = train_df["temp_high_raw"].values.astype(float)
     weather_train_temp_low = train_df["temp_low_raw"].values.astype(float)
-    weather_test_precip = test_df["precip_raw"].values.astype(float)
-    weather_test_temp_high = test_df["temp_high_raw"].values.astype(float)
-    weather_test_temp_low = test_df["temp_low_raw"].values.astype(float)
+    weather_test_precip = test_df[["precip_h1", "precip_h2", "precip_h3"]].values.astype(float)
+    weather_test_temp_high = test_df[["temp_high_h1", "temp_high_h2", "temp_high_h3"]].values.astype(float)
+    weather_test_temp_low = test_df[["temp_low_h1", "temp_low_h2", "temp_low_h3"]].values.astype(float)
 
     evaluate_and_save_run(
         str(run_dir),
@@ -349,8 +386,8 @@ def main() -> None:
         feature_count=len(FEATURE_COLS),
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
-        dates=pd.to_datetime(test_df["date"]).values,
-        horizon=1,
+        dates=pred_dates,
+        horizon=PRED_HORIZON,
         peak_threshold=dynamic_peak_threshold,
         warning_temperature=1000.0,
         fn_fp_cost_ratio=(5.0, 1.0),
@@ -369,7 +406,7 @@ def main() -> None:
         },
     )
 
-    metrics = calculate_metrics(y_true=y_true, y_pred=y_pred, scaler=scaler)
+    metrics = calculate_metrics(y_true=y_true.reshape(-1), y_pred=y_pred.reshape(-1), scaler=scaler)
     try:
         save_metrics_to_files(metrics, str(run_dir), "xgboost_baseline")
     except TypeError:
