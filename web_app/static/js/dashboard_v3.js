@@ -414,7 +414,7 @@
     setStatus('', t('status_loading'));
 
     // 缓存 key：固定 online 模式，30分钟 TTL
-    const cacheKey = `v3_forecast_v10_h${state.h}`;
+    const cacheKey = `v3_forecast_v11_h${state.h}`;
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -1885,7 +1885,7 @@
   // ─────────────────────────────────────────────
   // Init
   // ─────────────────────────────────────────────
-  const CURRENT_CACHE_VER = 'v10';
+  const CURRENT_CACHE_VER = 'v11';
   function init() {
     console.log('dashboard_v3.js loaded');
     // 清除所有旧版本 forecast 缓存（v1~v8）
