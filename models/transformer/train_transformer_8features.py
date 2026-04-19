@@ -18,6 +18,7 @@ Transformer Encoder 模型（自注意力时序预测）
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -47,7 +48,7 @@ LOOK_BACK   = 45          # 与 GRU/LSTM 保持一致
 TRAIN_RATIO = 0.80
 VAL_RATIO = 0.10
 TEST_RATIO = 0.10
-PRED_HORIZON = 3
+ROLLING_STEPS = 3
 
 
 # ── 节假日 / 旺季标记（与 GRU 保持一致）─────────────────────────────────────
@@ -183,9 +184,9 @@ def build_sequences(
         逻辑与 GRU 脚本完全相同，可直接复制。
     """
     x_list, y_list = [], []
-    for i in range(look_back, len(data) - PRED_HORIZON + 1):
+    for i in range(look_back, len(data)):
         x_list.append(data[i - look_back : i, :])
-        y_list.append(data[i : i + PRED_HORIZON, 0])
+        y_list.append(data[i, 0])  # 目标始终是第0列 visitor_count_scaled
     return np.asarray(x_list, dtype=np.float32), np.asarray(y_list, dtype=np.float32)
 
 
@@ -197,6 +198,40 @@ def compute_sample_weights(months: np.ndarray) -> np.ndarray:
         1.0,
     )
     return weights.astype(np.float32)
+
+
+def build_3step_truth(df: pd.DataFrame, dates: np.ndarray, target_col: str) -> np.ndarray:
+    idx_by_date = {pd.Timestamp(d): i for i, d in enumerate(pd.to_datetime(df["date"]).values)}
+    target_vals = df[target_col].values.astype(float)
+    out = []
+    for d in pd.to_datetime(dates):
+        idx = idx_by_date.get(pd.Timestamp(d))
+        if idx is None or idx + ROLLING_STEPS > len(target_vals):
+            out.append([np.nan] * ROLLING_STEPS)
+            continue
+        out.append(target_vals[idx : idx + ROLLING_STEPS].tolist())
+    return np.asarray(out, dtype=float)
+
+
+def build_3step_weather(df: pd.DataFrame, dates: np.ndarray, col: str) -> np.ndarray:
+    idx_by_date = {pd.Timestamp(d): i for i, d in enumerate(pd.to_datetime(df["date"]).values)}
+    vals = df[col].values.astype(float)
+    out = []
+    for d in pd.to_datetime(dates):
+        idx = idx_by_date.get(pd.Timestamp(d))
+        if idx is None or idx + ROLLING_STEPS > len(vals):
+            out.append([np.nan] * ROLLING_STEPS)
+            continue
+        out.append(vals[idx : idx + ROLLING_STEPS].tolist())
+    return np.asarray(out, dtype=float)
+
+
+def build_flat_horizon_dates(dates: np.ndarray, steps: int) -> np.ndarray:
+    out = []
+    for d in pd.to_datetime(dates):
+        for h in range(steps):
+            out.append(pd.Timestamp(d) + pd.Timedelta(days=h))
+    return np.asarray(out, dtype="datetime64[ns]")
 
 
 # ── Transformer 组件 ──────────────────────────────────────────────────────────
@@ -297,7 +332,7 @@ def build_model(
     x = tf.keras.layers.GlobalAveragePooling1D()(x)
     x = tf.keras.layers.Dense(64, activation="relu")(x)
     x = tf.keras.layers.Dropout(dropout_rate)(x)
-    out = tf.keras.layers.Dense(PRED_HORIZON)(x)
+    out = tf.keras.layers.Dense(1)(x)
 
     model = tf.keras.Model(inp, out)
     model.compile(
@@ -343,23 +378,10 @@ def main() -> None:
 
     data = df[feature_cols].values.astype(np.float32)
     X_all, y_all = build_sequences(data, args.look_back)
-    n_samples = len(X_all)
-    all_dates = pd.to_datetime(df["date"]).values[args.look_back : args.look_back + n_samples]
-    precip_raw_all = df["precip_raw"].values.astype(float)
-    temp_high_raw_all = df["temp_high_raw"].values.astype(float)
-    temp_low_raw_all = df["temp_low_raw"].values.astype(float)
-    weather_precip_all = np.stack(
-        [precip_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
-        axis=1,
-    )
-    weather_temp_high_all = np.stack(
-        [temp_high_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
-        axis=1,
-    )
-    weather_temp_low_all = np.stack(
-        [temp_low_raw_all[args.look_back + h : args.look_back + h + n_samples] for h in range(PRED_HORIZON)],
-        axis=1,
-    )
+    all_dates = pd.to_datetime(df["date"]).values[args.look_back:]
+    weather_precip_all = df["precip_raw"].values[args.look_back:].astype(float)
+    weather_temp_high_all = df["temp_high_raw"].values[args.look_back:].astype(float)
+    weather_temp_low_all = df["temp_low_raw"].values[args.look_back:].astype(float)
 
     n = len(X_all)
     train_end = int(n * TRAIN_RATIO)
@@ -431,32 +453,52 @@ def main() -> None:
     )
     model.save(weights_dir / "transformer_8features.h5")
 
-    # ── 预测与反归一化 ───────────────────────────────────────────────────────
-    y_pred_scaled = model.predict(X_test, verbose=0)
-    y_true = scaler.inverse_transform(y_test.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
-    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, PRED_HORIZON)
-    y_pred = np.clip(y_pred, 0, None)
-    print(f"y_pred shape: {y_pred.shape}")
-    for h in range(PRED_HORIZON):
-        mae_h = np.mean(np.abs(y_true[:, h] - y_pred[:, h]))
-        print(f"day+{h+1} MAE: {mae_h:.2f}")
+    # ── 3步滚动推理（训练保持单步）───────────────────────────────────────────
+    all_preds = []
+    for i in range(len(X_test)):
+        window = X_test[i].copy()
+        preds = []
+        for _ in range(ROLLING_STEPS):
+            pred_scaled = float(model.predict(window[np.newaxis, :, :], verbose=0)[0, 0])
+            preds.append(pred_scaled)
+            new_row = window[-1].copy()
+            new_row[0] = pred_scaled  # visitor_count_scaled
+            window = np.vstack([window[1:], new_row])
+        all_preds.append(preds)
 
-    pred_rows = []
-    pred_dates = []
-    for i in range(len(d_test)):
-        base_date = pd.to_datetime(d_test[i])
-        for h in range(PRED_HORIZON):
-            target_date = base_date + pd.Timedelta(days=h)
-            pred_dates.append(target_date)
-            pred_rows.append(
-                {
-                    "date": target_date,
-                    "horizon": h + 1,
-                    "y_true": y_true[i, h],
-                    "y_pred": y_pred[i, h],
-                }
-            )
-    pred_df = pd.DataFrame(pred_rows).sort_values(["date", "horizon"])
+    y_pred_scaled = np.asarray(all_preds, dtype=float)
+    y_pred = scaler.inverse_transform(y_pred_scaled.reshape(-1, 1)).reshape(-1, ROLLING_STEPS)
+    y_pred = np.clip(y_pred, 0, None)
+    y_true = build_3step_truth(df, d_test, "visitor_count")
+
+    valid_mask = ~np.isnan(y_true).any(axis=1)
+    y_true = y_true[valid_mask]
+    y_pred = y_pred[valid_mask]
+    d_test = d_test[valid_mask]
+
+    weather_test_precip_roll = build_3step_weather(df, d_test, "precip_raw")
+    weather_test_temp_high_roll = build_3step_weather(df, d_test, "temp_high_raw")
+    weather_test_temp_low_roll = build_3step_weather(df, d_test, "temp_low_raw")
+
+    mae_h = []
+    for h in range(ROLLING_STEPS):
+        v = float(np.mean(np.abs(y_true[:, h] - y_pred[:, h])))
+        mae_h.append(v)
+        print(f"day+{h+1} MAE: {v:.2f}")
+    overall_mae = float(np.mean(np.abs(y_true.reshape(-1) - y_pred.reshape(-1))))
+    print(f"overall MAE: {overall_mae:.2f}")
+
+    pred_df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(d_test),
+            "y_true_h1": y_true[:, 0],
+            "y_true_h2": y_true[:, 1],
+            "y_true_h3": y_true[:, 2],
+            "y_pred_h1": y_pred[:, 0],
+            "y_pred_h2": y_pred[:, 1],
+            "y_pred_h3": y_pred[:, 2],
+        }
+    ).sort_values("date")
     pred_df.to_csv(run_dir / "transformer_test_predictions.csv", index=False, encoding="utf-8-sig")
 
     # ── 评估（复用统一框架）────────────────────────────────────────────────
@@ -466,14 +508,14 @@ def main() -> None:
         feature_count=n_features,
         y_true=np.asarray(y_true),
         y_pred=np.asarray(y_pred),
-        dates=pred_dates,
-        horizon=PRED_HORIZON,
+        dates=build_flat_horizon_dates(d_test, ROLLING_STEPS),
+        horizon=ROLLING_STEPS,
         peak_threshold=dynamic_peak_threshold,
         warning_temperature=1000.0,
         fn_fp_cost_ratio=(5.0, 1.0),
-        weather_precip=np.asarray(weather_test_precip),
-        weather_temp_high=np.asarray(weather_test_temp_high),
-        weather_temp_low=np.asarray(weather_test_temp_low),
+        weather_precip=np.asarray(weather_test_precip_roll),
+        weather_temp_high=np.asarray(weather_test_temp_high_roll),
+        weather_temp_low=np.asarray(weather_test_temp_low_roll),
         weather_train_precip=np.asarray(weather_train_precip),
         weather_train_temp_high=np.asarray(weather_train_temp_high),
         weather_train_temp_low=np.asarray(weather_train_temp_low),
@@ -495,6 +537,19 @@ def main() -> None:
     try:
         save_metrics_to_files(metrics, str(run_dir), "transformer_baseline")
     except TypeError:
+        pass
+
+    core_metrics_path = run_dir / "metrics.json"
+    try:
+        with open(core_metrics_path, "r", encoding="utf-8") as f:
+            core_metrics = json.load(f)
+        core_metrics.setdefault("regression", {})
+        core_metrics["regression"]["h1"] = {"mae": float(mae_h[0])}
+        core_metrics["regression"]["h2"] = {"mae": float(mae_h[1])}
+        core_metrics["regression"]["h3"] = {"mae": float(mae_h[2])}
+        with open(core_metrics_path, "w", encoding="utf-8") as f:
+            json.dump(core_metrics, f, ensure_ascii=False, indent=2)
+    except Exception:
         pass
 
     print("Transformer 训练完成！")
