@@ -1,230 +1,317 @@
-# Codex 任务书 v10 — 集成预测（Ensemble）
+# Codex 任务书 v11 — 特征工程优化（删冗余 + 加节假日距离特征）
 
 > **当前状态**（2026-04-20）：
-> - ✅ 三模型已训练完毕，权重文件存在，CSV预测文件存在
-> - ✅ 在线推理已修复（GRU/Transformer/XGBoost 均可滚动推理3步）
-> - ✅ 预警逻辑已改为客流主导（超阈值即预警，天气仅辅助）
-> - ❌ 尚无集成预测列（ensemble_pred），前端无第四条曲线
+> - ✅ 三模型已训练，集成预测已接入前端
+> - ✅ GRU/Transformer 11特征，XGBoost 14特征
+> - ❌ `rolling_mean_14_scaled` 与 lag_7/lag_14 高度冗余，待删除
+> - ❌ `tourism_num_lag_28_scaled`（XGBoost）贡献低，待删除
+> - ❌ 缺少节假日距离特征，清明节等阶跃峰值召回率仅33%
 
 ---
 
-## 当前模型状态（重要，必读）
+## 当前模型状态（必读）
 
-### 已训练模型及权重路径
+| 模型 | 权重路径 | 当前特征数 | MAE |
+|------|---------|-----------|-----|
+| GRU | `output/runs/gru_8features_20260418_194417/runs/run_20260418_194417_lb30_ep150_gru_8features/weights/gru_jiuzhaigou.h5` | 11 | 2,871 |
+| Transformer | `output/runs/transformer_8features_20260418_195030/runs/run_20260418_195030_lb45_ep150_transformer_8features/weights/transformer_8features.h5` | 11 | 3,100 |
+| XGBoost | `output/runs/xgboost_8features_20260418_181137/runs/run_20260418_181137_xgboost_8features/weights/xgboost_model.json` | 14 | 2,531 |
 
-| 模型 | 权重文件 | 输入形状 | 特征数 | MAE | NRMSE | Suit-Recall |
-|------|---------|---------|--------|-----|-------|-------------|
-| GRU | `output/runs/gru_8features_20260418_194417/runs/run_20260418_194417_lb30_ep150_gru_8features/weights/gru_jiuzhaigou.h5` | (30, 11) | 11 | 2,871 | 13.0% | 0.960 |
-| Transformer | `output/runs/transformer_8features_20260418_195030/runs/run_20260418_195030_lb45_ep150_transformer_8features/weights/transformer_8features.h5` | (45, 11) | 11 | 3,100 | 13.5% | 0.960 |
-| XGBoost | `output/runs/xgboost_8features_20260418_181137/runs/run_20260418_181137_xgboost_8features/weights/xgboost_model.json` | 14维表格 | 14 | 2,531 | 12.1% | 0.963 |
-
-### 预测CSV路径
-
-| 模型 | 预测CSV |
-|------|---------|
-| GRU | `output/runs/gru_8features_20260418_194417/runs/run_20260418_194417_lb30_ep150_gru_8features/gru_test_predictions.csv` |
-| Transformer | `output/runs/transformer_8features_20260418_195030/runs/run_20260418_195030_lb45_ep150_transformer_8features/transformer_test_predictions.csv` |
-| XGBoost | `output/runs/xgboost_8features_20260418_181137/runs/run_20260418_181137_xgboost_8features/xgboost_test_predictions.csv` |
-
-CSV格式：`date, y_true, y_pred`（列名固定，BOM UTF-8）
-
-### 特征说明
-
-**GRU / Transformer（11特征，顺序固定）**：
-```
-visitor_count_scaled, month_norm, day_of_week_norm, is_holiday, is_peak_season,
-tourism_num_lag_7_scaled, tourism_num_lag_14_scaled, rolling_mean_14_scaled,
-meteo_precip_sum_scaled, temp_high_scaled, temp_low_scaled
-```
-
-**XGBoost（14特征，model.feature_names_in_ 顺序）**：
-```
-month_norm, day_of_week_norm, is_holiday, is_peak_season,
-tourism_num_lag_1_scaled, tourism_num_lag_7_scaled, tourism_num_lag_14_scaled, tourism_num_lag_28_scaled,
-rolling_mean_7_scaled, rolling_mean_14_scaled, rolling_std_7_scaled,
-meteo_precip_sum_scaled, temp_high_scaled, temp_low_scaled
-```
+**重训后特征数**：GRU/Transformer → 12，XGBoost → 13
 
 ---
 
-## 本轮目标：集成预测（无需重训）
+## 特征变更说明
 
-**方案**：加权平均集成
+### 删除
 
-```
-ensemble_pred = XGBoost × 0.5 + GRU × 0.3 + Transformer × 0.2
-```
+| 特征 | 影响模型 | 原因 |
+|------|---------|------|
+| `rolling_mean_14_scaled` | GRU, Transformer, XGBoost | 与 lag_7/lag_14 高度相关（r>0.9），信息冗余 |
+| `tourism_num_lag_28_scaled` | XGBoost | 28天前客流对3天预测贡献低，月度周期已由 month_norm 覆盖 |
 
-权重依据：MAE反比加权（MAE越低权重越高）。
+### 新增
 
----
+| 特征 | 影响模型 | 计算方式 | 作用 |
+|------|---------|---------|------|
+| `days_to_next_holiday` | 全部 | 距下一个法定节假日的天数，上限截断为14，归一化为 `/14` | 让模型提前感知节假日峰值 |
+| `days_since_last_holiday` | 全部 | 距上一个法定节假日结束的天数，上限截断为14，归一化为 `/14` | 捕捉节后客流回落信号 |
 
-## 任务 1：离线CSV集成脚本
-
-新建 `scripts/ensemble_predict.py`，读取三个模型的预测CSV，按日期对齐后计算加权均值，输出集成预测CSV并打印MAE对比：
-
-```python
-import pandas as pd
-import numpy as np
-from sklearn.metrics import mean_absolute_error
-import glob, os
-
-def find_latest_pred_csv(model_prefix):
-    pattern = f'output/runs/{model_prefix}_*/runs/run_*/*_test_predictions.csv'
-    files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
-    return files[0] if files else None
-
-gru_csv  = find_latest_pred_csv('gru_8features')
-tr_csv   = find_latest_pred_csv('transformer_8features')
-xgb_csv  = find_latest_pred_csv('xgboost_8features')
-
-dfs = {}
-for name, path in [('gru', gru_csv), ('transformer', tr_csv), ('xgboost', xgb_csv)]:
-    if path:
-        df = pd.read_csv(path)
-        df['date'] = pd.to_datetime(df['date']).dt.date
-        dfs[name] = df.set_index('date')[['y_true', 'y_pred']].rename(columns={'y_pred': name})
-
-# 对齐日期
-base = dfs['gru'][['y_true']].copy()
-for name, df in dfs.items():
-    base[name] = df[name]
-base = base.dropna(subset=['gru', 'transformer', 'xgboost'])
-
-# 加权集成
-W = {'gru': 0.3, 'transformer': 0.2, 'xgboost': 0.5}
-base['ensemble'] = sum(base[k] * w for k, w in W.items())
-
-# MAE对比
-mask = base['y_true'].notna()
-for col in ['gru', 'transformer', 'xgboost', 'ensemble']:
-    mae = mean_absolute_error(base.loc[mask, 'y_true'], base.loc[mask, col])
-    print(f'{col:12s} MAE: {mae:.2f}')
-
-# 保存
-out = base.reset_index().rename(columns={'index': 'date'})
-out.to_csv('output/ensemble_test_predictions.csv', index=False)
-print('Saved: output/ensemble_test_predictions.csv')
-```
+**节假日定义**：使用 `chinese_calendar` 库（已安装），与训练脚本现有的 `is_holiday` 特征保持一致。
 
 ---
 
-## 任务 2：app.py 加入 ensemble_pred 列
+## 任务 1：GRU（`models/gru/train_gru_8features.py`）
 
-在 `web_app/app.py` 的 `api_forecast` 函数里，找到：
+### 1a. 在 `load_and_engineer_features` 函数里加新特征计算
 
-```python
-df_merge = df_base.sort_values('date').reset_index(drop=True)
-```
-
-在这行**之后**插入：
+找到 `df["is_holiday"] = df["date"].apply(mark_core_holiday).astype(float)` 这行之后，加入：
 
 ```python
-# 集成预测列（加权平均，缺任一模型则按可用模型归一化权重计算）
-_ens_weights = {'gru_pred': 0.3, 'transformer_pred': 0.2, 'xgboost_pred': 0.5}
-_avail = {c: w for c, w in _ens_weights.items() if c in df_merge.columns}
-if _avail:
-    _total_w = sum(_avail.values())
-    df_merge['ensemble_pred'] = sum(
-        pd.to_numeric(df_merge[c], errors='coerce') * (w / _total_w)
-        for c, w in _avail.items()
-    )
-else:
-    df_merge['ensemble_pred'] = np.nan
+# 节假日距离特征
+def days_to_next_hol(date_val: pd.Timestamp) -> float:
+    for delta in range(1, 15):
+        try:
+            if cncal.is_holiday((date_val + pd.Timedelta(days=delta)).date()):
+                return delta / 14.0
+        except Exception:
+            pass
+    return 1.0  # 超过14天，归一化为1
+
+def days_since_last_hol(date_val: pd.Timestamp) -> float:
+    for delta in range(1, 15):
+        try:
+            if cncal.is_holiday((date_val - pd.Timedelta(days=delta)).date()):
+                return delta / 14.0
+        except Exception:
+            pass
+    return 1.0
+
+df["days_to_next_holiday"] = df["date"].apply(days_to_next_hol).astype(float)
+df["days_since_last_holiday"] = df["date"].apply(days_since_last_hol).astype(float)
 ```
 
-在返回的 `series` 字典里加入（找到 `'xgboost_pred': _to_num_list('xgboost_pred'),` 这行后面）：
+### 1b. 更新 `feature_cols`
+
+将：
 ```python
-'ensemble_pred':    _to_num_list('ensemble_pred'),
+feature_cols = [
+    "visitor_count_scaled",
+    "month_norm",
+    "day_of_week_norm",
+    "is_holiday",
+    "is_peak_season",
+    "tourism_num_lag_7_scaled",
+    "tourism_num_lag_14_scaled",
+    "rolling_mean_14_scaled",      # ← 删除
+    "meteo_precip_sum_scaled",
+    "temp_high_scaled",
+    "temp_low_scaled",
+]
 ```
 
-在线推理的 `out_rows` 组装循环里（找到 `out_rows.append(row)` 前面），加：
+改为：
 ```python
-_ens_vals = [row.get(c, float('nan')) for c in ['gru_pred', 'transformer_pred', 'xgboost_pred']]
-_ens_valid = [v for v in _ens_vals if not (isinstance(v, float) and np.isnan(v))]
-row['ensemble_pred'] = float(np.mean(_ens_valid)) if _ens_valid else float('nan')
+feature_cols = [
+    "visitor_count_scaled",
+    "month_norm",
+    "day_of_week_norm",
+    "is_holiday",
+    "is_peak_season",
+    "days_to_next_holiday",        # ← 新增
+    "days_since_last_holiday",     # ← 新增
+    "tourism_num_lag_7_scaled",
+    "tourism_num_lag_14_scaled",
+    "meteo_precip_sum_scaled",
+    "temp_high_scaled",
+    "temp_low_scaled",
+]
 ```
 
-在 `df_future` 的 concat 列表里加 `'ensemble_pred'`：
-```python
-df_future[['date', 'actual', 'precip_mm', 'temp_high_c', 'temp_low_c',
-           'weather_code_en', 'wind_level', 'wind_dir_en', 'wind_max',
-           'aqi_value', 'aqi_level_en',
-           'gru_pred', 'transformer_pred', 'xgboost_pred', 'ensemble_pred']]
-```
+**最终12特征，顺序固定，不可改变。**
 
 ---
 
-## 任务 3：前端加第四条集成曲线
+## 任务 2：Transformer（`models/transformer/train_transformer_8features.py`）
 
-### dashboard_v3.js
+与 GRU 完全相同的改动：
+- 在特征工程函数里加 `days_to_next_holiday` 和 `days_since_last_holiday` 的计算（同上）
+- 更新 `feature_cols`，删除 `rolling_mean_14_scaled`，新增两个节假日距离特征
+- 顺序与 GRU 保持一致（12特征）
 
-**normalizeForecastPayload** 里加（紧接 xgboost 那行后面）：
-```javascript
-out.series.ensemble = safeArr(s.ensemble_pred || [], n, safeNum);
-```
+---
 
-**CURVE_DEFS** 里加第四条：
-```javascript
-{ key: 'ensemble', nameZh: '集成预测', nameEn: 'Ensemble', color: '#bf5af2' },
-```
+## 任务 3：XGBoost（`models/xgboost/train_xgboost_8features.py`）
 
-**initLegendToggles** 的 `resolveSeriesName` 函数里加：
-```javascript
-if (key === 'ensemble') return state.lang === 'zh' ? '集成预测' : 'Ensemble';
-```
+### 3a. 加新特征计算（同上，在 `is_holiday` 计算后加入）
 
-**buildChartOption** 里 hidden legend data 改为：
-```javascript
-legend: { show: false, data: [
-  state.lang === 'zh' ? '实际客流' : 'Actual',
-  'GRU', 'Transformer', 'XGBoost',
-  state.lang === 'zh' ? '集成预测' : 'Ensemble'
-]},
-```
+### 3b. 更新 `FEATURE_COLS` 列表
 
-### dashboard_v3.html
+将现有14特征改为13特征：
+- 删除 `tourism_num_lag_28_scaled`
+- 删除 `rolling_mean_14_scaled`
+- 新增 `days_to_next_holiday_scaled`（注意XGBoost用 `_scaled` 后缀命名，但这两个特征已经是0-1归一化，直接用原值即可，列名用 `days_to_next_holiday` 和 `days_since_last_holiday`）
 
-在 XGBoost 图例按钮后面加：
-```html
-<button class="v3-chart-key__item v3-chart-key__item--toggle v3-chart-key__item--active"
-        type="button" data-series-name="ensemble" title="点击显示/隐藏">
-  <span class="v3-chart-key__swatch" style="background:#bf5af2"></span>
-  <span class="v3-chart-key__label">集成预测（三模型加权均值）</span>
-</button>
+**最终13特征**：
+```python
+FEATURE_COLS = [
+    "month_norm",
+    "day_of_week_norm",
+    "is_holiday",
+    "is_peak_season",
+    "days_to_next_holiday",        # ← 新增
+    "days_since_last_holiday",     # ← 新增
+    "tourism_num_lag_1_scaled",
+    "tourism_num_lag_7_scaled",
+    "tourism_num_lag_14_scaled",
+    # tourism_num_lag_28_scaled    ← 删除
+    "rolling_mean_7_scaled",
+    # rolling_mean_14_scaled       ← 删除
+    "rolling_std_7_scaled",
+    "meteo_precip_sum_scaled",
+    "temp_high_scaled",
+    "temp_low_scaled",
+]
 ```
 
 ---
 
-## 任务 4：验证
+## 任务 4：同步 `web_app/app.py` 在线推理
+
+找到 `_build_window_feat` 函数，同步更新特征构造逻辑。
+
+### 4a. 在函数开头加节假日距离计算辅助函数
+
+在 `_build_window_feat` 函数定义之前（或内部），加：
+
+```python
+def _days_to_next_hol(d):
+    try:
+        import chinese_calendar as _cc
+        for delta in range(1, 15):
+            if _cc.is_holiday((d + timedelta(days=delta))):
+                return delta / 14.0
+    except Exception:
+        pass
+    return 1.0
+
+def _days_since_last_hol(d):
+    try:
+        import chinese_calendar as _cc
+        for delta in range(1, 15):
+            if _cc.is_holiday((d - timedelta(days=delta))):
+                return delta / 14.0
+    except Exception:
+        pass
+    return 1.0
+```
+
+### 4b. 更新 `_build_window_feat` 函数体
+
+将现有的特征构造改为12特征（GRU/Transformer）：
+
+```python
+def _build_window_feat(visitor_window, lag7_window, dates, n_features=12):
+    rows = []
+    for i, d in enumerate(dates):
+        m_norm = (d.month - 1) / 11.0
+        dow_norm = d.weekday() / 6.0
+        hol = float(_is_holiday(d))
+        m = d.month
+        is_peak = float((4 <= m <= 10) or (m == 11 and d.day <= 15))
+        d2n = _days_to_next_hol(d)
+        d2s = _days_since_last_hol(d)
+        row = [
+            visitor_window[i],   # visitor_count_scaled
+            m_norm,              # month_norm
+            dow_norm,            # day_of_week_norm
+            hol,                 # is_holiday
+            is_peak,             # is_peak_season
+            d2n,                 # days_to_next_holiday
+            d2s,                 # days_since_last_holiday
+            lag7_window[i],      # tourism_num_lag_7_scaled
+        ]
+        if n_features >= 12:
+            lag14_s = visitor_window[max(0, i - 7)]  # 近似 lag14
+            row.append(lag14_s)  # tourism_num_lag_14_scaled
+        row.extend([
+            0.0,   # meteo_precip_sum_scaled
+            0.5,   # temp_high_scaled
+            0.5,   # temp_low_scaled
+        ])
+        rows.append(row)
+    return np.array(rows, dtype=np.float32)
+```
+
+**注意**：`n_features` 默认改为12（新的GRU/Transformer特征数）。天气特征索引也要更新：
+- `precip_idx = 9`（原来是5/8）
+- `temp_h_idx = 10`（原来是6/9）
+- `temp_l_idx = 11`（原来是7/10）
+
+在 `_predict_single_step_model` 函数里，更新天气特征索引的计算：
+
+```python
+# 天气特征固定在最后3位
+precip_idx = n_feat - 3
+temp_h_idx = n_feat - 2
+temp_l_idx = n_feat - 1
+```
+
+### 4c. 更新 XGBoost 在线推理特征字典
+
+找到 XGBoost 在线推理的 `_feat` 字典，删除 `tourism_num_lag_28_scaled` 和 `rolling_mean_14_scaled`，加入两个新特征：
+
+```python
+_feat = {
+    'month_norm':                _m_norm,
+    'day_of_week_norm':          _dow_norm,
+    'is_holiday':                _hol,
+    'is_peak_season':            _is_peak,
+    'days_to_next_holiday':      _days_to_next_hol(_pred_date),   # ← 新增
+    'days_since_last_holiday':   _days_since_last_hol(_pred_date), # ← 新增
+    'tourism_num_lag_1_scaled':  _lag(_win, 1),
+    'tourism_num_lag_7_scaled':  _lag(_win, 7),
+    'tourism_num_lag_14_scaled': _lag(_win, 14),
+    # tourism_num_lag_28_scaled  ← 删除
+    'rolling_mean_7_scaled':     float(np.mean(_win[-7:])) if len(_win) >= 7 else float(np.mean(_win)),
+    # rolling_mean_14_scaled     ← 删除
+    'rolling_std_7_scaled':      float(np.std(_win[-7:])) if len(_win) >= 7 else 0.0,
+    'meteo_precip_sum_scaled':   _scale_precip(_precip_raw),
+    'temp_high_scaled':          _scale_temp_high(_th_raw),
+    'temp_low_scaled':           _scale_temp_low(_tl_raw),
+}
+```
+
+---
+
+## 任务 5：重训三个模型
 
 ```bash
-# 离线集成MAE
-python scripts/ensemble_predict.py
-# 期望：Ensemble MAE < XGBoost MAE (2531)
+# GRU（约60-90分钟）
+python run_pipeline.py --model gru --features 8 --epochs 150
 
-# 启动服务验证前端
-cd web_app && python app.py
-# 访问 http://localhost:5000/dashboard/v3
-# 验证：图表出现第四条紫色曲线（集成预测），可通过图例按钮切换
+# Transformer（约60-90分钟）
+python models/transformer/train_transformer_8features.py
+
+# XGBoost（约5分钟）
+python models/xgboost/train_xgboost_8features.py
+```
+
+---
+
+## 任务 6：验证
+
+```bash
+python -c "
+import json, glob
+for name, pat in [('gru','output/runs/gru_8features_*/runs/*/metrics.json'),
+                  ('transformer','output/runs/transformer_8features_*/runs/*/metrics.json'),
+                  ('xgboost','output/runs/xgboost_8features_*/runs/*/metrics.json')]:
+    files = sorted(glob.glob(pat))
+    if files:
+        d = json.load(open(files[-1]))
+        r = d.get('regression', {})
+        sw = d.get('suitability_warning_weighted', d.get('suitability_warning', {}))
+        print(f'{name}: MAE={r.get(\"mae\",\"?\"):.0f} recall={sw.get(\"recall_weighted\",sw.get(\"recall\",\"?\"))}')
+"
 ```
 
 ---
 
 ## 成功标准
 
-- `scripts/ensemble_predict.py` 打印四行MAE对比，Ensemble MAE < 2,531
-- `/api/forecast` 响应的 `series.ensemble_pred` 非全null（离线模式下有100+个值）
-- 前端图表出现紫色集成预测曲线，在线模式下延伸至未来3天
-- 图例按钮可切换集成曲线显示/隐藏
+- 三个模型重训完成，metrics.json 存在
+- GRU/Transformer 特征数为12（日志打印 `特征维度: 12`）
+- XGBoost 特征数为13（`model.feature_names_in_` 长度为13，包含 `days_to_next_holiday`）
+- GRU MAE ≤ 2,871（不退步），清明节召回率提升（目标 > 50%）
+- `web_app/app.py` 在线推理不报特征维度错误
 
 ---
 
 ## 目标指标
 
-| 模型 | 整体 MAE | 备注 |
-|------|---------|------|
-| XGBoost（当前最优） | 2,531 | 基准 |
-| GRU | 2,871 | |
-| Transformer | 3,100 | |
-| **集成（目标）** | **< 2,400** | 加权平均，无需重训 |
+| 模型 | 当前 MAE | 目标 MAE | 清明召回（当前） | 目标 |
+|------|---------|---------|--------------|------|
+| GRU | 2,871 | ≤ 2,800 | 33% | > 50% |
+| Transformer | 3,100 | ≤ 3,000 | 33% | > 50% |
+| XGBoost | 2,531 | ≤ 2,500 | 33% | > 50% |
