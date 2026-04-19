@@ -414,7 +414,7 @@
     setStatus('', t('status_loading'));
 
     // 缓存 key：固定 online 模式，30分钟 TTL
-    const cacheKey = `v3_forecast_v11_h${state.h}`;
+    const cacheKey = `v3_forecast_v12_h${state.h}`;
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -1791,7 +1791,7 @@
     const all = { champion: champ, runner_up: runner, third };
     renderMetricsTable(all);
     renderConfusionMatrices(all);
-    renderCalibChart(champ);
+    renderCalibChart(all);
     state.analysisLoaded = true;
   }
 
@@ -1951,10 +1951,10 @@
   // ─────────────────────────────────────────────
   // Init
   // ─────────────────────────────────────────────
-  const CURRENT_CACHE_VER = 'v11';
+  const CURRENT_CACHE_VER = 'v12';
   function init() {
     console.log('dashboard_v3.js loaded');
-    // 清除所有旧版本 forecast 缓存（v1~v8）
+    // 清除旧版本 forecast 缓存 + 重置分析页状态
     try {
       const oldKeys = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -1966,6 +1966,10 @@
       oldKeys.forEach(k => localStorage.removeItem(k));
       if (oldKeys.length) console.log('[cache] cleared old keys:', oldKeys);
     } catch (_) {}
+    // 每次加载都重置分析/模型页缓存，确保拿到最新 metrics
+    state.metricsCache = {};
+    state.analysisLoaded = false;
+    state.modelsLoaded = false;
     applyI18n();
     bindEvents();
     bindWxArrows();
