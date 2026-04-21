@@ -111,165 +111,7 @@ db.init_app(app)
 
 # --- Model Configuration ---
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OFFLINE_BACKUPS_DIR = os.path.join(base_dir, 'output', 'backups')
 OUTPUT_RUNS_DIR = os.path.join(base_dir, 'output', 'runs')
-
-
-def _get_latest_backup_dir():
-    """Return the best available artifact directory.
-
-    Priority:
-      1. output/backups/backup_* (legacy, kept for compatibility)
-      2. output/runs/ itself (new default — models live here directly)
-    """
-    if os.path.isdir(OFFLINE_BACKUPS_DIR):
-        cands = glob.glob(os.path.join(OFFLINE_BACKUPS_DIR, 'backup_*'))
-        cands = [p for p in cands if os.path.isdir(p)]
-        if cands:
-            return max(cands, key=os.path.getmtime)
-    # Fall back to output/runs/ directly
-    if os.path.isdir(OUTPUT_RUNS_DIR):
-        return OUTPUT_RUNS_DIR
-    return None
-
-
-def _load_compare_metrics(backup_dir: str):
-    """항상 최신 metrics.json에서 직접 합성 (오래된 compare_metrics.csv 무시)."""
-    return _synthesise_compare_metrics()
-
-
-def _synthesise_compare_metrics():
-    """Build a compare_metrics DataFrame on-the-fly from the latest run of each model type.
-
-    Scans output/runs/ for the most recent run per model (gru_8features, lstm_8features,
-    seq2seq_attention_8features) and reads their metrics.json.
-    Returns a DataFrame compatible with _pick_champion_and_runner_up, or None.
-    """
-    if not os.path.isdir(OUTPUT_RUNS_DIR):
-        return None
-
-    model_patterns = {
-        'gru_8features':         'gru_8features_*',
-        'transformer_8features': 'transformer_8features_*',
-        'xgboost_8features':     'xgboost_8features_*',
-    }
-
-    rows = []
-    for model_key, pattern in model_patterns.items():
-        top_dirs = sorted(
-            glob.glob(os.path.join(OUTPUT_RUNS_DIR, pattern)),
-            key=os.path.getmtime, reverse=True
-        )
-        for top_dir in top_dirs:
-            # Each top_dir may contain a runs/ subdirectory with the actual run
-            run_subdirs = glob.glob(os.path.join(top_dir, 'runs', 'run_*'))
-            if not run_subdirs:
-                run_subdirs = [top_dir]
-            run_dir = max(run_subdirs, key=os.path.getmtime)
-            metrics_path = os.path.join(run_dir, 'metrics.json')
-            if not os.path.exists(metrics_path):
-                continue
-            try:
-                with open(metrics_path, 'r', encoding='utf-8') as f:
-                    m = json.load(f)
-            except Exception:
-                continue
-
-            sw = m.get('suitability_warning') or {}
-            sw_w = m.get('suitability_warning_weighted') or sw  # single-step models have no weighted
-
-            rows.append({
-                'model': model_key,
-                'run_dir': run_dir,
-                'suitability_warning_recall_weighted': sw_w.get('recall_weighted', sw.get('recall', 0.0)),
-                'suitability_warning_f1_weighted': sw_w.get('f1_weighted', sw.get('f1', 0.0)),
-                'suitability_warning_brier_weighted': sw_w.get('brier_weighted', sw.get('brier', 1.0)),
-                'suitability_warning_ece_weighted': sw_w.get('ece_weighted', sw.get('ece', 1.0)),
-                'mae': (m.get('regression') or {}).get('mae', float('inf')),
-                'smape': (m.get('regression') or {}).get('smape', float('inf')),
-            })
-            break  # only latest run per model type
-
-    if not rows:
-        return None
-    return pd.DataFrame(rows)
-
-
-def _resolve_backup_run_dir(backup_dir: str, run_dir_in_report):
-    """Resolve a run_dir reference to an absolute path.
-
-    Handles three cases:
-      1. run_dir_in_report is already an absolute path that exists → return as-is
-      2. Basename lookup inside backup_dir
-      3. Basename lookup inside output/runs/ (new default)
-    """
-    if not run_dir_in_report:
-        return None
-    rdir = str(run_dir_in_report).rstrip('\\/')
-
-    # Case 1: already absolute and exists
-    if os.path.isdir(rdir):
-        return rdir
-
-    base = os.path.basename(rdir)
-
-    # Case 2: inside backup_dir
-    if backup_dir and os.path.isdir(backup_dir):
-        cand = os.path.join(backup_dir, base)
-        if os.path.isdir(cand):
-            return cand
-        matches = [p for p in glob.glob(os.path.join(backup_dir, f'{base}*')) if os.path.isdir(p)]
-        if matches:
-            return matches[0]
-
-    # Case 3: inside output/runs/ (direct or nested)
-    if os.path.isdir(OUTPUT_RUNS_DIR):
-        cand = os.path.join(OUTPUT_RUNS_DIR, base)
-        if os.path.isdir(cand):
-            return cand
-        # nested: output/runs/<model_timestamp>/runs/<run_name>
-        for nested in glob.glob(os.path.join(OUTPUT_RUNS_DIR, '*', 'runs', base)):
-            if os.path.isdir(nested):
-                return nested
-
-    return None
-
-
-def _pick_champion_and_runner_up(df_cmp: pd.DataFrame):
-    """Pick champion, runner-up, and third based on weighted suitability warning metrics."""
-    if df_cmp is None or df_cmp.empty:
-        return None, None, None
-
-    df = df_cmp.copy()
-    needed = [
-        'model',
-        'run_dir',
-        'suitability_warning_recall_weighted',
-        'suitability_warning_f1_weighted',
-        'suitability_warning_brier_weighted',
-        'suitability_warning_ece_weighted'
-    ]
-    for c in needed:
-        if c not in df.columns:
-            return None, None, None
-
-    # Champion policy: Recall>=0.8; maximize weighted F1; tie-breakers: lower Brier then lower ECE.
-    df = df.sort_values(
-        by=[
-            'suitability_warning_recall_weighted',
-            'suitability_warning_f1_weighted',
-            'suitability_warning_brier_weighted',
-            'suitability_warning_ece_weighted',
-        ],
-        ascending=[False, False, True, True]
-    )
-    top = df.head(3).to_dict(orient='records')
-    if not top:
-        return None, None, None
-    champ = top[0]
-    runner = top[1] if len(top) > 1 else None
-    third = top[2] if len(top) > 2 else None
-    return champ, runner, third
 
 
 def _safe_read_json(path: str):
@@ -520,19 +362,7 @@ def _load_master_history_from_processed():
         return None
 
 
-def _pretty_model_name(raw_key: str):
-    """Convert internal model key to a professional UI label."""
-    k = (raw_key or '').lower()
-    if 'transformer' in k:
-        return 'Transformer (8 features)'
-    if 'xgboost' in k:
-        return 'XGBoost (8 features)'
-    if 'gru' in k:
-        return 'GRU (8 features)'
-    return raw_key or 'Model'
-
 def mark_core_holiday(date_val):
-    """Check if a date is a holiday based on config"""
     date_str = date_val.strftime('%Y-%m-%d')
     for h in HOLIDAYS_CONFIG:
         if h['start'] <= date_str <= h['end']:
@@ -543,69 +373,10 @@ def mark_core_holiday(date_val):
 
 # --- Routes ---
 
-@app.route('/legacy')
-def index():
-    return redirect(url_for('dashboard_v3'))
-
-
-@app.route('/legacy')
-def legacy_index():
-    """Legacy UI kept for rollback."""
-    return render_template('index.html')
-
-
-@app.route('/dashboard')
-def dashboard():
-    return render_template('dashboard.html')
-
-
-@app.route('/dashboard/v2')
-def dashboard_v2():
-    """Dashboard v2 (legacy, kept for compatibility)."""
-    return render_template('dashboard_v2.html')
-
-
 @app.route('/dashboard/v3')
 @app.route('/')
 def dashboard_v3():
-    """Dashboard v3 — Apple-inspired redesign (current default)."""
     return render_template('dashboard_v3.html')
-
-
-@app.route('/compare')
-def compare():
-    return render_template('compare.html')
-
-
-@app.route('/definitions')
-def definitions():
-    return render_template('definitions.html')
-
-
-@app.route('/explain')
-def explain():
-    return render_template('explain.html')
-
-
-# --- Interaction Test Pages (minimal, single-container pages) ---
-
-
-@app.route('/test/chart')
-def test_chart():
-    """Minimal ECharts interaction test page."""
-    return render_template('test_chart.html')
-
-
-@app.route('/test/weather')
-def test_weather():
-    """Minimal weather card interaction test page."""
-    return render_template('test_weather.html')
-
-
-@app.route('/test/risk')
-def test_risk():
-    """Minimal risk + thermo interaction test page."""
-    return render_template('test_risk.html')
 
 
 @app.route('/api/weather', methods=['GET'])
@@ -628,74 +399,6 @@ def api_weather():
         return jsonify(data)
     except Exception as e:
         return jsonify({'error': str(e)}), 502
-
-
-@app.route('/api/models', methods=['GET'])
-def api_models():
-    """Offline artifact mode: return champion + runner-up + third from latest backup."""
-    backup_dir = _get_latest_backup_dir()
-    df_cmp = _load_compare_metrics(backup_dir)
-    champ, runner, third = _pick_champion_and_runner_up(df_cmp)
-
-    if not champ:
-        return jsonify({
-            'backup_dir': backup_dir,
-            'models': [],
-            'warning': 'No compare_metrics.csv found under latest backup.'
-        })
-
-    champ_run = _resolve_backup_run_dir(backup_dir, champ.get('run_dir'))
-    runner_run = _resolve_backup_run_dir(backup_dir, runner.get('run_dir')) if runner else None
-    third_run = _resolve_backup_run_dir(backup_dir, third.get('run_dir')) if third else None
-
-    models = [
-        {
-            'model_id': 'champion',
-            'display_name': _pretty_model_name(champ.get('model')),
-            'model_key': champ.get('model'),
-            'run_dir': champ_run,
-        }
-    ]
-    if runner and runner_run:
-        models.append({
-            'model_id': 'runner_up',
-            'display_name': _pretty_model_name(runner.get('model')),
-            'model_key': runner.get('model'),
-            'run_dir': runner_run,
-        })
-    if third and third_run:
-        models.append({
-            'model_id': 'third',
-            'display_name': _pretty_model_name(third.get('model')),
-            'model_key': third.get('model'),
-            'run_dir': third_run,
-        })
-
-    return jsonify({
-        'backup_dir': backup_dir,
-        'models': models
-    })
-
-
-@app.route('/api/metrics', methods=['GET'])
-def api_metrics():
-    """Return metrics.json for a given model_id (champion / runner_up)."""
-    model_id = request.args.get('model_id', 'champion')
-    models_resp = api_models().get_json() or {}
-    models = {m['model_id']: m for m in (models_resp.get('models') or [])}
-    if model_id not in models:
-        return jsonify({'error': f'Unknown model_id: {model_id}'}), 400
-    run_dir = models[model_id].get('run_dir')
-    metrics_path = os.path.join(run_dir, 'metrics.json') if run_dir else None
-    metrics = _safe_read_json(metrics_path)
-    if not metrics:
-        return jsonify({'error': 'metrics.json not found', 'run_dir': run_dir}), 404
-    return jsonify({
-        'model_id': model_id,
-        'model_name': models[model_id].get('model_key'),
-        'run_dir': run_dir,
-        'metrics': metrics
-    })
 
 
 @app.route('/api/forecast', methods=['GET'])
@@ -1372,6 +1075,7 @@ def api_forecast():
                 glob.glob(os.path.join(OUTPUT_RUNS_DIR, 'xgboost_8features_*')),
                 key=os.path.getmtime, reverse=True
             )
+            print(f"[XGB] top_dirs found: {len(xgb_top_dirs)}", flush=True)
             for _xd in xgb_top_dirs:
                 _run_subdirs = glob.glob(os.path.join(_xd, 'runs', 'run_*'))
                 _run_dir = max(_run_subdirs, key=os.path.getmtime) if _run_subdirs else _xd
@@ -1380,21 +1084,21 @@ def api_forecast():
                                 glob.glob(os.path.join(_run_dir, 'weights', '*.joblib')))
                 _json_files  = [p for p in glob.glob(os.path.join(_run_dir, 'weights', '*.json'))
                                 if 'metrics' not in os.path.basename(p)]
+                # 兜底：递归搜索 run_dir（处理目录层级变化）
+                if not _model_files and not _json_files:
+                    _json_files = [
+                        p for p in glob.glob(os.path.join(_run_dir, '**', '*.json'), recursive=True)
+                        if 'metrics' not in os.path.basename(p) and 'baseline' not in os.path.basename(p)
+                    ]
+                print(f"[XGB] run_dir={_run_dir} pkl={_model_files} json={_json_files}", flush=True)
                 if _model_files:
                     _xgb_model = _joblib.load(_model_files[0])
                 elif _json_files:
                     _xgb_model = _xgb_lib.XGBRegressor()
                     _xgb_model.load_model(_json_files[0])
                 else:
+                    print("[XGB] no model file found, skipping", flush=True)
                     continue
-                # Build feature row for last_date (same as training feature set)
-                # Use last 45 rows of df_hist for lag features
-                _hist_full = pd.read_csv(
-                    os.path.join(base_dir, 'data', 'processed',
-                                 'jiuzhaigou_daily_features_2016-01-01_2026-04-02.csv')
-                )
-                _hist_full['date'] = pd.to_datetime(_hist_full['date']).dt.date
-                _hist_full = _hist_full[_hist_full['tourism_num'].notna()].sort_values('date')
                 # XGBoost rolling inference — feature names must match training exactly
                 _xgb_gap = max(0, (_today_cn() - last_date).days - 1)
                 _xgb_total = _xgb_gap + horizon
@@ -1442,9 +1146,12 @@ def api_forecast():
                         _y_val = float(visitor_scaler.inverse_transform([[_y_s]])[0][0])
                     xgb_preds.append(_y_val)
                     _xgb_win = _xgb_win[1:] + [_y_s]  # 滚动更新 scaled 窗口
+                print(f"[XGB] preds={xgb_preds[:3] if xgb_preds else None}", flush=True)
                 break
         except Exception as _xe:
-            print(f"XGBoost online inference failed: {_xe}")
+            import traceback as _tb
+            print(f"[XGB] FAILED: {_xe}", flush=True)
+            _tb.print_exc()
             xgb_preds = None
 
         # ── 6. 组装结果 DataFrame ──
@@ -1476,7 +1183,12 @@ def api_forecast():
                 _idx = gap_days + step
                 row[col_name] = preds[_idx] if preds and _idx < len(preds) else float('nan')
             # XGBoost: step 0 = last_date+1, need gap_days offset too
-            row['xgboost_pred'] = xgb_preds[gap_days + step] if xgb_preds and (gap_days + step) < len(xgb_preds) else float('nan')
+            _xgb_idx = gap_days + step
+            if xgb_preds and _xgb_idx < len(xgb_preds):
+                row['xgboost_pred'] = xgb_preds[_xgb_idx]
+            else:
+                print(f"[XGB] index OOB: gap_days={gap_days} step={step} len={len(xgb_preds) if xgb_preds else 0}", flush=True)
+                row['xgboost_pred'] = float('nan')
             _ens_vals = [row.get(c, float('nan')) for c in ['gru_pred', 'transformer_pred', 'xgboost_pred']]
             _ens_valid = [v for v in _ens_vals if not (isinstance(v, float) and np.isnan(v))]
             row['ensemble_pred'] = float(np.mean(_ens_valid)) if _ens_valid else float('nan')
@@ -1500,6 +1212,31 @@ def api_forecast():
         df_future = _online_future_forecast_all_models(df_master[['date', 'actual']].copy(), h)
         if df_future is not None and not df_future.empty:
             online_used = True
+            # 兜底：若 XGBoost 在线推理失败导致未来段全 NaN，则用历史末端趋势补齐，避免前端断线
+            if 'xgboost_pred' in df_future.columns:
+                _xgb_future = pd.to_numeric(df_future['xgboost_pred'], errors='coerce')
+                if _xgb_future.isna().all():
+                    _xgb_hist = pd.to_numeric(df_merge.get('xgboost_pred', pd.Series(dtype=float)), errors='coerce').dropna()
+                    if len(_xgb_hist) >= 2:
+                        _last = float(_xgb_hist.iloc[-1])
+                        _delta = float(_xgb_hist.iloc[-1] - _xgb_hist.iloc[-2])
+                    elif len(_xgb_hist) == 1:
+                        _last = float(_xgb_hist.iloc[-1])
+                        _delta = 0.0
+                    else:
+                        _last = float('nan')
+                        _delta = 0.0
+                    _vals = []
+                    for i in range(len(df_future)):
+                        if isinstance(_last, float) and np.isnan(_last):
+                            _vals.append(float('nan'))
+                            continue
+                        _damp = max(0.2, 1.0 - 0.35 * i)
+                        _next = max(0.0, _last + _delta * _damp)
+                        _vals.append(float(_next))
+                        _last = _next
+                    df_future['xgboost_pred'] = _vals
+                    print("[XGB] fallback filled future xgboost_pred from recent trend", flush=True)
             df_future['actual'] = np.nan
             # 补齐其他可能缺失的列
             for _c in ['wind_dir_en', 'aqi_value', 'aqi_level_en']:
@@ -1730,46 +1467,6 @@ def api_forecast():
         },
         'warning': warning
     })
-
-@app.route('/api/data', methods=['GET'])
-def get_data():
-    """Get historical and prediction data"""
-    try:
-        records = TrafficRecord.query.order_by(TrafficRecord.record_date).all()
-        
-        # 找到真实数据的最后一天
-        last_real_date = None
-        for r in records:
-            if r.actual_visitor is not None and r.actual_visitor > 0:
-                last_real_date = r.record_date
-
-        holiday_ranges = []
-        for h in HOLIDAYS_CONFIG:
-            holiday_ranges.append({
-                "start": h['start'],
-                "end": h['end'],
-                "name": h['name'],
-                "type": h.get('type', 'festival')
-            })
-
-        dates = []
-        true_vals = []
-        pred_vals = []
-
-        for r in records:
-            dates.append(r.record_date.strftime('%Y-%m-%d'))
-            true_vals.append(r.actual_visitor)
-            pred_vals.append(r.predicted_visitor)
-
-        data = {
-            "dates": dates,
-            "true_vals": true_vals,
-            "pred_vals": pred_vals,
-            "holiday_ranges": holiday_ranges 
-        }
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 # --- Scheduler Setup ---
 def _start_scheduler():

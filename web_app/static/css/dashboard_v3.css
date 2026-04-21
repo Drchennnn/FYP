@@ -698,6 +698,58 @@ body{
 .v3-status-dot--warn{background:var(--accent-3)}
 .v3-status-dot--err{background:var(--danger)}
 
+/* ── Dataset Split Card ── */
+.v3-dataset{padding:32px 0 8px;border-top:1px solid var(--border)}
+.v3-dataset__header{margin:0 0 20px}
+.v3-dataset__title{font-size:1.1rem;font-weight:600;color:var(--text);margin:0 0 6px}
+.v3-dataset__sub{font-size:0.85rem;color:var(--text-2);line-height:1.6;margin:0}
+.v3-dataset__body{display:flex;flex-direction:column;gap:20px;align-items:flex-start}
+/* Pie chart image — wide standalone layout */
+.v3-dataset__pie-fig{margin:0;width:100%;max-width:820px;border-radius:14px;overflow:hidden}
+.v3-dataset__pie-fig img{width:100%;height:auto;display:block}
+/* Historical events timeline */
+.v3-dataset__events-fig{margin:0;width:100%;border-radius:14px;overflow:hidden;border:1px solid var(--border);background:var(--bg-card)}
+.v3-dataset__events-fig img{width:100%;height:auto;display:block}
+.v3-dataset__events-caption{font-size:0.80rem;color:var(--text-2);padding:10px 16px 12px;line-height:1.6;border-top:1px solid var(--border)}
+.v3-dataset__pie-fig img{width:100%;height:auto;display:block}
+/* split detail */
+.v3-dataset__detail{flex:1 1 320px;display:flex;flex-direction:column;gap:14px}
+.v3-dataset__splits{display:flex;flex-direction:column;gap:8px}
+.v3-dataset__split-row{display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center}
+.v3-dataset__split-label{font-size:0.82rem;font-weight:600;color:var(--text)}
+.v3-dataset__split-bar{height:8px;border-radius:4px}
+.v3-dataset__split-meta{font-size:0.78rem;color:var(--text-2);line-height:1.55;margin-top:2px}
+.v3-dataset__note{background:var(--bg-card-2);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.v3-dataset__note-title{font-size:0.82rem;font-weight:600;color:var(--text);margin:0 0 6px}
+.v3-dataset__note-body{font-size:0.80rem;color:var(--text-2);line-height:1.65;margin:0}
+
+/* ── Model Analysis Section ── */
+.v3-analysis{padding:36px 0 24px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:32px}
+.v3-analysis__header{margin:0}
+.v3-analysis__title{font-size:1.2rem;font-weight:600;color:var(--text);margin:0 0 8px}
+.v3-analysis__sub{font-size:0.85rem;color:var(--text-2);margin:0;line-height:1.6}
+/* row label */
+.v3-analysis__row-label{display:flex;align-items:baseline;gap:14px;margin-bottom:-8px}
+.v3-analysis__row-tag{font-size:0.92rem;font-weight:600;color:var(--text);white-space:nowrap}
+.v3-analysis__row-hint{font-size:0.82rem;color:var(--text-2);line-height:1.6}
+/* 2-col pair */
+.v3-analysis__pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+/* figure card */
+.v3-analysis__fig{margin:0;background:var(--bg-card);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+.v3-analysis__fig img{width:100%;height:auto;display:block}
+.v3-analysis__caption{font-size:0.83rem;color:var(--text-2);padding:12px 16px 14px;line-height:1.65;border-top:1px solid var(--border)}
+/* wide (feature importance) */
+.v3-analysis__fig--wide{max-width:680px}
+/* loss tab switcher */
+.v3-analysis__loss-wrap{display:flex;flex-direction:column;gap:12px}
+.v3-analysis__loss-tabs{display:flex;gap:8px}
+.v3-loss-tab{padding:6px 20px;border-radius:20px;border:1px solid var(--accent);background:transparent;color:var(--accent);font-size:0.84rem;cursor:pointer;transition:background .15s,color .15s;font-family:inherit}
+.v3-loss-tab--active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.v3-loss-tab:hover:not(.v3-loss-tab--active){background:rgba(0,113,227,0.1)}
+[data-theme="dark"] .v3-loss-tab:hover:not(.v3-loss-tab--active){background:rgba(10,132,255,0.15)}
+.v3-analysis__fig--loss{max-width:680px}
+.v3-analysis__fig--hidden{display:none}
+
 /* ── Responsive ── */
 @media(max-width:900px){
   .v3-grid{grid-template-columns:1fr}
@@ -706,6 +758,12 @@ body{
   .v3-conf-body{grid-template-columns:1fr}
   .v3-forecast-strip{grid-template-columns:repeat(4,1fr)}
   .v3-models-grid{grid-template-columns:1fr 1fr}
+  .v3-analysis__metrics{grid-template-columns:repeat(2,1fr)}
+  .v3-analysis__bottom{grid-template-columns:1fr}
+  .v3-analysis__losses{grid-template-columns:1fr}
+  .v3-dataset__body{flex-direction:column}
+  .v3-dataset__pie-fig{width:100%;max-width:360px}
+  .v3-analysis__pair{grid-template-columns:1fr}
 }
 @media(max-width:720px){
   .v3-nav__tabs{display:none}

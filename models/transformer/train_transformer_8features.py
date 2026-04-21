@@ -435,6 +435,10 @@ def main() -> None:
         verbose=1,
     )
     model.save(weights_dir / "transformer_8features.h5")
+    # ── 保存训练 history（供 Loss 曲线可视化）────────────────────────────
+    history_df = pd.DataFrame(history.history)
+    history_df.insert(0, "epoch", range(1, len(history_df) + 1))
+    history_df.to_csv(run_dir / "transformer_history.csv", index=False, encoding="utf-8-sig")
 
     # ── 预测与反归一化 ───────────────────────────────────────────────────────
     y_pred_scaled = model.predict(X_test, verbose=0).ravel()

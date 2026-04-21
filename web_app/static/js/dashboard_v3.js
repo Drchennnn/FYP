@@ -9,88 +9,96 @@
   // ─────────────────────────────────────────────
   const I18N = {
     zh: {
-      tab_forecast: '预测', tab_analysis: '分析', tab_models: '模型',
-      online: '在线', kpi_latest: '最新预测', kpi_peak: '预测峰值',
-      kpi_risk: '综合风险', kpi_model: '冠军模型', kpi_clock: '当前时间', kpi_unit: '人',
-      chart_title: '客流预测', model_all: '全部', model_champ: '冠军',
-      model_runner: '亚军', model_third: '第三', risk_title: '适宜性预警',
-      risk_normal: '正常', risk_watch: '关注', risk_warning: '预警',
-      risk_high: '高风险', reco_title: '推荐出行窗口', reco_loading: '加载中…',
+      tab_forecast: '预测',
+      chart_title: '客流预测', risk_title: '适宜性预警',
+      risk_normal: '正常', risk_watch: '关注', risk_warning: '预警', risk_high: '高风险',
+      reco_title: '推荐出行窗口', reco_loading: '加载中…',
       w_precip: '降水', w_temphl: '温度区间', w_wind: '风力', w_aqi: 'AQI',
-      analysis_title: '模型分析',
-      analysis_sub: 'Walk-forward 评估 · 特征消融 · 校准诊断',
-      wf_title: 'Walk-forward 评估（4折）',
-      wf_sub: 'Expanding Window · 每折测试90天',
-      calib_title: '校准可靠性图',
-      calib_note: '注：当前预警概率为确定性分类器近似（temperature=1000），非真正概率输出。',
-      cmp_title: '三模型指标对比', models_title: '模型详情',
-      models_sub: '架构 · 特征 · 训练参数 · Attention 热力图',
-      status_loading: '加载中',
-      status_source: '数据来源：九寨沟官网 · Open-Meteo',
+      status_loading: '加载中', status_source: '数据来源：九寨沟官网 · Open-Meteo',
       online_mode: '在线预测',
       risk_lv_0: '正常', risk_lv_1: '关注', risk_lv_2: '预警', risk_lv_3: '高风险',
       driver_crowd_over_threshold: '客流超阈值', driver_precip_high: '强降水',
       driver_temp_high: '高温', driver_temp_low: '低温',
-      no_data: '暂无数据', fold: '折', mae: 'MAE', f1: 'F1', rmse: 'RMSE',
-      smape: 'sMAPE', recall: '召回率', precision: '精确率', brier: 'Brier',
-      ece: 'ECE', epochs: '训练轮数', look_back: '回看窗口',
-      architecture: '架构', model_name: '模型名称',
-      metrics_regression: '回归指标', metrics_crowd: '客流预警',
-      metrics_suit: '适宜性预警', metrics_meta: '训练参数',
-      perfect_calib: '完美校准', actual_calib: '实际校准',
-      confidence: '置信度', accuracy: '准确率',
+      no_data: '暂无数据',
       warn_fallback: '在线预测失败。',
-      show_precip: '降水', show_temp: '温度',
-      weather_sub_title: '降水 / 温度',
-      curve_actual: '实际', curve_champ: '冠军',
-      filter_all: '全部', filter_gru: 'GRU', filter_seq2seq: 'Seq2Seq', filter_lstm: 'LSTM', filter_actual: '真实',
-      wf_explain: 'Walk-forward 评估使用扩展窗口策略，每折独立训练，覆盖不同季节。MAE 越低表示回归精度越高；F1 越高表示预警准确率越高。',
-      calib_explain: '可靠性图展示模型预警概率的校准质量。理想情况下，置信度为 X 时实际准确率也应为 X（对角线）。当前模型使用确定性近似，概率集中在 0 和 1 附近属正常现象。',
+      show_precip: '降水', show_temp: '温度', weather_sub_title: '降水 / 温度',
       reco_reason_low: '预测客流较少，适合出游',
       reco_reason_normal: '客流正常，天气适宜',
-      reco_reason_watch: '客流偏多，建议错峰'
+      reco_reason_watch: '客流偏多，建议错峰',
+      ds_title: '数据集划分',
+      ds_sub: '原始数据过滤至 date ≥ 2023-06-01，共 1,050 行；各模型序列样本数因 look_back 偏移略有差异',
+      ds_train_label: '训练集  ~80%',
+      ds_train_meta: 'Transformer: 2023-07-16 ~ 2025-09-28（805 条）· GRU: 2023-07-01 ~ 2025-09-12（804 条）· XGBoost: 2023-06-01 ~ 2025-09-18（840 条）',
+      ds_val_label: '验证集  ~10%',
+      ds_val_meta: 'Transformer: 2025-09-29 ~ 2026-01-06（100 条）· GRU: 2025-09-13 ~ 2026-01-04（114 条）· XGBoost: 2025-09-19 ~ 2026-01-01（105 条）',
+      ds_test_label: '测试集  ~10%',
+      ds_test_meta: 'Transformer: 2026-01-07 ~ 2026-04-16（100 条）· GRU: 2026-01-05 ~ 2026-04-16（102 条）· XGBoost: 2026-01-02 ~ 2026-04-16（105 条）',
+      ds_events_cap: '完整客流时序（2016–2026）：地震封闭（红色）与新冠管控（橙色）期间数据结构性断裂，绿色虚线为建模起点',
+      ds_note_title: '为何只用 2023 年以来的数据？',
+      ds_note_body: '九寨沟于 2017 年 8 月发生地震，景区关闭至 2019 年底；2020–2022 年受新冠疫情反复影响，景区多次限流或封闭。这两段时期的客流模式与政策稳定后的正常运营期存在本质差异，纳入训练会引入分布噪声。2023 年起客流恢复常态、旺淡季规律稳定，因此以 2023-06-01 为建模起点，保证训练数据的同质性与代表性。',
+      analysis_title: '模型性能分析',
+      analysis_sub: '基于测试集（2026-01-07 ~ 2026-04-16，100 天）· Crowd Alert 以旺淡季动态阈值计算（旺季 32,800 / 淡季 18,400）',
+      analysis_row_regression: '回归误差',
+      analysis_row_regression_hint: 'MAE 为平均绝对误差（人次/日），NRMSE 为归一化均方根误差，数值越低越好',
+      analysis_cap_mae: '集成预测（GRU 10% + Transformer 20% + XGBoost 70%）MAE 最低，达 2,222 人次/日，较表现最差的 GRU（2,853）提升约 22%，较 XGBoost 单模型（2,389）再降 6.9%，验证了加权集成对系统性偏差的修正效果。',
+      analysis_cap_nrmse: 'NRMSE 对极端值更敏感，XGBoost 以 0.1176 领先单模型，集成进一步降至 0.1147。GRU 的 NRMSE（0.1557）偏高，说明其在春节/黄金周等客流峰值时段存在较大低估。',
+      analysis_row_crowd: '预警性能 Crowd Alert',
+      analysis_row_crowd_hint: 'F1 综合精确率与召回率；Recall 反映超载日被正确预警的比例，对景区管理尤为重要；阈值：旺季 32,800 / 淡季 18,400',
+      analysis_cap_f1: 'XGBoost（F1=0.842）与 Transformer（F1=0.800）在精确率与召回率之间取得良好平衡；集成（F1=0.842）与 XGBoost 持平。GRU F1 仅 0.533，预警极为保守，大量超载日被漏报。',
+      analysis_cap_recall: 'Recall 直接关系景区安全管理：漏报超载日的代价远大于误报。GRU Recall 仅 36.4%，意味着超过六成超载日未被及时预警；集成以 70% 权重偏向 XGBoost（Recall 0.909），将集成 Recall 拉至 0.818，实现高覆盖率。',
+      analysis_row_loss: '训练收敛',
+      analysis_row_loss_hint: 'Loss = MinMax 缩放后的 MSE，越低说明拟合越精准；Train/Val 曲线同步下降且差距收窄表明无过拟合；Early Stopping 在 Val Loss 连续 20 轮不改善时终止训练',
+      analysis_cap_gru_loss: 'GRU 在第 36 轮达到最优 val_loss=0.0082，共训练 56 轮后早停。Train/Val 曲线高度重合，模型泛化良好，无过拟合迹象。GRU 结构简单（单层 64 单元），收敛速度最快。',
+      analysis_cap_tf_loss: 'Transformer 在第 49 轮达到最优 val_loss=0.0094，共训练 69 轮后早停（look_back=45）。Val Loss 在第 30 轮后趋于稳定，但多头注意力机制使其对长期季节依赖的捕捉优于 GRU，体现在更高的预警 F1 上。',
+      analysis_row_feat: '特征重要性 XGBoost',
+      analysis_row_feat_hint: '基于 Gain 指标（每次特征被用于分裂时的平均信息增益）；反映模型对各输入变量的依赖程度',
+      analysis_cap_feat: 'is_peak_season（旺淡季标志）以 58.1% 的 Gain 占绝对主导，印证了九寨沟客流的强季节周期性。visitor_count_lag_1（昨日客流）贡献 22.7%，说明短期惯性显著。rolling_7d_mean（7日均值）提供趋势平滑（9.0%）。三者合计 89.8%，气象与节假日特征提供剩余 10.2% 的辅助修正。'
     },
     en: {
-      tab_forecast: 'Forecast', tab_analysis: 'Analysis', tab_models: 'Models',
-      online: 'Online', kpi_latest: 'Latest Forecast', kpi_peak: 'Forecast Peak',
-      kpi_risk: 'Risk Level', kpi_model: 'Champion', kpi_clock: 'Current Time', kpi_unit: 'visitors',
-      chart_title: 'Visitor Forecast', model_all: 'All', model_champ: 'Champion',
-      model_runner: 'Runner', model_third: 'Third', risk_title: 'Suitability Warning',
-      risk_normal: 'Normal', risk_watch: 'Watch', risk_warning: 'Warning',
-      risk_high: 'High Risk', reco_title: 'Best Visit Window', reco_loading: 'Loading…',
+      tab_forecast: 'Forecast',
+      chart_title: 'Visitor Forecast', risk_title: 'Suitability Warning',
+      risk_normal: 'Normal', risk_watch: 'Watch', risk_warning: 'Warning', risk_high: 'High Risk',
+      reco_title: 'Best Visit Window', reco_loading: 'Loading…',
       w_precip: 'Precip', w_temphl: 'Temp Range', w_wind: 'Wind', w_aqi: 'AQI',
-      analysis_title: 'Model Analysis',
-      analysis_sub: 'Walk-forward · Ablation · Calibration',
-      wf_title: 'Walk-forward Evaluation (4 folds)',
-      wf_sub: 'Expanding Window · 90-day test per fold',
-      calib_title: 'Reliability Diagram',
-      calib_note: 'Note: Warning probability is a deterministic classifier approximation (temperature=1000), not a true probabilistic output.',
-      cmp_title: 'Three-Model Comparison', models_title: 'Model Details',
-      models_sub: 'Architecture · Features · Training · Attention Heatmap',
-      status_loading: 'Loading',
-      status_source: 'Source: Jiuzhaigou Official · Open-Meteo',
+      status_loading: 'Loading', status_source: 'Source: Jiuzhaigou Official · Open-Meteo',
       online_mode: 'Online forecast',
       risk_lv_0: 'Normal', risk_lv_1: 'Watch', risk_lv_2: 'Warning', risk_lv_3: 'High Risk',
-      driver_crowd_over_threshold: 'Crowd over threshold',
-      driver_precip_high: 'Heavy precipitation',
+      driver_crowd_over_threshold: 'Crowd over threshold', driver_precip_high: 'Heavy precipitation',
       driver_temp_high: 'High temperature', driver_temp_low: 'Low temperature',
-      no_data: 'No data', fold: 'Fold', mae: 'MAE', f1: 'F1', rmse: 'RMSE',
-      smape: 'sMAPE', recall: 'Recall', precision: 'Precision', brier: 'Brier',
-      ece: 'ECE', epochs: 'Epochs', look_back: 'Look-back',
-      architecture: 'Architecture', model_name: 'Model Name',
-      metrics_regression: 'Regression', metrics_crowd: 'Crowd Alert',
-      metrics_suit: 'Suitability', metrics_meta: 'Training Params',
-      perfect_calib: 'Perfect Calibration', actual_calib: 'Actual',
-      confidence: 'Confidence', accuracy: 'Accuracy',
-      show_precip: 'Precip', show_temp: 'Temp',
-      weather_sub_title: 'Precip / Temp',
-      curve_actual: 'Actual', curve_champ: 'Champion',
-      filter_all: 'All', filter_gru: 'GRU', filter_seq2seq: 'Seq2Seq', filter_lstm: 'LSTM', filter_actual: 'Actual',
-      wf_explain: 'Walk-forward uses expanding window strategy. Each fold trains independently covering different seasons. Lower MAE = better regression; Higher F1 = better warning accuracy.',
-      calib_explain: 'Reliability diagram shows calibration quality. Ideally confidence X should match accuracy X (diagonal). Current model uses deterministic approximation; probability concentration at 0 and 1 is expected.',
+      no_data: 'No data',
+      warn_fallback: 'Online forecast failed.',
+      show_precip: 'Precip', show_temp: 'Temp', weather_sub_title: 'Precip / Temp',
       reco_reason_low: 'Low predicted crowd, good for visiting',
       reco_reason_normal: 'Normal crowd, suitable weather',
-      reco_reason_watch: 'Higher crowd, consider off-peak timing'
+      reco_reason_watch: 'Higher crowd, consider off-peak timing',
+      ds_title: 'Dataset Split',
+      ds_sub: 'Raw data filtered to date ≥ 2023-06-01 (1,050 rows); sequence count varies slightly by model look_back',
+      ds_train_label: 'Train  ~80%',
+      ds_train_meta: 'Transformer: 2023-07-16 ~ 2025-09-28 (805) · GRU: 2023-07-01 ~ 2025-09-12 (804) · XGBoost: 2023-06-01 ~ 2025-09-18 (840)',
+      ds_val_label: 'Validation  ~10%',
+      ds_val_meta: 'Transformer: 2025-09-29 ~ 2026-01-06 (100) · GRU: 2025-09-13 ~ 2026-01-04 (114) · XGBoost: 2025-09-19 ~ 2026-01-01 (105)',
+      ds_test_label: 'Test  ~10%',
+      ds_test_meta: 'Transformer: 2026-01-07 ~ 2026-04-16 (100) · GRU: 2026-01-05 ~ 2026-04-16 (102) · XGBoost: 2026-01-02 ~ 2026-04-16 (105)',
+      ds_events_cap: 'Full visitor flow 2016–2026: earthquake closure (red) and COVID lockdowns (orange) caused structural breaks; green dashed line = modelling start',
+      ds_note_title: 'Why use data from 2023 onward only?',
+      ds_note_body: 'Jiuzhaigou was closed after the August 2017 earthquake until late 2019. COVID lockdowns (2020–2022) further caused repeated closures and visitor caps. Visitor patterns during these periods are fundamentally different from stable post-recovery operations. Starting from 2023-06-01 ensures the training data is homogeneous and representative of the current operating regime.',
+      analysis_title: 'Model Performance Analysis',
+      analysis_sub: 'Test set: 2026-01-07 ~ 2026-04-16 (100 days) · Crowd Alert uses seasonal thresholds (peak 32,800 / off-peak 18,400)',
+      analysis_row_regression: 'Regression Error',
+      analysis_row_regression_hint: 'MAE = mean absolute error (visitors/day); NRMSE = normalised RMSE. Lower is better.',
+      analysis_cap_mae: 'Ensemble (GRU 10% + Transformer 20% + XGBoost 70%) achieves the lowest MAE of 2,222 visitors/day — 22% better than GRU (2,853) and 6.9% better than XGBoost alone (2,389), confirming that weighted blending corrects systematic bias across models.',
+      analysis_cap_nrmse: 'NRMSE penalises large errors more heavily. XGBoost leads single models at 0.1176; ensemble reduces it to 0.1147. GRU\'s elevated NRMSE (0.1557) reflects consistent under-prediction during peak-season spikes (Spring Festival, Golden Week).',
+      analysis_row_crowd: 'Crowd Alert Performance',
+      analysis_row_crowd_hint: 'F1 balances precision and recall; Recall = fraction of overload days correctly flagged — the more safety-critical metric; thresholds: peak 32,800 / off-peak 18,400',
+      analysis_cap_f1: 'XGBoost (F1=0.842) and Transformer (F1=0.800) balance precision and recall well; ensemble matches XGBoost at F1=0.842. GRU scores only 0.533 — severely under-flagging overload days.',
+      analysis_cap_recall: 'Recall directly governs park safety: a missed overload day is far costlier than a false alarm. GRU\'s 36.4% Recall means over 60% of overload days go unflagged. The ensemble\'s 70% weight on XGBoost (Recall 0.909) lifts ensemble Recall to 0.818, achieving high coverage.',
+      analysis_row_loss: 'Training Convergence',
+      analysis_row_loss_hint: 'Loss = MSE on MinMax-scaled data; lower = better fit. Parallel Train/Val descent with a narrow gap indicates no overfitting. Early Stopping halts training after 20 consecutive epochs without Val Loss improvement.',
+      analysis_cap_gru_loss: 'GRU reaches best val_loss=0.0082 at epoch 36; training stopped at epoch 56. Train and Val curves converge closely — strong generalisation with no overfitting. GRU\'s single-layer 64-unit architecture converges fastest among the three models.',
+      analysis_cap_tf_loss: 'Transformer reaches best val_loss=0.0094 at epoch 49; training stopped at epoch 69 (look_back=45). Val Loss stabilises after epoch 30, but multi-head attention enables better long-range seasonal dependency capture — reflected in its superior F1 vs GRU.',
+      analysis_row_feat: 'XGBoost Feature Importance',
+      analysis_row_feat_hint: 'Gain = average information gain each time a feature is used in a split — measures how much each variable drives prediction decisions',
+      analysis_cap_feat: 'is_peak_season dominates at 58.1% Gain, confirming Jiuzhaigou\'s strong seasonal periodicity. visitor_count_lag_1 (yesterday\'s count) contributes 22.7%, reflecting strong short-term momentum. rolling_7d_mean adds trend smoothing (9.0%). Together these three account for 89.8%; weather and holiday features provide the remaining 10.2% fine-grained correction.'
     }
   };
 
@@ -106,9 +114,6 @@
     payload: null,
     chart: null,
     weatherChart: null,
-    metricsCache: {},
-    analysisLoaded: false,
-    modelsLoaded: false,
     wxData: {},
     histWxData: {}
   };
@@ -184,17 +189,7 @@
   }
 
 
-  function fmtRound(x) {
-    const v = safeNum(x);
-    if (v === null) return '—';
-    try { return Math.round(v).toLocaleString(); }
-    catch { return String(Math.round(v)); }
-  }
 
-  function fmtDec(x, d) {
-    const v = safeNum(x);
-    return v === null ? '—' : v.toFixed(d !== undefined ? d : 2);
-  }
 
   // ─────────────────────────────────────────────
   // Payload normalization
@@ -425,7 +420,11 @@
           const _wx = normalized.weather;
           const _wSlice = _wx.tempHighC.slice(_fc.startIndex, _fc.endIndex + 1);
           const _wxOk = _wSlice.some((v) => v !== null && v !== undefined);
-          if (normalized.timeAxis && normalized.timeAxis.length > 0 && _wxOk) {
+          const _xgbSlice = (normalized.series && normalized.series.xgboost)
+            ? normalized.series.xgboost.slice(_fc.startIndex, _fc.endIndex + 1)
+            : [];
+          const _xgbOk = _xgbSlice.some((v) => v !== null && v !== undefined);
+          if (normalized.timeAxis && normalized.timeAxis.length > 0 && _wxOk && _xgbOk) {
             state.payload = normalized;
             renderAll(state.payload);
             showSpinner(false);
@@ -459,20 +458,8 @@
     }
   }
 
-  async function loadMetrics(modelId) {
-    if (state.metricsCache[modelId]) return state.metricsCache[modelId];
-    try {
-      const data = await apiFetch(`/api/metrics?model_id=${modelId}`);
-      state.metricsCache[modelId] = data;
-      return data;
-    } catch (err) {
-      console.warn(`metrics fetch failed for ${modelId}:`, err);
-      return null;
-    }
-  }
-
   // ─────────────────────────────────────────────
-  // Weather icon (FIX 6: proper nested structure)
+  // Weather icon
   // ─────────────────────────────────────────────
   function weatherIconHtml(code) {
     if (!code) return '<div class="v3-wi"><div class="v3-wi__cloud"></div></div>';
@@ -505,9 +492,12 @@
     return RISK_BADGE_CLASSES[v] || '';
   }
 
-  // 从3条曲线中取第一个有值的预测（用于 Reco/Strip 的"最佳可用预测"）
-  const PRED_KEYS = ['gru', 'transformer', 'xgboost'];
+  // 单模型 fallback 顺序（按测试集性能排序：XGBoost > Transformer > GRU）
+  const PRED_KEYS = ['xgboost', 'transformer', 'gru'];
+  // 优先用集成预测；集成无值时按 PRED_KEYS 顺序 fallback
   function bestPred(series, i) {
+    const ens = series.ensemble && series.ensemble[i];
+    if (ens !== null && ens !== undefined) return ens;
     for (const k of PRED_KEYS) {
       const v = series[k] && series[k][i];
       if (v !== null && v !== undefined) return v;
@@ -651,10 +641,6 @@
         }
       }
     }
-    // Use backend gap_end if available; otherwise derive from todayStr
-    const gapEndStr = (zones && zones.gapEnd) || (() => {
-      const d = new Date(todayStr); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10);
-    })();
     let gapStartIdx = -1;
     let gapEndIdx = -1;
     // Gap zone: day after lastRealDate up to today (exclusive)
@@ -893,6 +879,9 @@
       });
     }
     state.chart.setOption(buildChartOption(payload), { notMerge: true });
+    // 强制恢复可见，避免上一轮 legendUnSelect 导致曲线隐藏
+    [state.lang === 'zh' ? '实际客流' : 'Actual', 'GRU', 'Transformer', 'XGBoost', state.lang === 'zh' ? '集成预测' : 'Ensemble']
+      .forEach((name) => state.chart.dispatchAction({ type: 'legendSelect', name }));
 
     // FIX 5: zoom to forecast window on render
     const n = payload.timeAxis.length;
@@ -1263,192 +1252,6 @@
   }
 
   // ─────────────────────────────────────────────
-  // Update curve toggle labels to show actual model names
-  // ─────────────────────────────────────────────
-  function updateCurveToggleLabels(_payload) {
-    // no-op: chip toggles removed
-  }
-
-  // ─────────────────────────────────────────────
-  // Calibration status card
-  // ─────────────────────────────────────────────
-  function renderCalibCard(payload) {
-    const card = $('v3CalibCard');
-    if (!card) return;
-    const unc = payload && payload.uncertainty;
-    if (!unc || !unc.available) {
-      card.style.display = 'none';
-      return;
-    }
-    card.style.display = '';
-
-    const latencyTag = $('v3LatencyTag');
-    let latencyDays = 0;
-    if (latencyTag) {
-      let lastIdx = -1;
-      for (let i = (payload.series.actual || []).length - 1; i >= 0; i--) {
-        const v = (payload.series.actual || [])[i];
-        if (v !== null && v !== undefined) { lastIdx = i; break; }
-      }
-      const s = payload.forecast && typeof payload.forecast.startIndex === 'number' ? payload.forecast.startIndex : -1;
-      // Latency = today - last_real_date (in days).
-      // s = index of today in timeAxis; lastIdx = index of last non-null actual.
-      // Each step = 1 day, so (s - lastIdx) = calendar days since last real data.
-      latencyDays = (lastIdx >= 0 && s >= 0) ? Math.max(0, s - lastIdx) : 0;
-      if (latencyDays > 0) {
-        const lastRealDate = payload.timeAxis[lastIdx] || '—';
-        latencyTag.innerHTML =
-          `⚠️ 当前官方数据延迟 <b>${latencyDays}</b> 天，处于滚动推演模式` +
-          `<span class="v3-latency-note">（最新数据截至 ${lastRealDate}，` +
-          `延迟天数 = 今日 − 最后已知数据日）</span>`;
-        latencyTag.style.display = '';
-      } else {
-        latencyTag.style.display = 'none';
-      }
-    }
-
-    const setEl = (id, val) => { const el = $(id); if (el) el.textContent = val; };
-    setEl('v3CalibMethod', '共形预测 (Conformal Prediction)');
-    setEl('v3CalibBackbone', `${unc.nMembers}-Member GRU Ensemble`);
-    setEl('v3CalibN', `${unc.calSize} 条`);
-    setEl('v3CalibMembers', `${unc.nMembers} 个`);
-
-    // Fan bars: h=1..7 half-widths
-    const fanEl = $('v3CalibFan');
-    if (fanEl) {
-      const hw = unc.halfWidthByHorizon || {};
-      const rawVals = Object.values(hw).map(safeNum).filter(v => v != null);
-      if (!rawVals.length) { fanEl.innerHTML = ''; return; }
-      const sorted = rawVals.slice().sort((a, b) => a - b);
-      const q = (sorted.length - 1) * 0.90;
-      const b = Math.floor(q);
-      const r = q - b;
-      const p90 = sorted[b + 1] !== undefined ? (sorted[b] + r * (sorted[b + 1] - sorted[b])) : sorted[b];
-      const capP90 = Math.max(1, p90 * 1.25);
-      const s = payload.forecast && typeof payload.forecast.startIndex === 'number' ? payload.forecast.startIndex : -1;
-      const center = payload.series && payload.series.gru_mimo ? payload.series.gru_mimo : [];
-      let conservativeOn = false;
-      const eff = [];
-      for (let h = 1; h <= 7; h++) {
-        const raw = safeNum(hw[String(h)] || hw[h]);
-        if (raw == null) { eff.push(null); continue; }
-        let v = Math.max(0, raw);
-        v = Math.min(v, capP90);
-        const idx = (s >= 0) ? (s + (h - 1)) : -1;
-        const m = (idx >= 0 && idx < center.length) ? safeNum(center[idx]) : null;
-        if (m !== null && m > 0) {
-          const capMean = m * 0.40;
-          if (v > capMean) { v = capMean; conservativeOn = true; }
-        }
-        eff.push(v);
-      }
-      const maxHw = Math.max(...eff.filter(v => v != null), 1);
-      let fanHtml = `<div class="v3-calib-fan-hint">${
-        state.lang === 'zh'
-          ? '注：h (Horizon) 为向未来推演的步数（天数）'
-          : 'h = forecast horizon in days'
-      }</div>`;
-      for (let h = 1; h <= 7; h++) {
-        const vv = eff[h - 1];
-        if (vv == null) continue;
-        const pct = Math.min(100, (vv / maxHw) * 100).toFixed(1);
-        const valStr = Math.round(vv).toLocaleString();
-        fanHtml += `<div class="v3-calib-fan-row">
-          <span class="v3-calib-fan-label">h=${h}</span>
-          <div class="v3-calib-fan-track"><div class="v3-calib-fan-bar" style="width:${pct}%"></div></div>
-          <span class="v3-calib-fan-val">±${valStr}</span>
-        </div>`;
-      }
-      fanEl.innerHTML = fanHtml;
-
-      const noteEl = $('v3CalibNote');
-      if (noteEl) {
-        const top = Math.max(...eff.filter(v => v != null), 0);
-        const topStr = top > 0 ? Math.round(top).toLocaleString() : '—';
-        noteEl.textContent = conservativeOn
-          ? `已启用保守模式：极端波动已截断（阈值=均值 40%）。当前最大波动幅度约为上下 ${topStr} 人。`
-          : `当前最大波动幅度约为上下 ${topStr} 人。`;
-      }
-    }
-  }
-
-  function renderAttrCard(payload) {
-    const card = $('v3AttrCard');
-    const list = $('v3AttrList');
-    const title = $('v3AttrTitle');
-    if (!card || !list) return;
-    if (!payload || !payload.timeAxis || !payload.timeAxis.length) {
-      card.style.display = 'none';
-      return;
-    }
-    const si = payload.forecast && typeof payload.forecast.startIndex === 'number' ? payload.forecast.startIndex : -1;
-    const idx = si >= 0 ? si + 1 : -1;
-    if (idx < 0 || idx >= payload.timeAxis.length) {
-      card.style.display = 'none';
-      return;
-    }
-    const date = payload.timeAxis[idx];
-    if (title) {
-      const d = new Date(date + 'T00:00:00');
-      const mm = d.getMonth() + 1;
-      const dd = d.getDate();
-      const label = state.lang === 'zh' ? `${mm}月${dd}日` : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      title.textContent = state.lang === 'zh'
-        ? `明日预测核心驱动因素（${label}）`
-        : `Top Drivers (${label})`;
-    }
-    const thr = payload.thresholds || {};
-    const wthr = thr.weather || {};
-    const precipHigh = safeNum(wthr.precipHigh);
-    const tempHigh = safeNum(wthr.tempHigh);
-    const tempLow = safeNum(wthr.tempLow);
-    const precip = safeNum(payload.weather && payload.weather.precipMm ? payload.weather.precipMm[idx] : null);
-    const th = safeNum(payload.weather && payload.weather.tempHighC ? payload.weather.tempHighC[idx] : null);
-    const tl = safeNum(payload.weather && payload.weather.tempLowC ? payload.weather.tempLowC[idx] : null);
-
-    const items = [];
-    const hol = (payload.holidays || []).find(h => h && h.start && h.end && h.start <= date && date <= h.end);
-    if (hol) {
-      const name = state.lang === 'zh' ? (hol.nameZh || hol.nameEn || '节假日') : (hol.nameEn || hol.nameZh || 'Holiday');
-      items.push({ text: `📈 ${name}（出行热度）`, delta: 8500 });
-    }
-    const dow = new Date(date + 'T00:00:00').getDay();
-    if (dow === 0 || dow === 6) items.push({ text: state.lang === 'zh' ? '📈 周末出游' : '📈 Weekend', delta: 1500 });
-
-    const r = payload.risk || {};
-    const drv = Array.isArray(r.drivers) ? (r.drivers[idx] || []) : [];
-    if (drv.includes('crowd_over_threshold')) items.push({ text: state.lang === 'zh' ? '📈 客流偏高（接近/超过阈值）' : '📈 High crowd', delta: 3000 });
-
-    if (precipHigh !== null && precip !== null && precip >= precipHigh) items.push({ text: state.lang === 'zh' ? '📉 强降水风险' : '📉 Heavy precipitation', delta: -2000 });
-    else if (precip !== null && precip >= 5) items.push({ text: state.lang === 'zh' ? '📉 降雨概率较高' : '📉 Rain risk', delta: -1200 });
-    if (tempHigh !== null && th !== null && th >= tempHigh) items.push({ text: state.lang === 'zh' ? '📉 高温体感' : '📉 Heat stress', delta: -900 });
-    if (tempLow !== null && tl !== null && tl <= tempLow) items.push({ text: state.lang === 'zh' ? '📉 低温体感' : '📉 Cold stress', delta: -900 });
-
-    const top = items.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 3);
-    if (!top.length) {
-      list.innerHTML = `<div class="v3-attr-empty">${state.lang === 'zh' ? '暂无归因信息' : 'No attribution available'}</div>`;
-      card.style.display = '';
-      return;
-    }
-    list.innerHTML = top.map((it) => {
-      const pos = it.delta >= 0;
-      const d = Math.abs(it.delta);
-      const cls = pos ? 'v3-attr-delta--pos' : 'v3-attr-delta--neg';
-      const sign = pos ? '+' : '−';
-      return `<div class="v3-attr-item">
-        <div class="v3-attr-text">${it.text}</div>
-        <div class="v3-attr-delta ${cls}">${sign}${fmtVisitors(d)}</div>
-      </div>`;
-    }).join('');
-    card.style.display = '';
-  }
-
-  // ─────────────────────────────────────────────
-  // Render all forecast page components
-  // ─────────────────────────────────────────────
-  // ─────────────────────────────────────────────
-  // Chart legend toggle buttons
-  // ─────────────────────────────────────────────
   function initLegendToggles() {
     // Map data-series-name → ECharts series name (language-aware)
     function resolveSeriesName(key) {
@@ -1487,343 +1290,10 @@
     fetchWeatherDirect();
   }
 
-  // ─────────────────────────────────────────────
-  // Analysis page — Walk-forward chart (FIX 8)
-  // ─────────────────────────────────────────────
-  function renderWfChart(allMetrics) {
-    const container = $('v3WfChart');
-    if (!container || !window.echarts) return;
-    if (!state.wfChart) {
-      state.wfChart = echarts.init(container, null, { renderer: 'canvas' });
-      window.addEventListener('resize', () => { try { state.wfChart && state.wfChart.resize(); } catch {} });
-    }
-
-    const isDark = state.theme === 'dark';
-    const textColor = isDark ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.85)';
-    const mutedColor = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)';
-    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-
-    const champMetrics = allMetrics.champion;
-    const wfData = champMetrics && champMetrics.metrics && champMetrics.metrics.walk_forward;
-
-    let categories, maeData, f1Data;
-    if (wfData && Array.isArray(wfData.folds) && wfData.folds.length > 0) {
-      categories = wfData.folds.map((_, i) => `${t('fold')} ${i + 1}`);
-      maeData = wfData.folds.map((f) => safeNum(f.mae) !== null ? Math.round(safeNum(f.mae)) : null);
-      f1Data = wfData.folds.map((f) => safeNum(f.f1) !== null ? parseFloat(safeNum(f.f1).toFixed(3)) : null);
-    } else {
-      categories = [t('fold') + ' 1'];
-      const reg = champMetrics && champMetrics.metrics && champMetrics.metrics.regression;
-      const suit = champMetrics && champMetrics.metrics && champMetrics.metrics.suitability_warning;
-      maeData = [reg ? Math.round(safeNum(reg.mae) || 0) : null];
-      f1Data = [suit ? parseFloat((safeNum(suit.f1) || 0).toFixed(3)) : null];
-    }
-
-    state.wfChart.setOption({
-      backgroundColor: 'transparent',
-      textStyle: { color: textColor, fontFamily: 'Inter, "Noto Sans SC", sans-serif' },
-      grid: { top: 20, right: 60, bottom: 40, left: 64 },
-      legend: { bottom: 0, textStyle: { color: mutedColor, fontSize: 11 } },
-      xAxis: { type: 'category', data: categories,
-        axisLabel: { color: mutedColor }, axisLine: { lineStyle: { color: gridColor } } },
-      yAxis: [
-        { type: 'value', name: t('mae'), nameTextStyle: { color: mutedColor },
-          axisLabel: { color: mutedColor }, splitLine: { lineStyle: { color: gridColor } } },
-        { type: 'value', name: t('f1'), nameTextStyle: { color: mutedColor },
-          min: 0, max: 1, axisLabel: { color: mutedColor }, splitLine: { show: false } }
-      ],
-      tooltip: { trigger: 'axis', backgroundColor: isDark ? '#1c1c1e' : '#fff',
-        borderColor: isDark ? '#3a3a3c' : '#e0e0e0', textStyle: { color: textColor } },
-      series: [
-        { name: t('mae'), type: 'bar', data: maeData, yAxisIndex: 0,
-          itemStyle: { color: '#0a84ff', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 40 },
-        { name: t('f1') + ' (Suitability)', type: 'bar', data: f1Data, yAxisIndex: 1,
-          itemStyle: { color: '#30d158', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 40 }
-      ]
-    }, { notMerge: true });
-  }
-
-  // ─────────────────────────────────────────────
-  // Analysis page — Calibration chart (FIX 8)
-  // ─────────────────────────────────────────────
-  function renderCalibChart(allMetrics) {
-    const container = $('v3CalibChart');
-    if (!container || !window.echarts) return;
-    if (!state.calibChart) {
-      state.calibChart = echarts.init(container, null, { renderer: 'canvas' });
-      window.addEventListener('resize', () => { try { state.calibChart && state.calibChart.resize(); } catch {} });
-    }
-
-    const isDark = state.theme === 'dark';
-    const textColor = isDark ? 'rgba(255,255,255,0.85)' : 'rgba(0,0,0,0.85)';
-    const mutedColor = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)';
-    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
-
-    const champMetrics = allMetrics.champion;
-    // FIX 8: try both locations for calibration_bins
-    const bins = (champMetrics && champMetrics.metrics && champMetrics.metrics.calibration_bins) ||
-                 (champMetrics && champMetrics.calibration_bins);
-
-    let xData, yData;
-    if (bins && Array.isArray(bins) && bins.length > 0) {
-      // FIX 8: use avg_confidence / avg_accuracy field names
-      xData = bins.map((b) => (safeNum(b.avg_confidence) !== null ? safeNum(b.avg_confidence).toFixed(2) : (safeNum(b.confidence_mid) || 0).toFixed(2)));
-      yData = bins.map((b) => {
-        const v = safeNum(b.avg_accuracy) !== null ? safeNum(b.avg_accuracy) : safeNum(b.accuracy);
-        return v !== null ? parseFloat(v.toFixed(3)) : null;
-      });
-    } else {
-      xData = ['0.10', '0.30', '0.50', '0.70', '0.90'];
-      yData = [0.08, 0.25, 0.52, 0.68, 0.91];
-    }
-
-    const perfectLine = xData.map((x) => parseFloat(x));
-
-    state.calibChart.setOption({
-      backgroundColor: 'transparent',
-      textStyle: { color: textColor, fontFamily: 'Inter, "Noto Sans SC", sans-serif' },
-      grid: { top: 20, right: 24, bottom: 40, left: 50 },
-      xAxis: { type: 'category', data: xData, name: t('confidence'),
-        nameTextStyle: { color: mutedColor }, axisLabel: { color: mutedColor },
-        axisLine: { lineStyle: { color: gridColor } } },
-      yAxis: { type: 'value', min: 0, max: 1, name: t('accuracy'),
-        nameTextStyle: { color: mutedColor }, axisLabel: { color: mutedColor },
-        splitLine: { lineStyle: { color: gridColor } } },
-      tooltip: { trigger: 'axis', backgroundColor: isDark ? '#1c1c1e' : '#fff',
-        borderColor: isDark ? '#3a3a3c' : '#e0e0e0', textStyle: { color: textColor } },
-      legend: { bottom: 0, textStyle: { color: mutedColor, fontSize: 11 } },
-      series: [
-        { name: t('perfect_calib'), type: 'line', data: perfectLine,
-          lineStyle: { color: 'rgba(128,128,128,0.5)', type: 'dashed', width: 1 },
-          symbol: 'none', itemStyle: { color: 'rgba(128,128,128,0.5)' } },
-        { name: t('actual_calib'), type: 'bar', data: yData,
-          itemStyle: { color: '#0a84ff', borderRadius: [3, 3, 0, 0] }, barMaxWidth: 32 }
-      ]
-    }, { notMerge: true });
-  }
-
-  // ─────────────────────────────────────────────
-  // Analysis page — Confusion matrices
-  // ─────────────────────────────────────────────
-  function renderConfusionMatrices(allMetrics) {
-    const el = $('v3ConfusionMatrices');
-    if (!el) return;
-    const isDark = state.theme === 'dark';
-    const modelIds = ['champion', 'runner_up', 'third'];
-    const labels = { zh: ['预测正常', '预测预警'], en: ['Pred: Normal', 'Pred: Warning'] };
-    const rowLabels = { zh: ['实际正常', '实际预警'], en: ['Actual: Normal', 'Actual: Warning'] };
-
-    el.innerHTML = modelIds.map((id) => {
-      const d = allMetrics[id];
-      if (!d || !d.metrics) return '';
-      const ca = d.metrics.crowd_alert || {};
-      const tp = ca.tp ?? 0, fp = ca.fp ?? 0, tn = ca.tn ?? 0, fn = ca.fn ?? 0;
-      const total = tp + fp + tn + fn;
-      if (total === 0) return '';
-      const name = d.model_name || id;
-      const shortName = name.replace('_8features','').replace('_',' ');
-
-      function cell(val, isCorrect) {
-        const pct = total > 0 ? (val / total * 100).toFixed(1) : '0';
-        const bg = isCorrect
-          ? (isDark ? 'rgba(48,209,88,0.18)' : 'rgba(48,209,88,0.15)')
-          : (isDark ? 'rgba(255,69,58,0.18)' : 'rgba(255,69,58,0.12)');
-        return `<td style="background:${bg};text-align:center;padding:10px 14px;border-radius:6px">
-          <div style="font-size:1.1rem;font-weight:600">${val}</div>
-          <div style="font-size:0.65rem;opacity:0.6">${pct}%</div>
-        </td>`;
-      }
-
-      const colH = (state.lang === 'zh' ? labels.zh : labels.en);
-      const rowH = (state.lang === 'zh' ? rowLabels.zh : rowLabels.en);
-      const p = safeNum(ca.precision), r = safeNum(ca.recall), f = safeNum(ca.f1);
-
-      return `<div class="v3-confusion-card">
-        <div style="font-weight:600;font-size:0.8rem;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.7">${shortName}</div>
-        <table style="border-collapse:separate;border-spacing:4px;width:100%">
-          <thead><tr>
-            <th></th>
-            <th style="font-size:0.68rem;opacity:0.6;font-weight:500;text-align:center">${colH[0]}</th>
-            <th style="font-size:0.68rem;opacity:0.6;font-weight:500;text-align:center">${colH[1]}</th>
-          </tr></thead>
-          <tbody>
-            <tr>
-              <td style="font-size:0.68rem;opacity:0.6;font-weight:500;padding-right:8px;white-space:nowrap">${rowH[0]}</td>
-              ${cell(tn, true)}${cell(fp, false)}
-            </tr>
-            <tr>
-              <td style="font-size:0.68rem;opacity:0.6;font-weight:500;padding-right:8px;white-space:nowrap">${rowH[1]}</td>
-              ${cell(fn, false)}${cell(tp, true)}
-            </tr>
-          </tbody>
-        </table>
-        <div style="margin-top:8px;font-size:0.68rem;opacity:0.65;display:flex;gap:12px">
-          <span>P: <b>${p !== null ? fmtDec(p,3) : '—'}</b></span>
-          <span>R: <b>${r !== null ? fmtDec(r,3) : '—'}</b></span>
-          <span>F1: <b>${f !== null ? fmtDec(f,3) : '—'}</b></span>
-        </div>
-      </div>`;
-    }).join('');
-  }
-
-  // ─────────────────────────────────────────────
-  // Analysis page — Metrics comparison table
-  // ─────────────────────────────────────────────
-  function renderMetricsTable(allMetrics) {
-    const el = $('v3MetricsTable');
-    if (!el) return;
-
-    const modelIds = ['champion', 'runner_up', 'third'];
-    const names = modelIds.map((id) => {
-      const d = allMetrics[id];
-      return d ? (d.model_name || id) : id;
-    });
-
-    function cell(id, path) {
-      const d = allMetrics[id];
-      if (!d || !d.metrics) return '—';
-      const parts = path.split('.');
-      let v = d.metrics;
-      for (const p of parts) { v = v && v[p]; }
-      const n = safeNum(v);
-      if (n === null) return '—';
-      if (path.includes('mae') || path.includes('rmse')) return fmtRound(n);
-      if (path.includes('smape')) return fmtDec(n, 2) + '%';
-      return fmtDec(n, 3);
-    }
-
-    const rows = [
-      { label: t('mae'), path: 'regression.mae' },
-      { label: t('rmse'), path: 'regression.rmse' },
-      { label: t('smape'), path: 'regression.smape' },
-      { label: t('f1') + ' (Crowd)', path: 'crowd_alert.f1' },
-      { label: t('recall') + ' (Crowd)', path: 'crowd_alert.recall' },
-      { label: t('precision') + ' (Crowd)', path: 'crowd_alert.precision' },
-      { label: t('f1') + ' (Suit)', path: 'suitability_warning.f1' },
-      { label: t('brier'), path: 'suitability_warning.brier' },
-      { label: t('ece'), path: 'suitability_warning.ece' }
-    ];
-
-    let html = `<table class="v3-table"><thead><tr>
-      <th></th>${names.map((n) => `<th>${n}</th>`).join('')}
-    </tr></thead><tbody>`;
-
-    rows.forEach((row) => {
-      html += `<tr><td class="v3-table__label">${row.label}</td>`;
-      modelIds.forEach((id) => { html += `<td>${cell(id, row.path)}</td>`; });
-      html += '</tr>';
-    });
-
-    html += '</tbody></table>';
-    el.innerHTML = html;
-  }
-
-  // ─────────────────────────────────────────────
-  // Models page — model cards
-  // ─────────────────────────────────────────────
-  function renderModelsGrid(allMetrics) {
-    const el = $('v3ModelsGrid');
-    if (!el) return;
-
-    const modelIds = ['champion', 'runner_up', 'third'];
-    const cards = modelIds.map((id) => {
-      const d = allMetrics[id];
-      if (!d) {
-        return `<div class="v3-model-card v3-model-card--empty">
-          <div class="v3-model-card__name">${id}</div>
-          <p class="v3-model-card__na">${t('no_data')}</p>
-        </div>`;
-      }
-
-      const m = d.metrics || {};
-      const reg = m.regression || {};
-      const crowd = m.crowd_alert || {};
-      const suit = m.suitability_warning || {};
-      const meta = m.meta || {};
-
-      const badge = id === 'champion'
-        ? `<span class="v3-model-badge v3-model-badge--champ">${t('model_champ')}</span>`
-        : id === 'runner_up'
-          ? `<span class="v3-model-badge v3-model-badge--runner">${t('model_runner')}</span>`
-          : `<span class="v3-model-badge">${t('model_third')}</span>`;
-
-      function metaRow(label, val) {
-        return val !== undefined && val !== null
-          ? `<div class="v3-model-meta-row"><span>${label}</span><span>${val}</span></div>`
-          : '';
-      }
-
-      return `<div class="v3-model-card">
-        <div class="v3-model-card__header">
-          <div class="v3-model-card__name">${d.model_name || id}</div>
-          ${badge}
-        </div>
-        <div class="v3-model-card__section-title">${t('metrics_regression')}</div>
-        <div class="v3-model-meta-row"><span>${t('mae')}</span><span>${fmtRound(reg.mae)}</span></div>
-        <div class="v3-model-meta-row"><span>${t('rmse')}</span><span>${fmtRound(reg.rmse)}</span></div>
-        <div class="v3-model-meta-row"><span>${t('smape')}</span><span>${fmtDec(reg.smape, 2)}%</span></div>
-        <div class="v3-model-card__section-title">${t('metrics_crowd')}</div>
-        <div class="v3-model-meta-row"><span>${t('f1')}</span><span>${fmtDec(crowd.f1, 3)}</span></div>
-        <div class="v3-model-meta-row"><span>${t('recall')}</span><span>${fmtDec(crowd.recall, 3)}</span></div>
-        <div class="v3-model-meta-row"><span>${t('precision')}</span><span>${fmtDec(crowd.precision, 3)}</span></div>
-        <div class="v3-model-card__section-title">${t('metrics_suit')}</div>
-        <div class="v3-model-meta-row"><span>${t('f1')}</span><span>${fmtDec(suit.f1, 3)}</span></div>
-        <div class="v3-model-meta-row"><span>${t('brier')}</span><span>${fmtDec(suit.brier, 3)}</span></div>
-        <div class="v3-model-meta-row"><span>${t('ece')}</span><span>${fmtDec(suit.ece, 3)}</span></div>
-        <div class="v3-model-card__section-title">${t('metrics_meta')}</div>
-        ${metaRow(t('architecture'), meta.model_architecture)}
-        ${metaRow(t('epochs'), meta.epochs_trained)}
-        ${metaRow(t('look_back'), meta.look_back)}
-      </div>`;
-    });
-
-    el.innerHTML = cards.join('');
-  }
-
-  // ─────────────────────────────────────────────
-  // Analysis / Models lazy load
-  // ─────────────────────────────────────────────
-  async function loadAnalysis() {
-    if (state.analysisLoaded) return;
-    const [champ, runner, third] = await Promise.all([
-      loadMetrics('champion'), loadMetrics('runner_up'), loadMetrics('third')
-    ]);
-    const all = { champion: champ, runner_up: runner, third };
-    renderMetricsTable(all);
-    renderConfusionMatrices(all);
-    renderCalibChart(all);
-    state.analysisLoaded = true;
-  }
-
-  async function loadModels() {
-    if (state.modelsLoaded) return;
-    const [champ, runner, third] = await Promise.all([
-      loadMetrics('champion'), loadMetrics('runner_up'), loadMetrics('third')
-    ]);
-    renderModelsGrid({ champion: champ, runner_up: runner, third });
-    state.modelsLoaded = true;
-  }
 
   // ─────────────────────────────────────────────
   // Tab navigation
   // ─────────────────────────────────────────────
-  function showPage(page) {
-    const pages = { forecast: $('pageForecast'), analysis: $('pageAnalysis'), models: $('pageModels') };
-    const tabs = { forecast: $('tabForecast'), analysis: $('tabAnalysis'), models: $('tabModels') };
-
-    Object.entries(pages).forEach(([key, el]) => {
-      if (!el) return;
-      el.classList.toggle('v3-page--hidden', key !== page);
-    });
-    Object.entries(tabs).forEach(([key, el]) => {
-      if (!el) return;
-      el.classList.toggle('v3-tab--active', key === page);
-    });
-
-    if (page === 'analysis') loadAnalysis();
-    if (page === 'models') loadModels();
-  }
-
   // ─────────────────────────────────────────────
   // Theme
   // ─────────────────────────────────────────────
@@ -1848,27 +1318,12 @@
       renderAll(state.payload);
       if (state.selectedIdx !== null) updateSelection(state.selectedIdx);
     }
-    if (state.analysisLoaded) {
-      state.analysisLoaded = false;
-      loadAnalysis();
-    }
-    if (state.modelsLoaded) {
-      state.modelsLoaded = false;
-      loadModels();
-    }
   }
 
-  const ALL_CHIPS = ['actual', 'gru', 'transformer', 'xgboost'];
-
   // ─────────────────────────────────────────────
-  // Event bindings (FIX 2,7,9)
+  // Event bindings
   // ─────────────────────────────────────────────
   function bindEvents() {
-    // Tabs
-    $$('[data-page]').forEach((btn) => {
-      btn.addEventListener('click', () => showPage(btn.getAttribute('data-page')));
-    });
-
     // Lang
     const langBtn = $('v3Lang');
     if (langBtn) {
@@ -1885,8 +1340,6 @@
     const refreshBtn = $('v3Refresh');
     if (refreshBtn) {
       refreshBtn.addEventListener('click', () => {
-        state.analysisLoaded = false;
-        state.modelsLoaded = false;
         state.wxData = {};
         state.histWxData = {};  // 清空历史天气缓存
         loadForecast();
@@ -1908,53 +1361,33 @@
       errClose.addEventListener('click', () => showError(null));
     }
 
-    // Sub-chart toggles (FIX 7)
+    // Sub-chart toggles
     ['v3ShowPrecip', 'v3ShowTemp'].forEach((id) => {
       const el = $(id);
       if (el) el.addEventListener('change', () => { if (state.payload) renderWeatherChart(state.payload); });
     });
 
-    // Glossary: separated button row + single content panel below
-    // activeGloss: key string of active button, or null
-    let activeGloss = null;
-    const glossBtns = $$('#v3GlossaryBtns .v3-gpill-btn');
-    const glossPanel = $('v3GlossaryPanel');
-    const glossBodies = glossPanel
-      ? Array.from(glossPanel.querySelectorAll('[data-gloss-body]'))
-      : [];
-
-    function setGloss(key) {
-      // Update buttons
-      glossBtns.forEach((b) => {
-        b.classList.toggle('v3-gpill-btn--active', b.getAttribute('data-gloss') === key);
-        b.setAttribute('aria-pressed', b.getAttribute('data-gloss') === key ? 'true' : 'false');
-      });
-      // Update panel content
-      glossBodies.forEach((bd) => {
-        bd.classList.toggle('v3-gloss-active', bd.getAttribute('data-gloss-body') === key);
-      });
-      // Show/hide panel
-      if (glossPanel) glossPanel.hidden = key === null;
-      activeGloss = key;
-    }
-
-    glossBtns.forEach((btn) => {
-      btn.setAttribute('aria-pressed', 'false');
+    // Loss curve tab switcher
+    document.querySelectorAll('.v3-loss-tab').forEach(btn => {
       btn.addEventListener('click', () => {
-        const key = btn.getAttribute('data-gloss');
-        // Toggle off if already active
-        setGloss(activeGloss === key ? null : key);
+        const target = btn.dataset.loss;
+        document.querySelectorAll('.v3-loss-tab').forEach(b => b.classList.remove('v3-loss-tab--active'));
+        btn.classList.add('v3-loss-tab--active');
+        document.querySelectorAll('.v3-analysis__fig--loss').forEach(fig => {
+          fig.classList.toggle('v3-analysis__fig--hidden', fig.id !== 'loss' + target.charAt(0).toUpperCase() + target.slice(1));
+        });
       });
     });
+
   }
 
   // ─────────────────────────────────────────────
   // Init
   // ─────────────────────────────────────────────
-  const CURRENT_CACHE_VER = 'v12';
+  const CURRENT_CACHE_VER = 'v15';
   function init() {
     console.log('dashboard_v3.js loaded');
-    // 清除旧版本 forecast 缓存 + 重置分析页状态
+    // 清除旧版本 forecast 缓存
     try {
       const oldKeys = [];
       for (let i = 0; i < localStorage.length; i++) {
@@ -1966,10 +1399,6 @@
       oldKeys.forEach(k => localStorage.removeItem(k));
       if (oldKeys.length) console.log('[cache] cleared old keys:', oldKeys);
     } catch (_) {}
-    // 每次加载都重置分析/模型页缓存，确保拿到最新 metrics
-    state.metricsCache = {};
-    state.analysisLoaded = false;
-    state.modelsLoaded = false;
     applyI18n();
     bindEvents();
     bindWxArrows();

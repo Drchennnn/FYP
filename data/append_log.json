@@ -82,5 +82,29 @@
     "visitor_count": 18183,
     "weather": {},
     "appended_at": "2026-04-17T17:27:01.540985"
+  },
+  {
+    "date": "2026-04-17",
+    "visitor_count": 18905,
+    "weather": {},
+    "appended_at": "2026-04-21T14:38:26.060264"
+  },
+  {
+    "date": "2026-04-18",
+    "visitor_count": 22646,
+    "weather": {},
+    "appended_at": "2026-04-21T14:38:26.061323"
+  },
+  {
+    "date": "2026-04-19",
+    "visitor_count": 14082,
+    "weather": {},
+    "appended_at": "2026-04-21T14:38:26.061323"
+  },
+  {
+    "date": "2026-04-20",
+    "visitor_count": 14752,
+    "weather": {},
+    "appended_at": "2026-04-21T14:38:26.062921"
   }
 ]
